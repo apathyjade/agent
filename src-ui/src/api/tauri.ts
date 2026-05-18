@@ -93,7 +93,7 @@ export async function removeProvider(provider: string): Promise<void> {
   return invoke('remove_provider', { provider });
 }
 
-export async function getDefaultModel(): Promise<string | null> {
+export async function getDefaultModel(): Promise<{ id: string; name: string; display_name: string; provider: string; api_key: string; base_url?: string; is_default: boolean; enabled: boolean; context_window?: number; max_tokens?: number } | null> {
   return invoke('get_default_model');
 }
 

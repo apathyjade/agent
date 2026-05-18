@@ -72,7 +72,8 @@ export const useStore = create<AppState>((set, get) => ({
   fetchProviders: async () => {
     try {
       const providers = await api.listProviders();
-      const defaultModel = await api.getDefaultModel();
+      const modelInfo = await api.getDefaultModel();
+      const defaultModel = modelInfo?.id ?? null;
       set({ providers, defaultModel });
     } catch (err) {
       set({ error: String(err) });
