@@ -1,0 +1,33 @@
+﻿use std::sync::Arc;
+use tauri::AppHandle;
+use tokio::sync::Mutex;
+
+use crate::api::provider::ProviderRegistry;
+use crate::config::AppConfig;
+use crate::db::repository::Database;
+use crate::tools::registry::ToolRegistry;
+
+pub struct AppState {
+    pub app_handle: AppHandle,
+    pub db: Arc<Mutex<Database>>,
+    pub config: Arc<Mutex<AppConfig>>,
+    pub providers: Arc<Mutex<ProviderRegistry>>,
+    pub tools: Arc<Mutex<ToolRegistry>>,
+}
+
+impl AppState {
+    pub fn new(app_handle: &AppHandle) -> crate::error::Result<Self> {
+        let db = Database::new()?;
+        let config = AppConfig::load()?;
+        let providers = ProviderRegistry::new(&config);
+        let tools = ToolRegistry::new();
+
+        Ok(Self {
+            app_handle: app_handle.clone(),
+            db: Arc::new(Mutex::new(db)),
+            config: Arc::new(Mutex::new(config)),
+            providers: Arc::new(Mutex::new(providers)),
+            tools: Arc::new(Mutex::new(tools)),
+        })
+    }
+}
