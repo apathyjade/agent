@@ -33,17 +33,27 @@ pub async fn list_providers_cmd(state: State<'_, AppState>) -> Result<Vec<Provid
             .collect();
         let has_configured = models.iter().any(|m| m.enabled && !m.api_key.is_empty());
         let requires_key = *id != "ollama" && *id != "lmstudio";
+        let available_models: Vec<AvailableModel> = if models.is_empty() {
+            vec![AvailableModel {
+                id: id.to_string(),
+                name: name.to_string(),
+                context_window: None,
+            }]
+        } else {
+            models.iter().map(|m| AvailableModel {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                context_window: m.context_window,
+            }).collect()
+        };
+
         ProviderStatus {
             id: id.to_string(),
             name: name.to_string(),
             configured: requires_key && has_configured,
             base_url: Some(base_url.to_string()),
             enabled_models: models.iter().filter(|m| m.enabled).map(|m| m.id.clone()).collect(),
-            available_models: models.iter().map(|m| AvailableModel {
-                id: m.id.clone(),
-                name: m.name.clone(),
-                context_window: m.context_window,
-            }).collect(),
+            available_models,
             requires_api_key: requires_key,
         }
     }).collect();

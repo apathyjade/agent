@@ -81,7 +81,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setIsEditing(false);
     setNewApiKey('');
     setNewBaseUrl(provider.configured ? provider.base_url || '' : '');
-    setNewModels(provider.enabled_models.length > 0 ? provider.enabled_models : []);
+    setNewModels(provider.available_models.map(m => m.id));
   };
 
   const toggleModel = (modelId: string, checked: boolean) => {
@@ -210,7 +210,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                               setIsEditing(true);
                               setNewApiKey('');
                               setNewBaseUrl(selected.base_url || '');
-                              setNewModels([...selected.enabled_models]);
+                              setNewModels(selected.available_models.map(m => m.id));
                             }}
                             className="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm transition-colors"
                           >
