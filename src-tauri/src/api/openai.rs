@@ -1,6 +1,5 @@
 ﻿use async_trait::async_trait;
-use futures::stream::BoxStream;
-use futures::StreamExt;
+use futures::stream::{BoxStream, StreamExt};
 use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
@@ -90,11 +89,23 @@ impl LLMProvider for OpenAIProvider {
         let response = req
             .json(&body)
             .send()
-            .await?
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "API returned {}: {}",
+                status.as_u16(),
+                error_body
+            )));
+        }
+
+        let response_data = response
             .json::<ChatResponse>()
             .await?;
 
-        Ok(response)
+        Ok(response_data)
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<BoxStream<'static, Result<StreamPayload>>> {
@@ -104,108 +115,123 @@ impl LLMProvider for OpenAIProvider {
         let api_url = self.api_url();
         let api_key = self.model.api_key.clone();
 
-        let stream = async move {
-            let mut req = client.post(&api_url)
-                .header("Content-Type", "application/json");
+        let mut req = client.post(&api_url)
+            .header("Content-Type", "application/json");
 
-            if !api_key.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", api_key));
-            }
-
-            let response = req
-                .json(&body)
-                .send()
-                .await?;
-
-            let bytes_stream = response.bytes_stream();
-            Ok::<_, AppError>(bytes_stream)
+        if !api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
         }
-        .await?;
 
-        let parsed = stream.filter_map(|chunk| {
-            async {
-                match chunk {
-                    Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        let mut results = Vec::new();
-                        let mut tool_calls_map: HashMap<i64, serde_json::Value> = HashMap::new();
+        let response = req
+            .json(&body)
+            .send()
+            .await?;
 
-                        for line in text.lines() {
-                            if line.starts_with("data: ") && line != "data: [DONE]" {
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
-                                    let delta = &json["choices"][0]["delta"];
+        // Check HTTP status — API errors (4xx/5xx) are NOT SSE streams.
+        // Without this check, JSON error bodies silently produce zero SSE events,
+        // making it appear as if no API call was made.
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "API returned {}: {}",
+                status.as_u16(),
+                error_body
+            )));
+        }
 
-                                    if let Some(content) = delta["content"].as_str() {
-                                        if !content.is_empty() {
-                                            results.push(Ok(StreamPayload {
-                                                content: Some(content.to_string()),
-                                                tool_calls: None,
-                                                finish_reason: None,
-                                            }));
+        let bytes_stream = response.bytes_stream();
+
+        // flat_map emits ALL SSE events from each chunk, not just the first one.
+        // This is critical — some providers (DeepSeek V4, etc.) batch multiple events
+        // per HTTP chunk. filter_map + results.remove(0) would silently discard everything
+        // after the first event, causing garbled/missing text.
+        let parsed = bytes_stream.flat_map(|chunk| {
+            let items: Vec<Result<StreamPayload>> = match chunk {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let mut items = Vec::new();
+                    let mut tool_calls_map: HashMap<i64, serde_json::Value> = HashMap::new();
+
+                    for line in text.lines() {
+                        if line.starts_with("data: ") && line != "data: [DONE]" {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
+                                let delta = &json["choices"][0]["delta"];
+
+                                // Emit content immediately — each SSE event that carries
+                                // text delta is its own payload.
+                                if let Some(content) = delta["content"].as_str() {
+                                    if !content.is_empty() {
+                                        items.push(Ok(StreamPayload {
+                                            content: Some(content.to_string()),
+                                            tool_calls: None,
+                                            finish_reason: None,
+                                        }));
+                                    }
+                                }
+
+                                // Accumulate tool-call chunks within this HTTP chunk.
+                                // (Multi-chunk tool calls are handled across flat_map invocations
+                                //  because each chunk independently builds its own map.)
+                                if let Some(tcs) = delta["tool_calls"].as_array() {
+                                    for tc in tcs {
+                                        let index = tc["index"].as_i64().unwrap_or(0);
+                                        let entry = tool_calls_map.entry(index).or_insert_with(|| {
+                                            json!({
+                                                "id": "",
+                                                "function": {"name": "", "arguments": ""}
+                                            })
+                                        });
+                                        if let Some(id) = tc["id"].as_str() {
+                                            if !id.is_empty() {
+                                                entry["id"] = json!(id);
+                                            }
+                                        }
+                                        if let Some(name) = tc["function"]["name"].as_str() {
+                                            if !name.is_empty() {
+                                                entry["function"]["name"] = json!(name);
+                                            }
+                                        }
+                                        if let Some(args) = tc["function"]["arguments"].as_str() {
+                                            let current = entry["function"]["arguments"].as_str().unwrap_or("");
+                                            let merged = format!("{}{}", current, args);
+                                            entry["function"]["arguments"] = json!(merged);
                                         }
                                     }
+                                }
 
-                                    if let Some(tcs) = delta["tool_calls"].as_array() {
-                                        for tc in tcs {
-                                            let index = tc["index"].as_i64().unwrap_or(0);
-                                            let entry = tool_calls_map.entry(index).or_insert_with(|| {
-                                                json!({
-                                                    "id": "",
-                                                    "function": {"name": "", "arguments": ""}
-                                                })
-                                            });
-                                            if let Some(id) = tc["id"].as_str() {
-                                                if !id.is_empty() {
-                                                    entry["id"] = json!(id);
-                                                }
-                                            }
-                                            if let Some(name) = tc["function"]["name"].as_str() {
-                                                if !name.is_empty() {
-                                                    entry["function"]["name"] = json!(name);
-                                                }
-                                            }
-                                            if let Some(args) = tc["function"]["arguments"].as_str() {
-                                                let current = entry["function"]["arguments"].as_str().unwrap_or("");
-                                                let merged = format!("{}{}", current, args);
-                                                entry["function"]["arguments"] = json!(merged);
-                                            }
-                                        }
-                                    }
+                                // Emit finish_reason (with accumulated tool_calls if applicable)
+                                if let Some(finish) = json["choices"][0]["finish_reason"].as_str() {
+                                    if !finish.is_empty() && finish != "null" {
+                                        let tool_calls = if finish == "tool_calls" && !tool_calls_map.is_empty() {
+                                            Some(tool_calls_map.iter().map(|(_, v)| ToolCall {
+                                                id: v["id"].as_str().unwrap_or("").to_string(),
+                                                name: v["function"]["name"].as_str().unwrap_or("").to_string(),
+                                                arguments: serde_json::from_str(
+                                                    v["function"]["arguments"].as_str().unwrap_or("{}")
+                                                ).unwrap_or(json!({})),
+                                            }).collect())
+                                        } else {
+                                            None
+                                        };
 
-                                    if let Some(finish) = json["choices"][0]["finish_reason"].as_str() {
-                                        if !finish.is_empty() && finish != "null" {
-                                            let tool_calls = if finish == "tool_calls" && !tool_calls_map.is_empty() {
-                                                Some(tool_calls_map.iter().map(|(_, v)| ToolCall {
-                                                    id: v["id"].as_str().unwrap_or("").to_string(),
-                                                    name: v["function"]["name"].as_str().unwrap_or("").to_string(),
-                                                    arguments: serde_json::from_str(
-                                                        v["function"]["arguments"].as_str().unwrap_or("{}")
-                                                    ).unwrap_or(json!({})),
-                                                }).collect())
-                                            } else {
-                                                None
-                                            };
-
-                                            results.push(Ok(StreamPayload {
-                                                content: None,
-                                                tool_calls,
-                                                finish_reason: Some(finish.to_string()),
-                                            }));
-                                        }
+                                        items.push(Ok(StreamPayload {
+                                            content: None,
+                                            tool_calls,
+                                            finish_reason: Some(finish.to_string()),
+                                        }));
                                     }
                                 }
                             }
                         }
-
-                        if results.is_empty() {
-                            None
-                        } else {
-                            Some(results.remove(0))
-                        }
                     }
-                    Err(e) => Some(Err(AppError::Http(e))),
+
+                    items
                 }
-            }
+                Err(e) => vec![Err(AppError::Http(e))],
+            };
+
+            futures::stream::iter(items)
         });
 
         Ok(Box::pin(parsed))

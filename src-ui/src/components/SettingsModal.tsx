@@ -18,6 +18,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [, setEditApiKey] = useState('');
   const [, setEditBaseUrl] = useState('');
@@ -44,6 +45,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setSelectedProvider(provider.id);
     setIsEditing(false);
     setShowAddForm(false);
+    setSaveError(null);
     if (provider.configured) {
       setEditApiKey(provider.configured ? '••••••••' : '');
       setEditBaseUrl(provider.base_url || '');
@@ -59,22 +61,33 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       baseUrl: newBaseUrl || undefined,
       enabledModels: newModels.length > 0 ? newModels : undefined,
     });
+    // 显式刷新以确保 UI 立即反映最新状态
+    await fetchProviders();
+    await fetchModels();
     setIsEditing(false);
     setNewApiKey('');
   };
 
   const handleSetupProvider = async () => {
     if (!selectedProvider || newModels.length === 0) return;
-    await setupProvider({
-      provider: selectedProvider,
-      apiKey: newApiKey,
-      baseUrl: newBaseUrl || undefined,
-      enabledModels: newModels,
-    });
-    setShowAddForm(false);
-    setNewApiKey('');
-    setNewBaseUrl('');
-    setNewModels([]);
+    setSaveError(null);
+    try {
+      await setupProvider({
+        provider: selectedProvider,
+        apiKey: newApiKey,
+        baseUrl: newBaseUrl || undefined,
+        enabledModels: newModels,
+      });
+      // 显式刷新以确保 UI 立即反映最新状态
+      await fetchProviders();
+      await fetchModels();
+      setShowAddForm(false);
+      setNewApiKey('');
+      setNewBaseUrl('');
+      setNewModels([]);
+    } catch (err) {
+      setSaveError(String(err));
+    }
   };
 
   const handleStartSetup = (provider: typeof providers[0]) => {
@@ -88,7 +101,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   const toggleModel = (modelId: string, checked: boolean) => {
     if (isEditing) {
-      setEditModels(prev => checked ? [...prev, modelId] : prev.filter(m => m !== modelId));
+      setNewModels(prev => checked ? [...prev, modelId] : prev.filter(m => m !== modelId));
     } else if (showAddForm) {
       setNewModels(prev => checked ? [...prev, modelId] : prev.filter(m => m !== modelId));
     }
@@ -120,23 +133,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl w-[800px] max-h-[85vh] flex flex-col shadow-2xl">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-900">设置</h2>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl w-[800px] max-h-[85vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-700">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">设置</h2>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
             <X size={20} />
           </button>
         </div>
 
-        <div className="flex border-b border-gray-100 px-5">
+        <div className="flex border-b border-gray-100 dark:border-gray-700 px-5">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all border-b-2 ${
                 activeTab === tab.id
-                  ? 'text-purple-600 border-purple-600'
-                  : 'text-gray-500 border-transparent hover:text-gray-700'
+                  ? 'text-purple-600 dark:text-purple-400 border-purple-600 dark:border-purple-400'
+                  : 'text-gray-500 dark:text-gray-400 border-transparent hover:text-gray-700 dark:hover:text-gray-300'
               }`}
             >
               {tab.icon}
@@ -145,7 +158,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 overflow-y-auto p-5 dark:text-gray-300">
           {activeTab === 'providers' && (
             <>
               <div className="mb-4 p-4 bg-purple-50 border border-purple-100 rounded-xl">
@@ -321,6 +334,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       </div>
                     </div>
 
+                    {saveError && (
+                      <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                        {saveError}
+                      </div>
+                    )}
                     <div className="flex gap-2 pt-2">
                       <button
                         onClick={handleSetupProvider}
@@ -333,6 +351,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         onClick={() => {
                           setShowAddForm(false);
                           setSelectedProvider(null);
+                          setSaveError(null);
                         }}
                         className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm transition-colors"
                       >

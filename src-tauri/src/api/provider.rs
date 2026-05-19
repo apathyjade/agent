@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::api::types::{ChatRequest, ChatResponse, StreamPayload};
 use crate::config::{AppConfig, ModelConfig, ModelProvider};
 use crate::error::{AppError, Result};
+use crate::keychain;
 
 use super::openai::OpenAIProvider;
 use super::anthropic::AnthropicProvider;
@@ -35,14 +36,20 @@ impl ProviderRegistry {
                 continue;
             }
 
-            let has_key = !model.api_key.is_empty();
+            // Resolve API key: keychain first, config fallback
+            let resolved_key = keychain::resolve_api_key(&model.id, &model.api_key);
+            let has_key = !resolved_key.is_empty();
             let needs_key = Self::requires_api_key(&model.provider);
 
             if model.is_compatible_with_openai_api() && (!needs_key || has_key) {
-                let provider = OpenAIProvider::new(model.clone());
+                let mut cfg = model.clone();
+                cfg.api_key = resolved_key;
+                let provider = OpenAIProvider::new(cfg);
                 openai_compatible.insert(model.id.clone(), Arc::new(provider));
             } else if matches!(model.provider, ModelProvider::Anthropic) && has_key {
-                let provider = AnthropicProvider::new(model.clone());
+                let mut cfg = model.clone();
+                cfg.api_key = resolved_key;
+                let provider = AnthropicProvider::new(cfg);
                 anthropic.insert(model.id.clone(), Arc::new(provider));
             }
         }
@@ -50,6 +57,12 @@ impl ProviderRegistry {
         Self {
             openai_compatible,
             anthropic,
+        }
+    }
+
+    pub fn resolve_api_key_in_model(model: &mut ModelConfig) {
+        if model.api_key.is_empty() {
+            model.api_key = keychain::resolve_api_key(&model.id, "");
         }
     }
 
@@ -75,14 +88,19 @@ impl ProviderRegistry {
             return;
         }
 
-        let has_key = !model.api_key.is_empty();
+        let resolved_key = keychain::resolve_api_key(&model.id, &model.api_key);
+        let has_key = !resolved_key.is_empty();
         let needs_key = Self::requires_api_key(&model.provider);
 
         if model.is_compatible_with_openai_api() && (!needs_key || has_key) {
-            let provider = OpenAIProvider::new(model.clone());
+            let mut cfg = model.clone();
+            cfg.api_key = resolved_key;
+            let provider = OpenAIProvider::new(cfg);
             self.openai_compatible.insert(model.id.clone(), Arc::new(provider));
         } else if matches!(model.provider, ModelProvider::Anthropic) && has_key {
-            let provider = AnthropicProvider::new(model.clone());
+            let mut cfg = model.clone();
+            cfg.api_key = resolved_key;
+            let provider = AnthropicProvider::new(cfg);
             self.anthropic.insert(model.id.clone(), Arc::new(provider));
         }
     }
@@ -90,5 +108,15 @@ impl ProviderRegistry {
     pub fn remove_model(&mut self, model_id: &str) {
         self.openai_compatible.remove(model_id);
         self.anthropic.remove(model_id);
+    }
+
+    pub fn is_registered(&self, model_id: &str) -> bool {
+        self.openai_compatible.contains_key(model_id) || self.anthropic.contains_key(model_id)
+    }
+
+    pub fn get_registered_model_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.openai_compatible.keys().cloned().collect();
+        ids.extend(self.anthropic.keys().cloned());
+        ids
     }
 }

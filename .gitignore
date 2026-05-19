@@ -25,3 +25,10 @@ src-tauri/target
 openspec/
 src-ui/capture_errors.mjs
 src-ui/*.png
+
+# Lint / format cache
+src-ui/.eslintcache
+
+# Test artifacts
+src-ui/test-results/
+src-ui/playwright-report/

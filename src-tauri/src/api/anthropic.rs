@@ -26,6 +26,54 @@ impl AnthropicProvider {
     fn api_url(&self) -> String {
         self.model.effective_base_url()
     }
+
+    /// Build an Anthropic-format message from our internal Message type.
+    /// Anthropic uses content blocks (array) for tool interactions,
+    /// and a top-level `system` field instead of a system message in the array.
+    fn to_anthropic_msg(msg: &Message) -> serde_json::Value {
+        let role_str = match msg.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            // Tool results are sent to Anthropic as user messages with content blocks
+            MessageRole::Tool => "user",
+            MessageRole::System => "user",
+        };
+
+        match msg.role {
+            MessageRole::Tool => {
+                // Anthropic expects tool results as content blocks
+                let content: Vec<serde_json::Value> = vec![json!({
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id.as_deref().unwrap_or(""),
+                    "content": msg.content,
+                })];
+                json!({ "role": role_str, "content": content })
+            }
+            MessageRole::Assistant if msg.tool_calls.is_some() => {
+                // Assistant messages with tool calls use content blocks
+                // First block is text content (may be empty), rest are tool_use blocks
+                let mut content: Vec<serde_json::Value> = vec![];
+                if !msg.content.is_empty() {
+                    content.push(json!({ "type": "text", "text": msg.content }));
+                }
+                if let Some(ref calls) = msg.tool_calls {
+                    for tc in calls {
+                        content.push(json!({
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments,
+                        }));
+                    }
+                }
+                json!({ "role": role_str, "content": content })
+            }
+            _ => {
+                // Plain text messages: use string content for simplicity
+                json!({ "role": role_str, "content": msg.content })
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -41,18 +89,7 @@ impl LLMProvider for AnthropicProvider {
             .messages
             .iter()
             .filter(|m| !matches!(m.role, MessageRole::System))
-            .map(|m| {
-                let role = match m.role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                    MessageRole::Tool => "user",
-                    MessageRole::System => "user",
-                };
-                json!({
-                    "role": role,
-                    "content": m.content,
-                })
-            })
+            .map(Self::to_anthropic_msg)
             .collect();
 
         let mut body = json!({
@@ -132,18 +169,7 @@ impl LLMProvider for AnthropicProvider {
             .messages
             .iter()
             .filter(|m| !matches!(m.role, MessageRole::System))
-            .map(|m| {
-                let role = match m.role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                    MessageRole::Tool => "user",
-                    MessageRole::System => "user",
-                };
-                json!({
-                    "role": role,
-                    "content": m.content,
-                })
-            })
+            .map(Self::to_anthropic_msg)
             .collect();
 
         let mut body = json!({

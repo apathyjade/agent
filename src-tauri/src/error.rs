@@ -38,3 +38,30 @@ impl serde::Serialize for AppError {
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
+
+impl AppError {
+    /// Returns true if the error is retryable (network issues, server errors).
+    /// Returns false for auth failures, invalid input, and other non-retryable errors.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            AppError::Http(e) => {
+                // Retry on timeout, connection reset, or server errors (5xx)
+                if e.is_timeout() || e.is_connect() || e.is_request() {
+                    return true;
+                }
+                if let Some(status) = e.status() {
+                    return status.as_u16() >= 500;
+                }
+                true // network-level errors are retryable
+            }
+            AppError::Io(_) => true,
+            AppError::Provider(_) => false, // auth/validation errors should not retry
+            AppError::Database(_) => false,
+            AppError::Serialization(_) => false,
+            AppError::Config(_) => false,
+            AppError::NotFound(_) => false,
+            AppError::InvalidInput(_) => false,
+            AppError::Tool(_) => false,
+        }
+    }
+}

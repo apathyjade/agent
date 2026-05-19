@@ -1,4 +1,5 @@
 ﻿use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
@@ -11,6 +12,7 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, input: Value) -> Result<Value>;
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,

@@ -13,7 +13,7 @@ const StreamingMessage = memo(function StreamingMessage({ content }: { content: 
         <Sparkles size={16} className="text-white" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="rounded-2xl px-4 py-3 bg-white border border-gray-100 shadow-sm">
+        <div className="rounded-2xl px-4 py-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm">
           <div className="prose prose-sm max-w-none prose-p:my-2 prose-pre:my-0 prose-pre:p-0 prose-pre:border-0 prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-pink-600 prose-code:font-mono prose-code:text-sm prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-hr:my-3 prose-blockquote:border-l-purple-400 prose-blockquote:text-gray-500 prose-blockquote:not-italic prose-a:text-purple-600">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
             <span className="inline-block w-2 h-4 ml-1 bg-purple-500 animate-pulse" />
@@ -131,24 +131,24 @@ export function ChatArea() {
   if (!currentConversation) return null;
 
   return (
-    <div className="flex-1 flex flex-col bg-white min-h-0">
-      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-white/80 backdrop-blur-sm sticky top-0 z-10">
+    <div className="flex-1 flex flex-col bg-white dark:bg-gray-900 min-h-0 transition-colors">
+      <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-sm">
             <Sparkles size={20} className="text-white" />
           </div>
           <div>
-            <h2 className="text-base font-semibold text-gray-900">{currentConversation.title}</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{currentConversation.title}</h2>
             <div className="relative model-picker">
               <button
                 onClick={(e) => { e.stopPropagation(); setShowModelPicker(!showModelPicker); }}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-purple-600 transition-colors"
+                className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
               >
                 {models.find(m => m.id === currentConversation.model_id)?.display_name || currentConversation.model_id}
                 <ChevronDown size={12} />
               </button>
               {showModelPicker && (
-                <div className="absolute left-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1 min-w-[200px] max-h-48 overflow-y-auto">
+                <div className="absolute left-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-20 py-1 min-w-[200px] max-h-48 overflow-y-auto">
                   {models.filter(m => m.enabled).map((model) => (
                     <button
                       key={model.id}
@@ -156,20 +156,20 @@ export function ChatArea() {
                         await updateConversationModel(currentConversation.id, model.id);
                         setShowModelPicker(false);
                       }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-purple-50 transition-colors ${
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors ${
                         currentConversation.model_id === model.id
-                          ? 'text-purple-600 bg-purple-50 font-medium'
-                          : 'text-gray-700'
+                          ? 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 font-medium'
+                          : 'text-gray-700 dark:text-gray-300'
                       }`}
                     >
                       <div className="flex items-center justify-between">
                         <span>{model.display_name}</span>
-                        <span className="text-xs text-gray-400">{model.provider}</span>
+                        <span className="text-xs text-gray-400 dark:text-gray-500">{model.provider}</span>
                       </div>
                     </button>
                   ))}
                   {models.filter(m => m.enabled).length === 0 && (
-                    <div className="px-3 py-2 text-sm text-gray-400">没有可用模型</div>
+                    <div className="px-3 py-2 text-sm text-gray-400 dark:text-gray-500">没有可用模型</div>
                   )}
                 </div>
               )}
@@ -178,7 +178,7 @@ export function ChatArea() {
         </div>
         <div className="flex items-center gap-3">
           {currentConversation.system_prompt && (
-            <span className="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-lg">提示词已加载</span>
+            <span className="px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs rounded-lg">提示词已加载</span>
           )}
           {isStreaming && (
             <div className="flex items-center gap-2 text-purple-600 text-sm">
@@ -210,24 +210,28 @@ export function ChatArea() {
           )}
 
           {loading && !isStreaming && (
-            <div className="flex items-center gap-3 text-gray-400 py-4">
+            <div className="flex items-center gap-3 text-gray-400 dark:text-gray-500 py-4">
               <Loader2 size={18} className="animate-spin" />
               <span className="text-sm">思考中...</span>
             </div>
           )}
 
           {error && (
-            <div className="p-4 bg-red-50 border border-red-100 rounded-xl">
-              <div className="flex items-center gap-2 text-red-600 text-sm">
-                <XCircle size={16} />
-                <span>{error}</span>
+            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-xl" role="alert">
+              <div className="flex items-start gap-2 text-red-600 dark:text-red-400 text-sm">
+                <XCircle size={16} className="flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span>{error}</span>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      onClick={handleRetry}
+                      className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 font-medium"
+                    >
+                      重试
+                    </button>
+                  </div>
+                </div>
               </div>
-              <button
-                onClick={handleRetry}
-                className="mt-2 text-xs text-red-500 hover:text-red-700 font-medium"
-              >
-                重试
-              </button>
             </div>
           )}
           <div ref={messagesEndRef} />
@@ -240,23 +244,23 @@ export function ChatArea() {
               setIsNearBottom(true);
               setShowScrollButton(false);
             }}
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 p-2 rounded-full bg-white border border-gray-200 shadow-lg hover:bg-gray-50 transition-all animate-in fade-in"
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 p-2 rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-all animate-in fade-in"
           >
-            <ArrowDown size={18} className="text-gray-600" />
+            <ArrowDown size={18} className="text-gray-600 dark:text-gray-400" />
           </button>
         )}
       </div>
 
-      <div className="border-t border-gray-100 bg-white p-4">
+      <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 transition-colors">
         <div className="max-w-3xl mx-auto">
-          <div className="relative bg-gray-50 rounded-2xl border border-gray-200 focus-within:border-purple-400 focus-within:ring-2 focus-within:ring-purple-100 transition-all">
+          <div className="relative bg-gray-50 dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 focus-within:border-purple-400 dark:focus-within:border-purple-500 focus-within:ring-2 focus-within:ring-purple-100 dark:focus-within:ring-purple-900/50 transition-all">
             <textarea
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="输入消息... (Shift+Enter 换行)"
-              className="w-full bg-transparent px-4 py-3 pr-14 resize-none focus:outline-none min-h-[56px] max-h-[200px] text-sm"
+              className="w-full bg-transparent px-4 py-3 pr-14 resize-none focus:outline-none min-h-[56px] max-h-[200px] text-sm dark:text-gray-100 dark:placeholder-gray-400"
               rows={1}
               disabled={isStreaming}
             />
@@ -268,7 +272,7 @@ export function ChatArea() {
               {isStreaming ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-2 text-center">AI 可能会产生不准确的信息，请验证重要信息</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-2 text-center">AI 可能会产生不准确的信息，请验证重要信息</p>
         </div>
       </div>
     </div>
@@ -277,9 +281,9 @@ export function ChatArea() {
 
 function ToolCallIndicator({ toolCall }: { toolCall: { id: string; name: string; status: string; result?: string } }) {
   return (
-    <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-xl text-sm border border-gray-100">
+    <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-xl text-sm border border-gray-100 dark:border-gray-700">
       <Wrench size={14} className="text-purple-500" />
-      <span className="text-gray-700 capitalize">{toolCall.name.replace('_', ' ')}</span>
+      <span className="text-gray-700 dark:text-gray-300 capitalize">{toolCall.name.replace('_', ' ')}</span>
       {toolCall.status === 'calling' && (
         <Loader2 size={14} className="animate-spin text-purple-500" />
       )}

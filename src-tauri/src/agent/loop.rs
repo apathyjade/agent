@@ -53,6 +53,11 @@ impl AgentLoop {
         self
     }
 
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
     pub async fn run(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool) -> Result<ChatResponse> {
         let _provider = self.providers.lock().await.get(model_id)?;
         let tool_registry = self.tools.lock().await;
@@ -178,8 +183,34 @@ impl AgentLoop {
     }
 
     fn estimate_tokens(content: &str) -> usize {
-        let chars = content.chars().count();
-        (chars as f64 / 4.0).ceil() as usize
+        let mut cjk_chars: usize = 0;
+        let mut ascii_chars: usize = 0;
+        let mut other_chars: usize = 0;
+
+        for ch in content.chars() {
+            if (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
+                || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
+                || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
+                || (ch >= '\u{2F800}' && ch <= '\u{2FA1F}')
+            {
+                cjk_chars += 1;
+            } else if ch.is_ascii() {
+                ascii_chars += 1;
+            } else {
+                other_chars += 1;
+            }
+        }
+
+        // CJK chars: ~2 tokens each (safer overestimate)
+        // ASCII: ~0.25 tokens each (4 chars ≈ 1 token)
+        // Other (emoji, etc.): ~1 token each
+        let cjk_tokens = cjk_chars * 2;
+        let ascii_tokens = ascii_chars.div_ceil(4);
+        let other_tokens = other_chars;
+
+        // Ensure at least 1 token for non-empty content
+        let total = cjk_tokens + ascii_tokens + other_tokens;
+        if total == 0 && !content.is_empty() { 1 } else { total }
     }
 
     async fn retry_with_backoff(&self, request: &ChatRequest, max_retries: u32) -> Result<ChatResponse> {
@@ -194,6 +225,10 @@ impl AgentLoop {
             match provider.chat(request.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
+                    // Don't retry non-retryable errors (auth, invalid input, etc.)
+                    if !e.is_retryable() {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                     if attempt < max_retries - 1 {
                         let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt));

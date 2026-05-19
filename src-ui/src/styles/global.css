@@ -6,9 +6,15 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: light dark;
+  color-scheme: light;
   color: #1a1a2e;
   background-color: #ffffff;
+}
+
+.dark {
+  color-scheme: dark;
+  color: #e2e8f0;
+  background-color: #0f172a;
 }
 
 body {
@@ -22,6 +28,51 @@ body {
 #root {
   width: 100vw;
   height: 100vh;
+}
+
+/* Dark mode base overrides */
+.dark .prose {
+  color: #cbd5e1;
+}
+
+.dark .prose p,
+.dark .prose li,
+.dark .prose ul,
+.dark .prose ol {
+  color: #cbd5e1;
+}
+
+.dark .prose strong {
+  color: #f1f5f9;
+}
+
+.dark .prose h1,
+.dark .prose h2,
+.dark .prose h3,
+.dark .prose h4 {
+  color: #f1f5f9;
+}
+
+.dark .prose code {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0abfc;
+}
+
+.dark .prose pre {
+  background: #1e293b;
+}
+
+.dark .prose blockquote {
+  color: #94a3b8;
+  border-left-color: #7c3aed;
+}
+
+.dark .prose a {
+  color: #a78bfa;
+}
+
+.dark .prose hr {
+  border-color: #334155;
 }
 
 .prose {

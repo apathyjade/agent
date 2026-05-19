@@ -25,14 +25,14 @@ export function WelcomePage() {
   ];
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-purple-50/50 to-white">
+    <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-purple-50/50 to-white dark:from-gray-800/50 dark:to-gray-900">
       <div className="max-w-2xl w-full text-center">
         <div className="mb-8">
           <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-lg">
             <Sparkles size={32} className="text-white" />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">你好，我是 Agent</h1>
-          <p className="text-gray-500">你的 AI 智能助手，随时为你提供帮助</p>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">你好，我是 Agent</h1>
+          <p className="text-gray-500 dark:text-gray-400">你的 AI 智能助手，随时为你提供帮助</p>
         </div>
 
         <div className="relative mb-8">
@@ -46,7 +46,7 @@ export function WelcomePage() {
               }
             }}
             placeholder="有什么可以帮你的？"
-            className="w-full bg-white border border-gray-200 rounded-2xl px-6 py-4 pr-14 text-base resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm min-h-[60px] max-h-[200px]"
+            className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-6 py-4 pr-14 text-base resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm min-h-[60px] max-h-[200px] dark:text-gray-100 dark:placeholder-gray-400"
             rows={1}
           />
           <button
@@ -65,14 +65,14 @@ export function WelcomePage() {
             <button
               key={feature.title}
               onClick={() => handleQuickStart(feature.desc)}
-              className="flex items-center gap-3 p-4 bg-white border border-gray-100 rounded-xl hover:border-purple-200 hover:shadow-md transition-all text-left group"
+              className="flex items-center gap-3 p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-purple-200 dark:hover:border-purple-700 hover:shadow-md transition-all text-left group"
             >
-              <div className="text-gray-400 group-hover:text-purple-600 transition-colors">
+              <div className="text-gray-400 dark:text-gray-500 group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
                 {feature.icon}
               </div>
               <div>
-                <h3 className="text-sm font-medium text-gray-900">{feature.title}</h3>
-                <p className="text-xs text-gray-500">{feature.desc}</p>
+                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">{feature.title}</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">{feature.desc}</p>
               </div>
             </button>
           ))}

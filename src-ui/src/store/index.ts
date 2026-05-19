@@ -1,255 +1,31 @@
 ﻿import { create } from 'zustand';
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ModelConfig } from '../types';
+import type { StreamChunk, Message } from '../types';
 import * as api from '../api/tauri';
 
-interface ToolCallState {
-  id: string;
-  name: string;
-  status: string;
-  result?: string;
-}
+import { type UISlice, createUISlice } from './uiSlice';
+import { type ConversationSlice, createConversationSlice } from './conversationSlice';
+import { type ModelSlice, createModelSlice } from './modelSlice';
+import { type ToolSlice, createToolSlice } from './toolSlice';
+import { type PromptSlice, createPromptSlice } from './promptSlice';
 
-interface AppState {
-  conversations: Conversation[];
-  currentConversation: Conversation | null;
-  messages: Message[];
-  providers: ProviderStatus[];
-  models: ModelConfig[];
-  defaultModel: string | null;
-  tools: ToolInfo[];
-  systemPrompts: SystemPrompt[];
-  loading: boolean;
-  error: string | null;
-  streamingContent: string;
-  isStreaming: boolean;
-  activeToolCalls: ToolCallState[];
+export type { Toast } from './uiSlice';
 
-  fetchConversations: () => Promise<void>;
-  fetchModels: () => Promise<void>;
-  fetchProviders: () => Promise<void>;
-  setupProvider: (params: Parameters<typeof api.setupProvider>[0]) => Promise<void>;
-  updateProviderConfig: (params: Parameters<typeof api.updateProviderConfig>[0]) => Promise<void>;
-  removeProvider: (provider: string) => Promise<void>;
-  setDefaultModel: (model: string) => Promise<void>;
-  createConversation: (title: string, modelId: string, systemPrompt?: string) => Promise<void>;
-  selectConversation: (id: string) => Promise<void>;
-  deleteConversation: (id: string) => Promise<void>;
-  updateConversationTitle: (id: string, title: string) => Promise<void>;
-  updateConversationModel: (id: string, modelId: string) => Promise<void>;
-  clearConversation: () => Promise<void>;
-  sendMessage: (content: string) => Promise<void>;
+// Cross-slice method for streaming (spans messages + UI state)
+export interface StreamSlice {
   sendMessageStream: (content: string) => Promise<void>;
-  fetchTools: () => Promise<void>;
-  toggleTool: (name: string, enabled: boolean) => Promise<void>;
-  fetchSystemPrompts: () => Promise<void>;
-  createSystemPrompt: (name: string, content: string, isDefault: boolean) => Promise<void>;
-  deleteSystemPrompt: (id: string) => Promise<void>;
-  setDefaultSystemPrompt: (id: string) => Promise<void>;
-  setError: (error: string | null) => void;
 }
 
-export const useStore = create<AppState>((set, get) => ({
-  conversations: [],
-  currentConversation: null,
-  messages: [],
-  providers: [],
-  models: [],
-  defaultModel: null,
-  tools: [],
-  systemPrompts: [],
-  loading: false,
-  error: null,
-  streamingContent: '',
-  isStreaming: false,
-  activeToolCalls: [],
+export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & StreamSlice;
 
-  fetchConversations: async () => {
-    set({ loading: true, error: null });
-    try {
-      const conversations = await api.listConversations();
-      set({ conversations, loading: false });
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
-  },
+export const useStore = create<AppState>()((set, get, store) => ({
+  ...createUISlice(set, get, store),
+  ...createConversationSlice(set, get, store),
+  ...createModelSlice(set, get, store),
+  ...createToolSlice(set, get, store),
+  ...createPromptSlice(set, get, store),
 
-  fetchModels: async () => {
-    try {
-      const models = await api.getModels();
-      const defaultModel = models.find(m => m.is_default)?.id ?? models.find(m => m.enabled)?.id ?? null;
-      set({ models, defaultModel });
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  fetchProviders: async () => {
-    try {
-      const providers = await api.listProviders();
-      set({ providers });
-    } catch (err) {
-      // provider commands not available in current backend; ignore
-    }
-  },
-
-  setupProvider: async (params) => {
-    try {
-      await api.setupProvider(params);
-      await get().fetchProviders();
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  updateProviderConfig: async (params) => {
-    try {
-      await api.updateProviderConfig(params);
-      await get().fetchProviders();
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  removeProvider: async (provider) => {
-    try {
-      await api.removeProvider(provider);
-      await get().fetchProviders();
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  setDefaultModel: async (model) => {
-    try {
-      await api.setDefaultModel(model);
-      set((state) => ({
-        defaultModel: model,
-        models: state.models.map((m) => ({
-          ...m,
-          is_default: m.id === model,
-        })),
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  createConversation: async (title, modelId, systemPrompt) => {
-    set({ loading: true, error: null });
-    try {
-      const conv = await api.createConversation(title, modelId, systemPrompt);
-      set((state) => ({
-        conversations: [conv, ...state.conversations],
-        currentConversation: conv,
-        messages: [],
-        loading: false,
-      }));
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
-  },
-
-  selectConversation: async (id) => {
-    set({ loading: true, error: null });
-    try {
-      const conv = await api.getConversation(id);
-      if (conv) {
-        const messages = await api.getMessages(id);
-        set({ currentConversation: conv, messages, loading: false });
-      }
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
-  },
-
-  deleteConversation: async (id) => {
-    set({ loading: true, error: null });
-    try {
-      await api.deleteConversation(id);
-      set((state) => ({
-        conversations: state.conversations.filter((c) => c.id !== id),
-        currentConversation: state.currentConversation?.id === id ? null : state.currentConversation,
-        messages: state.currentConversation?.id === id ? [] : state.messages,
-        loading: false,
-      }));
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
-  },
-
-  updateConversationTitle: async (id, title) => {
-    try {
-      await api.updateConversationTitle(id, title);
-      set((state) => ({
-        conversations: state.conversations.map((c) =>
-          c.id === id ? { ...c, title } : c
-        ),
-        currentConversation: state.currentConversation?.id === id
-          ? { ...state.currentConversation, title }
-          : state.currentConversation,
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  updateConversationModel: async (id, modelId) => {
-    try {
-      await api.updateConversationModel(id, modelId);
-      set((state) => ({
-        conversations: state.conversations.map((c) =>
-          c.id === id ? { ...c, model_id: modelId } : c
-        ),
-        currentConversation: state.currentConversation?.id === id
-          ? { ...state.currentConversation, model_id: modelId }
-          : state.currentConversation,
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  clearConversation: async () => {
-    const { currentConversation } = get();
-    if (!currentConversation) return;
-    try {
-      await api.clearConversation(currentConversation.id);
-      set({ messages: [] });
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  sendMessage: async (content) => {
-    const { currentConversation } = get();
-    if (!currentConversation) return;
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      conversation_id: currentConversation.id,
-      role: 'user',
-      content,
-      created_at: new Date().toISOString(),
-    };
-
-    set((state) => ({
-      messages: [...state.messages, userMessage],
-      loading: true,
-      error: null,
-    }));
-
-    try {
-      const assistantMsg = await api.sendMessage(currentConversation.id, content);
-      set((state) => ({
-        messages: [...state.messages, assistantMsg],
-        loading: false,
-      }));
-    } catch (err) {
-      set({ error: String(err), loading: false });
-    }
-  },
-
-  sendMessageStream: async (content) => {
+  // sendMessageStream spans both conversation and UI state
+  sendMessageStream: async (content: string) => {
     const { currentConversation } = get();
     if (!currentConversation) return;
 
@@ -284,12 +60,12 @@ export const useStore = create<AppState>((set, get) => ({
             set({ activeToolCalls: chunk.tool_calls });
           }
           if (chunk.done) {
-            const { streamingContent } = get();
+            const s = get();
             const assistantMsg: Message = {
               id: Date.now().toString(),
               conversation_id: currentConversation.id,
               role: 'assistant',
-              content: streamingContent,
+              content: s.streamingContent,
               created_at: new Date().toISOString(),
             };
             set((state) => ({
@@ -297,7 +73,6 @@ export const useStore = create<AppState>((set, get) => ({
               loading: false,
               isStreaming: false,
               streamingContent: '',
-              activeToolCalls: [],
             }));
           }
         }
@@ -306,73 +81,4 @@ export const useStore = create<AppState>((set, get) => ({
       set({ error: String(err), loading: false, isStreaming: false });
     }
   },
-
-  fetchTools: async () => {
-    try {
-      const tools = await api.listTools();
-      set({ tools });
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  toggleTool: async (name, enabled) => {
-    try {
-      await api.toggleTool(name, enabled);
-      set((state) => ({
-        tools: state.tools.map((t) =>
-          t.name === name ? { ...t, enabled } : t
-        ),
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  fetchSystemPrompts: async () => {
-    try {
-      const prompts = await api.listSystemPrompts();
-      set({ systemPrompts: prompts });
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  createSystemPrompt: async (name, content, isDefault) => {
-    try {
-      const prompt = await api.createSystemPrompt(name, content, isDefault);
-      set((state) => ({
-        systemPrompts: [prompt, ...state.systemPrompts],
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  deleteSystemPrompt: async (id) => {
-    try {
-      await api.deleteSystemPrompt(id);
-      set((state) => ({
-        systemPrompts: state.systemPrompts.filter((p) => p.id !== id),
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  setDefaultSystemPrompt: async (id) => {
-    try {
-      await api.setDefaultSystemPrompt(id);
-      set((state) => ({
-        systemPrompts: state.systemPrompts.map((p) => ({
-          ...p,
-          is_default: p.id === id,
-        })),
-      }));
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  setError: (error) => set({ error }),
 }));

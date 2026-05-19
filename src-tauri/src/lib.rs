@@ -4,6 +4,7 @@ pub mod commands_provider;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod keychain;
 pub mod state;
 pub mod tools;
 pub mod agent;

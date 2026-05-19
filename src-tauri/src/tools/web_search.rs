@@ -1,5 +1,6 @@
 ﻿use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::error::{AppError, Result};
 
@@ -33,7 +34,7 @@ impl Tool for WebSearchTool {
                 },
                 "num_results": {
                     "type": "integer",
-                    "description": "Number of results to return (default: 5)"
+                    "description": "Number of results to return (default: 5, max: 10)"
                 }
             },
             "required": ["query"]
@@ -45,9 +46,16 @@ impl Tool for WebSearchTool {
             .as_str()
             .ok_or_else(|| AppError::InvalidInput("Missing 'query' parameter".to_string()))?;
 
-        let num_results = input["num_results"].as_u64().unwrap_or(5) as usize;
+        let num_results = input["num_results"]
+            .as_u64()
+            .unwrap_or(5)
+            .min(10) as usize;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| AppError::Tool(format!("Failed to create HTTP client: {}", e)))?;
+
         let url = format!(
             "https://html.duckduckgo.com/html/?q={}",
             urlencoding::encode(query)
@@ -56,9 +64,17 @@ impl Tool for WebSearchTool {
         let response = client
             .get(&url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header("Accept", "text/html,application/xhtml+xml")
             .send()
             .await
             .map_err(|e| AppError::Tool(format!("Search request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Tool(format!(
+                "Search engine returned status {}",
+                response.status()
+            )));
+        }
 
         let html = response
             .text()
@@ -78,69 +94,71 @@ impl Tool for WebSearchTool {
 impl WebSearchTool {
     fn parse_results(html: &str, max_results: usize) -> Vec<Value> {
         let mut results = Vec::new();
-        let mut lines = html.lines();
 
-        while let Some(line) = lines.next() {
-            if line.contains("result__a") {
-                if let Some(url) = Self::extract_href(line) {
-                    if let Some(title) = Self::extract_text_between(line, ">", "</a>") {
-                        let mut snippet = String::new();
-                        for next_line in lines.by_ref() {
-                            if next_line.contains("result__snippet") {
-                                snippet = Self::extract_text_between(next_line, ">", "</span>")
-                                    .unwrap_or_default();
-                                break;
-                            }
-                        }
+        // Split by result containers — DuckDuckGo uses <div class="result">
+        for block in html.split(r#"class="result"#).skip(1) {
+            if results.len() >= max_results {
+                break;
+            }
 
-                        results.push(json!({
-                            "title": title,
-                            "url": url,
-                            "snippet": snippet
-                        }));
+            let title = Self::extract_between(block, r#"result__a"#, "</a>")
+                .and_then(|s| Self::strip_html_tags(&s));
+            let url = Self::extract_between(block, r#"href=""#, r#""#)
+                .map(|s| Self::resolve_url(&s));
+            let snippet = Self::extract_between(block, r#"result__snippet"#, "</span>")
+                .and_then(|s| Self::strip_html_tags(&s));
 
-                        if results.len() >= max_results {
-                            break;
-                        }
-                    }
-                }
+            if let (Some(title), Some(url)) = (title, url) {
+                results.push(json!({
+                    "title": title.trim(),
+                    "url": url,
+                    "snippet": snippet.unwrap_or_default().trim()
+                }));
             }
         }
 
         results
     }
 
-    fn extract_href(line: &str) -> Option<String> {
-        let start = line.find("href=\"")?;
-        let rest = &line[start + 6..];
-        let end = rest.find('"')?;
-        let url = &rest[..end];
+    /// Extract text between two markers after a known anchor.
+    fn extract_between<'a>(text: &'a str, anchor: &str, end_marker: &str) -> Option<String> {
+        let start = text.find(anchor)?;
+        let after_anchor = &text[start + anchor.len()..];
+        // Skip past closing `>` of the anchor tag
+        let tag_end = after_anchor.find('>')? + 1;
+        let content = &after_anchor[tag_end..];
+        let end = content.find(end_marker)?;
+        Some(content[..end].to_string())
+    }
 
-        if url.starts_with("//duckduckgo.com") || url.starts_with("/l/") {
-            if let Some(uddg) = url.find("uddg=") {
-                let encoded = &url[uddg + 5..];
-                return Some(urlencoding::decode(encoded).ok()?.to_string());
+    /// Strip HTML tags from a string.
+    fn strip_html_tags(text: &str) -> Option<String> {
+        let mut result = String::with_capacity(text.len());
+        let mut in_tag = false;
+        for c in text.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => result.push(c),
+                _ => {}
             }
         }
-
-        Some(url.to_string())
+        if result.is_empty() { None } else { Some(result) }
     }
 
-    fn extract_text_between(line: &str, start_marker: &str, end_marker: &str) -> Option<String> {
-        let start = line.find(start_marker)? + start_marker.len();
-        let rest = &line[start..];
-        let end = rest.find(end_marker)?;
-        let text = &rest[..end];
-        Some(Self::clean_html(text))
-    }
-
-    fn clean_html(text: &str) -> String {
-        text.replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#x27;", "'")
-            .replace("&nbsp;", " ")
-            .replace("<[^>]*>", "")
+    /// Resolve redirect URLs from DuckDuckGo.
+    fn resolve_url(url: &str) -> String {
+        if let Some(uddg_pos) = url.find("uddg=") {
+            let encoded = &url[uddg_pos + 5..];
+            let end = encoded.find('&').unwrap_or(encoded.len());
+            urlencoding::decode(&encoded[..end])
+                .ok()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| url.to_string())
+        } else if url.starts_with("//") {
+            format!("https:{}", url)
+        } else {
+            url.to_string()
+        }
     }
 }

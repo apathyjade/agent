@@ -27,8 +27,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 const UserMessage = memo(function UserMessage({ message }: MessageBubbleProps) {
   return (
     <div className="flex gap-4 flex-row-reverse group animate-in fade-in slide-in-from-right-4 duration-300">
-      <div className="w-8 h-8 rounded-lg bg-gray-200 flex items-center justify-center flex-shrink-0 shadow-sm group-hover:shadow-md transition-shadow">
-        <User size={16} className="text-gray-500" />
+      <div className="w-8 h-8 rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center flex-shrink-0 shadow-sm group-hover:shadow-md transition-shadow">
+        <User size={16} className="text-gray-500 dark:text-gray-400" />
       </div>
       <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm hover:shadow-md transition-shadow">
         <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
@@ -47,8 +47,8 @@ const AssistantMessage = memo(function AssistantMessage({ message }: MessageBubb
         <Sparkles size={16} className="text-white" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="rounded-2xl px-4 py-3 bg-white border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-          <div className="prose prose-sm max-w-none prose-p:my-2 prose-pre:my-0 prose-pre:p-0 prose-pre:border-0 prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-pink-600 prose-code:font-mono prose-code:text-sm prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-hr:my-3 prose-blockquote:border-l-purple-400 prose-blockquote:text-gray-500 prose-blockquote:not-italic prose-a:text-purple-600 prose-a:no-underline hover:prose-a:underline prose-table:my-2 prose-th:bg-gray-50 prose-td:border prose-td:border-gray-200 prose-img:rounded-lg">
+        <div className="rounded-2xl px-4 py-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
+          <div className="prose prose-sm max-w-none prose-p:my-2 prose-pre:my-0 prose-pre:p-0 prose-pre:border-0 prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-pink-600 prose-code:font-mono prose-code:text-sm prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-hr:my-3 prose-blockquote:border-l-purple-400 prose-blockquote:text-gray-500 prose-blockquote:not-italic prose-a:text-purple-600 prose-a:no-underline hover:prose-a:underline prose-table:my-2 prose-th:bg-gray-50 prose-td:border prose-td:border-gray-200 prose-img:rounded-lg dark:prose-code:bg-gray-700 dark:prose-code:text-pink-300">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -81,7 +81,7 @@ const AssistantMessage = memo(function AssistantMessage({ message }: MessageBubb
           </div>
         </div>
         {message.tokens && (
-          <p className="text-xs text-gray-400 mt-1.5 ml-1">{message.tokens} tokens</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 ml-1">{message.tokens} tokens</p>
         )}
       </div>
     </div>
@@ -91,9 +91,9 @@ const AssistantMessage = memo(function AssistantMessage({ message }: MessageBubb
 const SystemMessage = memo(function SystemMessage({ message }: MessageBubbleProps) {
   return (
     <div className="flex justify-center animate-in fade-in zoom-in-95 duration-300">
-      <div className="flex items-start gap-2 max-w-[70%] px-4 py-2.5 bg-amber-50 border border-amber-100 rounded-xl shadow-sm">
+      <div className="flex items-start gap-2 max-w-[70%] px-4 py-2.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800 rounded-xl shadow-sm">
         <Info size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
-        <div className="text-xs text-amber-800 leading-relaxed whitespace-pre-wrap">
+        <div className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed whitespace-pre-wrap">
           {message.content}
         </div>
       </div>
@@ -114,7 +114,7 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
     <div className="flex gap-4 pl-10 animate-in fade-in duration-300">
       <div className="flex-1 min-w-0">
         <div
-          className="rounded-xl border border-orange-200 bg-orange-50/50 overflow-hidden cursor-pointer hover:bg-orange-50 transition-colors"
+          className="rounded-xl border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-900/10 overflow-hidden cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-colors"
           onClick={() => setExpanded(!expanded)}
         >
           <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700">

@@ -7,14 +7,29 @@ use crate::error::{AppError, Result};
 
 use super::r#trait::Tool;
 
-pub struct FileSystemTool {
-    base_path: PathBuf,
-}
+pub struct FileSystemTool;
 
 impl FileSystemTool {
     pub fn new() -> Self {
-        let base_path = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
-        Self { base_path }
+        Self
+    }
+
+    fn allowed_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home);
+        }
+        if let Some(doc) = dirs::document_dir() {
+            dirs.push(doc);
+        }
+        if let Some(desktop) = dirs::desktop_dir() {
+            dirs.push(desktop);
+        }
+        // Default to current dir as fallback
+        if dirs.is_empty() {
+            dirs.push(PathBuf::from("."));
+        }
+        dirs
     }
 
     fn resolve_path(&self, path: &str) -> Result<PathBuf> {
@@ -22,15 +37,40 @@ impl FileSystemTool {
             if let Some(home) = dirs::home_dir() {
                 home.join(&path[2..])
             } else {
-                self.base_path.join(path)
+                PathBuf::from(path)
             }
         } else {
-            self.base_path.join(path)
+            PathBuf::from(path)
         };
 
-        let canonical = resolved.canonicalize().unwrap_or(resolved);
-        if !canonical.starts_with(&self.base_path) && !canonical.starts_with(dirs::home_dir().unwrap_or_default()) {
-            return Err(AppError::Tool("Access denied: path outside allowed directories".to_string()));
+        // Try to canonicalize, but if the path doesn't exist yet (e.g., for write/mkdir),
+        // resolve using its parent
+        let canonical = match resolved.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                // For non-existent paths, canonicalize the parent and append the filename
+                if let Some(parent) = resolved.parent() {
+                    if let Ok(parent_canonical) = parent.canonicalize() {
+                        parent_canonical.join(
+                            resolved.file_name().unwrap_or_default(),
+                        )
+                    } else {
+                        resolved
+                    }
+                } else {
+                    resolved
+                }
+            }
+        };
+
+        // Check path is within any allowed directory
+        let allowed = Self::allowed_dirs();
+        let is_allowed = allowed.iter().any(|dir| canonical.starts_with(dir));
+        if !is_allowed {
+            return Err(AppError::Tool(format!(
+                "Access denied: path '{}' is outside allowed directories",
+                path
+            )));
         }
 
         Ok(canonical)
