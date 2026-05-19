@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -27,7 +27,7 @@ pub struct AvailableModel {
 #[tauri::command]
 pub async fn list_providers_cmd(state: State<'_, AppState>) -> Result<Vec<ProviderStatus>> {
     let config = state.config.lock().await;
-    let providers = crate::commands::PROVIDER_OPTIONS.iter().map(|(id, name, base_url)| {
+    let providers = crate::commands::PROVIDER_OPTIONS.iter().map(|(id, name, base_url, default_model)| {
         let models: Vec<&ModelConfig> = config.models.iter()
             .filter(|m| m.provider.to_string() == *id)
             .collect();
@@ -35,8 +35,8 @@ pub async fn list_providers_cmd(state: State<'_, AppState>) -> Result<Vec<Provid
         let requires_key = *id != "ollama" && *id != "lmstudio";
         let available_models: Vec<AvailableModel> = if models.is_empty() {
             vec![AvailableModel {
-                id: id.to_string(),
-                name: name.to_string(),
+                id: default_model.to_string(),
+                name: default_model.to_string(),
                 context_window: None,
             }]
         } else {
@@ -50,7 +50,7 @@ pub async fn list_providers_cmd(state: State<'_, AppState>) -> Result<Vec<Provid
         ProviderStatus {
             id: id.to_string(),
             name: name.to_string(),
-            configured: requires_key && has_configured,
+            configured: !requires_key || has_configured,
             base_url: Some(base_url.to_string()),
             enabled_models: models.iter().filter(|m| m.enabled).map(|m| m.id.clone()).collect(),
             available_models,
@@ -71,14 +71,20 @@ pub async fn setup_provider(
     let provider_enum: ModelProvider = provider.parse()
         .map_err(|e: String| AppError::InvalidInput(e))?;
 
+    let default_model = crate::commands::PROVIDER_OPTIONS
+        .iter()
+        .find(|(id, _, _, _)| *id == provider)
+        .map(|(_, _, _, default)| *default)
+        .unwrap_or("");
+
     let mut config = state.config.lock().await;
 
     for model_id in &enabled_models {
         if config.get_model(model_id).is_none() {
             let model = ModelConfig {
                 id: model_id.clone(),
-                name: model_id.clone(),
-                display_name: model_id.clone(),
+                name: default_model.to_string(),
+                display_name: default_model.to_string(),
                 provider: provider_enum.clone(),
                 api_key: api_key.clone(),
                 base_url: base_url.clone(),
@@ -93,7 +99,8 @@ pub async fn setup_provider(
     config.save()?;
 
     let mut providers = state.providers.lock().await;
-    if !api_key.is_empty() {
+    let requires_api_key = provider != "ollama" && provider != "lmstudio";
+    if !requires_api_key || !api_key.is_empty() {
         for model_id in &enabled_models {
             if let Some(cfg) = config.get_model(model_id) {
                 providers.add_model(cfg.clone());
@@ -136,7 +143,11 @@ pub async fn update_provider_config(
         if model.provider.to_string() == provider {
             providers.remove_model(&model.id);
             if model.enabled {
-                providers.add_model(model.clone());
+                let needs_key = model.provider.to_string() != "ollama"
+                    && model.provider.to_string() != "lmstudio";
+                if !needs_key || !api_key.as_ref().map_or(true, |k| k.is_empty()) {
+                    providers.add_model(model.clone());
+                }
             }
         }
     }
@@ -198,3 +209,6 @@ pub async fn get_available_models(
     }
     Ok(result)
 }
+
+
+

@@ -1,54 +1,137 @@
-import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
+import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle, ChevronDown, ArrowDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useStore } from '../store';
+import { MessageBubble } from './MessageBubble';
 import type { Message } from '../types';
 
+const StreamingMessage = memo(function StreamingMessage({ content }: { content: string }) {
+  return (
+    <div className="flex gap-4">
+      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center flex-shrink-0 shadow-sm">
+        <Sparkles size={16} className="text-white" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="rounded-2xl px-4 py-3 bg-white border border-gray-100 shadow-sm">
+          <div className="prose prose-sm max-w-none prose-p:my-2 prose-pre:my-0 prose-pre:p-0 prose-pre:border-0 prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-pink-600 prose-code:font-mono prose-code:text-sm prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-hr:my-3 prose-blockquote:border-l-purple-400 prose-blockquote:text-gray-500 prose-blockquote:not-italic prose-a:text-purple-600">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            <span className="inline-block w-2 h-4 ml-1 bg-purple-500 animate-pulse" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MessageList = memo(function MessageList({ messages }: { messages: Message[] }) {
+  return (
+    <>
+      {messages.map((msg) => (
+        <MessageBubble key={msg.id} message={msg} />
+      ))}
+    </>
+  );
+});
+
 export function ChatArea() {
-  const {
-    currentConversation,
-    messages,
-    loading,
-    error,
-    isStreaming,
-    streamingContent,
-    activeToolCalls,
-    sendMessageStream,
-  } = useStore();
+  const currentConversation = useStore((s) => s.currentConversation);
+  const messages = useStore((s) => s.messages);
+  const loading = useStore((s) => s.loading);
+  const error = useStore((s) => s.error);
+  const isStreaming = useStore((s) => s.isStreaming);
+  const streamingContent = useStore((s) => s.streamingContent);
+  const activeToolCalls = useStore((s) => s.activeToolCalls);
+  const sendMessageStream = useStore((s) => s.sendMessageStream);
+  const models = useStore((s) => s.models);
+  const updateConversationModel = useStore((s) => s.updateConversationModel);
+  const setError = useStore((s) => s.setError);
 
   const [input, setInput] = useState('');
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const autoScrollTimeoutRef = useRef<number | null>(null);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior });
+    }
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    const wasNearBottom = distanceFromBottom < 200;
+    
+    setIsNearBottom(wasNearBottom);
+    setShowScrollButton(!wasNearBottom && (isStreaming || messages.length > 5));
+  }, [isStreaming, messages.length]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent, activeToolCalls]);
+    if (isNearBottom && (messages.length > 0 || streamingContent)) {
+      if (autoScrollTimeoutRef.current) {
+        clearTimeout(autoScrollTimeoutRef.current);
+      }
+      autoScrollTimeoutRef.current = window.setTimeout(() => {
+        scrollToBottom('auto');
+      }, 50);
+    }
+    return () => {
+      if (autoScrollTimeoutRef.current) {
+        clearTimeout(autoScrollTimeoutRef.current);
+      }
+    };
+  }, [messages.length, streamingContent, activeToolCalls.length, isNearBottom, scrollToBottom]);
 
   useEffect(() => {
     if (inputRef.current && !isStreaming) {
       inputRef.current.focus();
     }
-  }, [currentConversation]);
+  }, [currentConversation, isStreaming]);
 
-  const handleSend = async () => {
+  useEffect(() => {
+    if (!showModelPicker) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.model-picker')) setShowModelPicker(false);
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [showModelPicker]);
+
+  const handleSend = useCallback(async () => {
     if (!input.trim() || loading || isStreaming) return;
     const content = input.trim();
     setInput('');
+    setIsNearBottom(true);
+    setShowScrollButton(false);
     await sendMessageStream(content);
-  };
+  }, [input, loading, isStreaming, sendMessageStream]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
-  };
+  }, [handleSend]);
+
+  const handleRetry = useCallback(() => {
+    setError(null);
+    handleSend();
+  }, [setError, handleSend]);
 
   if (!currentConversation) return null;
 
   return (
-    <div className="flex-1 flex flex-col bg-white">
+    <div className="flex-1 flex flex-col bg-white min-h-0">
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-white/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-sm">
@@ -56,7 +139,41 @@ export function ChatArea() {
           </div>
           <div>
             <h2 className="text-base font-semibold text-gray-900">{currentConversation.title}</h2>
-            <p className="text-xs text-gray-500">{currentConversation?.model_id || ''}</p>
+            <div className="relative model-picker">
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowModelPicker(!showModelPicker); }}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-purple-600 transition-colors"
+              >
+                {models.find(m => m.id === currentConversation.model_id)?.display_name || currentConversation.model_id}
+                <ChevronDown size={12} />
+              </button>
+              {showModelPicker && (
+                <div className="absolute left-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1 min-w-[200px] max-h-48 overflow-y-auto">
+                  {models.filter(m => m.enabled).map((model) => (
+                    <button
+                      key={model.id}
+                      onClick={async () => {
+                        await updateConversationModel(currentConversation.id, model.id);
+                        setShowModelPicker(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-purple-50 transition-colors ${
+                        currentConversation.model_id === model.id
+                          ? 'text-purple-600 bg-purple-50 font-medium'
+                          : 'text-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span>{model.display_name}</span>
+                        <span className="text-xs text-gray-400">{model.provider}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {models.filter(m => m.enabled).length === 0 && (
+                    <div className="px-3 py-2 text-sm text-gray-400">没有可用模型</div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -72,11 +189,13 @@ export function ChatArea() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto min-h-0 relative"
+      >
         <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
-          {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
-          ))}
+          <MessageList messages={messages} />
 
           {isStreaming && activeToolCalls.length > 0 && (
             <div className="space-y-2">
@@ -87,17 +206,7 @@ export function ChatArea() {
           )}
 
           {isStreaming && streamingContent && (
-            <div className="flex gap-4">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center flex-shrink-0">
-                <Sparkles size={16} className="text-white" />
-              </div>
-              <div className="flex-1">
-                <div className="prose prose-gray max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
-                  <span className="inline-block w-2 h-4 ml-1 bg-purple-500 animate-pulse" />
-                </div>
-              </div>
-            </div>
+            <StreamingMessage content={streamingContent} />
           )}
 
           {loading && !isStreaming && (
@@ -114,7 +223,7 @@ export function ChatArea() {
                 <span>{error}</span>
               </div>
               <button
-                onClick={() => handleSend()}
+                onClick={handleRetry}
                 className="mt-2 text-xs text-red-500 hover:text-red-700 font-medium"
               >
                 重试
@@ -123,6 +232,19 @@ export function ChatArea() {
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {showScrollButton && (
+          <button
+            onClick={() => {
+              scrollToBottom('smooth');
+              setIsNearBottom(true);
+              setShowScrollButton(false);
+            }}
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 p-2 rounded-full bg-white border border-gray-200 shadow-lg hover:bg-gray-50 transition-all animate-in fade-in"
+          >
+            <ArrowDown size={18} className="text-gray-600" />
+          </button>
+        )}
       </div>
 
       <div className="border-t border-gray-100 bg-white p-4">
@@ -148,50 +270,6 @@ export function ChatArea() {
           </div>
           <p className="text-xs text-gray-400 mt-2 text-center">AI 可能会产生不准确的信息，请验证重要信息</p>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({ message }: { message: Message }) {
-  const isUser = message.role === 'user';
-
-  return (
-    <div className={`flex gap-4 ${isUser ? 'flex-row-reverse' : ''}`}>
-      {!isUser && (
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center flex-shrink-0 shadow-sm">
-          <Sparkles size={16} className="text-white" />
-        </div>
-      )}
-      {isUser && (
-        <div className="w-8 h-8 rounded-lg bg-gray-200 flex items-center justify-center flex-shrink-0">
-          <svg className="w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-          </svg>
-        </div>
-      )}
-      <div
-        className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-          isUser
-            ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white'
-            : 'bg-gray-50 text-gray-900'
-        }`}
-      >
-        {isUser ? (
-          <p className="whitespace-pre-wrap text-sm">{message.content}</p>
-        ) : (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            className="prose prose-sm max-w-none prose-p:my-2 prose-pre:my-2"
-          >
-            {message.content}
-          </ReactMarkdown>
-        )}
-        {message.tokens && (
-          <p className={`text-xs mt-2 ${isUser ? 'text-purple-200' : 'text-gray-400'}`}>
-            {message.tokens} tokens
-          </p>
-        )}
       </div>
     </div>
   );

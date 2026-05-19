@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect } from 'react';
-import { X, Eye, EyeOff, Check, Wrench, FileText, Cpu, ChevronRight, Star, Trash2, Plus } from 'lucide-react';
+import { X, Eye, EyeOff, Check, Wrench, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles } from 'lucide-react';
 import { useStore } from '../store';
 
 interface SettingsModalProps {
@@ -13,6 +13,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     providers, fetchProviders, setupProvider, updateProviderConfig, removeProvider,
     tools, fetchTools, toggleTool,
     systemPrompts, fetchSystemPrompts, deleteSystemPrompt, setDefaultSystemPrompt,
+    models, fetchModels, defaultModel, setDefaultModel,
   } = useStore();
 
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -33,6 +34,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       fetchProviders();
       fetchTools();
       fetchSystemPrompts();
+      fetchModels();
     }
   }, [isOpen]);
 
@@ -145,7 +147,36 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
         <div className="flex-1 overflow-y-auto p-5">
           {activeTab === 'providers' && (
-            <div className="flex gap-4">
+            <>
+              <div className="mb-4 p-4 bg-purple-50 border border-purple-100 rounded-xl">
+                <div className="flex items-center gap-2 mb-3">
+                  <Sparkles size={16} className="text-purple-600" />
+                  <h3 className="text-sm font-medium text-purple-900">默认模型</h3>
+                </div>
+                <div className="flex items-center gap-3">
+                  <select
+                    value={defaultModel || ''}
+                    onChange={(e) => { if (e.target.value) setDefaultModel(e.target.value); }}
+                    className="flex-1 bg-white border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">选择默认模型...</option>
+                    {models.filter(m => m.enabled).map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.display_name} ({model.provider})
+                      </option>
+                    ))}
+                  </select>
+                  {defaultModel && (
+                    <span className="text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full whitespace-nowrap">
+                      当前: {models.find(m => m.id === defaultModel)?.display_name || defaultModel}
+                    </span>
+                  )}
+                </div>
+                {models.filter(m => m.enabled).length === 0 && (
+                  <p className="text-xs text-red-500 mt-2">请先配置模型提供商并启用至少一个模型</p>
+                )}
+              </div>
+              <div className="flex gap-4">
               {/* Provider list */}
               <div className="w-64 space-y-1">
                 {providers.map((provider) => (
@@ -203,7 +234,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             ))}
                           </div>
                         </div>
-
                         <div className="flex gap-2 pt-2">
                           <button
                             onClick={() => {
@@ -393,6 +423,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 )}
               </div>
             </div>
+            </>
           )}
 
           {activeTab === 'tools' && (

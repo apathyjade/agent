@@ -22,6 +22,10 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    fn requires_api_key(provider: &ModelProvider) -> bool {
+        !matches!(provider, ModelProvider::Ollama | ModelProvider::LMStudio)
+    }
+
     pub fn new(config: &AppConfig) -> Self {
         let mut openai_compatible = HashMap::new();
         let mut anthropic = HashMap::new();
@@ -31,10 +35,13 @@ impl ProviderRegistry {
                 continue;
             }
 
-            if model.is_compatible_with_openai_api() && !model.api_key.is_empty() {
+            let has_key = !model.api_key.is_empty();
+            let needs_key = Self::requires_api_key(&model.provider);
+
+            if model.is_compatible_with_openai_api() && (!needs_key || has_key) {
                 let provider = OpenAIProvider::new(model.clone());
                 openai_compatible.insert(model.id.clone(), Arc::new(provider));
-            } else if matches!(model.provider, ModelProvider::Anthropic) && !model.api_key.is_empty() {
+            } else if matches!(model.provider, ModelProvider::Anthropic) && has_key {
                 let provider = AnthropicProvider::new(model.clone());
                 anthropic.insert(model.id.clone(), Arc::new(provider));
             }
@@ -68,10 +75,13 @@ impl ProviderRegistry {
             return;
         }
 
-        if model.is_compatible_with_openai_api() && !model.api_key.is_empty() {
+        let has_key = !model.api_key.is_empty();
+        let needs_key = Self::requires_api_key(&model.provider);
+
+        if model.is_compatible_with_openai_api() && (!needs_key || has_key) {
             let provider = OpenAIProvider::new(model.clone());
             self.openai_compatible.insert(model.id.clone(), Arc::new(provider));
-        } else if matches!(model.provider, ModelProvider::Anthropic) && !model.api_key.is_empty() {
+        } else if matches!(model.provider, ModelProvider::Anthropic) && has_key {
             let provider = AnthropicProvider::new(model.clone());
             self.anthropic.insert(model.id.clone(), Arc::new(provider));
         }

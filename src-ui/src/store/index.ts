@@ -1,5 +1,5 @@
 ﻿import { create } from 'zustand';
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ModelConfig } from '../types';
 import * as api from '../api/tauri';
 
 interface ToolCallState {
@@ -14,6 +14,7 @@ interface AppState {
   currentConversation: Conversation | null;
   messages: Message[];
   providers: ProviderStatus[];
+  models: ModelConfig[];
   defaultModel: string | null;
   tools: ToolInfo[];
   systemPrompts: SystemPrompt[];
@@ -24,6 +25,7 @@ interface AppState {
   activeToolCalls: ToolCallState[];
 
   fetchConversations: () => Promise<void>;
+  fetchModels: () => Promise<void>;
   fetchProviders: () => Promise<void>;
   setupProvider: (params: Parameters<typeof api.setupProvider>[0]) => Promise<void>;
   updateProviderConfig: (params: Parameters<typeof api.updateProviderConfig>[0]) => Promise<void>;
@@ -33,6 +35,7 @@ interface AppState {
   selectConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   updateConversationTitle: (id: string, title: string) => Promise<void>;
+  updateConversationModel: (id: string, modelId: string) => Promise<void>;
   clearConversation: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   sendMessageStream: (content: string) => Promise<void>;
@@ -50,6 +53,7 @@ export const useStore = create<AppState>((set, get) => ({
   currentConversation: null,
   messages: [],
   providers: [],
+  models: [],
   defaultModel: null,
   tools: [],
   systemPrompts: [],
@@ -69,14 +73,22 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  fetchModels: async () => {
+    try {
+      const models = await api.getModels();
+      const defaultModel = models.find(m => m.is_default)?.id ?? models.find(m => m.enabled)?.id ?? null;
+      set({ models, defaultModel });
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
   fetchProviders: async () => {
     try {
       const providers = await api.listProviders();
-      const modelInfo = await api.getDefaultModel();
-      const defaultModel = modelInfo?.id ?? null;
-      set({ providers, defaultModel });
+      set({ providers });
     } catch (err) {
-      set({ error: String(err) });
+      // provider commands not available in current backend; ignore
     }
   },
 
@@ -110,7 +122,13 @@ export const useStore = create<AppState>((set, get) => ({
   setDefaultModel: async (model) => {
     try {
       await api.setDefaultModel(model);
-      set({ defaultModel: model });
+      set((state) => ({
+        defaultModel: model,
+        models: state.models.map((m) => ({
+          ...m,
+          is_default: m.id === model,
+        })),
+      }));
     } catch (err) {
       set({ error: String(err) });
     }
@@ -168,6 +186,22 @@ export const useStore = create<AppState>((set, get) => ({
         ),
         currentConversation: state.currentConversation?.id === id
           ? { ...state.currentConversation, title }
+          : state.currentConversation,
+      }));
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  updateConversationModel: async (id, modelId) => {
+    try {
+      await api.updateConversationModel(id, modelId);
+      set((state) => ({
+        conversations: state.conversations.map((c) =>
+          c.id === id ? { ...c, model_id: modelId } : c
+        ),
+        currentConversation: state.currentConversation?.id === id
+          ? { ...state.currentConversation, model_id: modelId }
           : state.currentConversation,
       }));
     } catch (err) {

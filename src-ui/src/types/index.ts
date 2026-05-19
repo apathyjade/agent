@@ -24,6 +24,19 @@ export interface ModelInfo {
   context_window?: number;
 }
 
+export interface ModelConfig {
+  id: string;
+  name: string;
+  display_name: string;
+  provider: string;
+  api_key: string;
+  base_url?: string | null;
+  is_default: boolean;
+  enabled: boolean;
+  context_window?: number | null;
+  max_tokens?: number | null;
+}
+
 export interface ProviderStatus {
   id: string;
   name: string;

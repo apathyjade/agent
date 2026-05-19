@@ -8,13 +8,15 @@ import './styles/global.css';
 function App() {
   const fetchConversations = useStore((state) => state.fetchConversations);
   const fetchTools = useStore((state) => state.fetchTools);
+  const fetchModels = useStore((state) => state.fetchModels);
   const currentConversation = useStore((state) => state.currentConversation);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
     fetchConversations();
     fetchTools();
-  }, [fetchConversations, fetchTools]);
+    fetchModels();
+  }, [fetchConversations, fetchTools, fetchModels]);
 
   return (
     <div className="flex h-screen w-screen bg-white">
@@ -36,7 +38,7 @@ function App() {
         </div>
       )}
       
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0">
         {currentConversation ? <ChatArea /> : <WelcomePage />}
       </div>
     </div>

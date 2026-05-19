@@ -8,6 +8,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
     conversations,
     currentConversation,
     loading,
+    models,
     providers,
     defaultModel,
     fetchConversations,
@@ -48,6 +49,8 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
   };
 
   const getDefaultModelId = (): string | null => {
+    const enabled = models.filter(m => m.enabled);
+    if (enabled.length > 0) return enabled[0].id;
     for (const provider of providers) {
       if (provider.configured && provider.enabled_models.length > 0) {
         return provider.enabled_models[0];
@@ -57,6 +60,8 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
   };
 
   const getAvailableModelCount = (): number => {
+    const modelCount = models.filter(m => m.enabled).length;
+    if (modelCount > 0) return modelCount;
     return providers.reduce((count, p) => count + (p.configured ? p.enabled_models.length : 0), 0);
   };
 
@@ -183,7 +188,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
                   {conv.title}
                 </span>
               )}
-              <div className="hidden group:flex items-center gap-1 flex-shrink-0">
+              <div className="hidden group-hover:flex items-center gap-1 flex-shrink-0">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

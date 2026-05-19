@@ -44,7 +44,7 @@ impl AgentLoop {
             providers,
             tools,
             max_iterations: 10,
-            max_context_tokens: 4000,
+            max_context_tokens: 32000,
         }
     }
 

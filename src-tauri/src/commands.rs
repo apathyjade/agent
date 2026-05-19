@@ -558,16 +558,18 @@ pub async fn get_default_system_prompt(state: State<'_, AppState>) -> Result<Opt
     db.get_default_system_prompt()
 }
 
-pub const PROVIDER_OPTIONS: &[(&str, &str, &str)] = &[
-    ("openai", "OpenAI", "https://api.openai.com/v1/chat/completions"),
-    ("anthropic", "Anthropic", "https://api.anthropic.com/v1/messages"),
-    ("google", "Google (Gemini)", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
-    ("groq", "Groq", "https://api.groq.com/openai/v1/chat/completions"),
-    ("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions"),
-    ("zhipu", "智谱清言", "https://open.bigmodel.cn/api/paas/v4/chat/completions"),
-    ("moonshot", "月之暗面", "https://api.moonshot.cn/v1/chat/completions"),
-    ("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1/chat/completions"),
-    ("ollama", "Ollama (本地)", "http://localhost:11434/v1/chat/completions"),
-    ("lmstudio", "LM Studio (本地)", "http://localhost:1234/v1/chat/completions"),
-    ("custom", "自定义", ""),
+pub const PROVIDER_OPTIONS: &[(&str, &str, &str, &str)] = &[
+    ("openai", "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o"),
+    ("anthropic", "Anthropic", "https://api.anthropic.com/v1/messages", "claude-sonnet-4-20250514"),
+    ("google", "Google (Gemini)", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "gemini-2.0-flash"),
+    ("groq", "Groq", "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
+    ("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat"),
+    ("zhipu", "智谱清言", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-plus"),
+    ("moonshot", "月之暗面", "https://api.moonshot.cn/v1/chat/completions", "moonshot-v1-8k"),
+    ("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1/chat/completions", "Qwen/Qwen2.5-72B-Instruct"),
+    ("ollama", "Ollama (本地)", "http://localhost:11434/v1/chat/completions", "llama3.2"),
+    ("lmstudio", "LM Studio (本地)", "http://localhost:1234/v1/chat/completions", "local-model"),
+    ("custom", "自定义", "", "custom-model"),
 ];
+
+

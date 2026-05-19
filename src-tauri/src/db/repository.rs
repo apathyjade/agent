@@ -32,6 +32,8 @@ impl Database {
     fn init_tables(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "
+            PRAGMA foreign_keys = OFF;
+
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,

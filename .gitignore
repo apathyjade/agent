@@ -18,3 +18,10 @@ Thumbs.db
 
 # Tauri
 src-tauri/target
+
+# Agent tools & temp
+.omo/
+.opencode/
+openspec/
+src-ui/capture_errors.mjs
+src-ui/*.png

@@ -1,6 +1,6 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig } from '../types';
 
 export async function createConversation(
   title: string,
@@ -24,6 +24,10 @@ export async function deleteConversation(id: string): Promise<void> {
 
 export async function updateConversationTitle(id: string, title: string): Promise<void> {
   return invoke('update_conversation_title', { id, title });
+}
+
+export async function updateConversationModel(id: string, modelId: string): Promise<void> {
+  return invoke('update_conversation_model', { id, modelId });
 }
 
 export async function clearConversation(conversationId: string): Promise<void> {
@@ -93,12 +97,16 @@ export async function removeProvider(provider: string): Promise<void> {
   return invoke('remove_provider', { provider });
 }
 
-export async function getDefaultModel(): Promise<{ id: string; name: string; display_name: string; provider: string; api_key: string; base_url?: string; is_default: boolean; enabled: boolean; context_window?: number; max_tokens?: number } | null> {
+export async function getModels(): Promise<ModelConfig[]> {
+  return invoke('get_models');
+}
+
+export async function getDefaultModel(): Promise<ModelConfig | null> {
   return invoke('get_default_model');
 }
 
 export async function setDefaultModel(model: string): Promise<void> {
-  return invoke('set_default_model', { model });
+  return invoke('set_default_model', { id: model });
 }
 
 export async function getAvailableModels(): Promise<Record<string, Array<{ id: string; name: string; context_window?: number }>>> {

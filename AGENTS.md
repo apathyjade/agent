@@ -40,7 +40,7 @@ Frontend build: `cd src-ui && npm run build` runs `tsc && vite build`.
 ## Frontend quirks
 
 - **TS strict**: `noUnusedLocals`/`noUnusedParameters` both on — prefix unused with `_`
-- **`ChatArea` references a `models` array** that doesn't exist in the Zustand store — store/API alignment is broken when adding features
+- **Frontend API** (`api/tauri.ts`) still has old provider commands (`list_providers_cmd`, `setup_provider`) that don't exist in `src-tauri` backend — fallback to `get_models` for model management
 - **Single Zustand store** (`src/store/index.ts`): all state + async IPC wrappers
 - TailwindCSS with custom `primary` purple palette; utility classes (`btn-primary`, `input-primary`, etc.) in `global.css`
 
