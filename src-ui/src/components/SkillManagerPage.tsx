@@ -9,9 +9,6 @@ import {
   RefreshCw,
   Search,
   Puzzle,
-  BookOpen,
-  Terminal,
-  Globe,
   X,
   FolderOpen,
   Check,
@@ -22,20 +19,11 @@ import {
 } from 'lucide-react';
 import { useStore } from '../store';
 import { SkillDetailPanel } from './SkillDetailPanel';
-import type { SkillInfo, DiscoveredSkill } from '../types';
+import type { SkillInfo, MarketSkill, ReconcileResult } from '../types';
 
-type FilterType = 'all' | 'builtin' | 'local' | 'registry' | 'scanned';
+type FilterType = 'installed' | 'market';
 
-const ICON_MAP: Record<string, React.ReactNode> = {
-  calculator: <Terminal size={20} />,
-  file_system: <FolderOpen size={20} />,
-  web_search: <Globe size={20} />,
-  code_executor: <BookOpen size={20} />,
-};
-
-function SkillIcon({ skill }: { skill: SkillInfo }) {
-  const icon = ICON_MAP[skill.id];
-  if (icon) return <>{icon}</>;
+function SkillIcon() {
   return <Puzzle size={20} />;
 }
 
@@ -52,10 +40,8 @@ function SkillCard({
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const sourceLabel =
-    skill.source === 'builtin' ? '内置' : skill.source === 'local' ? '本地' : '注册表';
+  const sourceLabel = skill.source === 'local' ? '本地' : '注册表';
   const sourceColors: Record<string, string> = {
-    builtin: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400',
     local: 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400',
     registry: 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400',
   };
@@ -65,7 +51,7 @@ function SkillCard({
       {/* Card Header */}
       <div className="p-4 pb-3 flex items-start gap-3">
         <div className="w-10 h-10 rounded-lg bg-purple-50 dark:bg-purple-900/30 flex items-center justify-center flex-shrink-0 text-purple-600 dark:text-purple-400 group-hover:scale-105 transition-transform">
-          <SkillIcon skill={skill} />
+          <SkillIcon />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -112,35 +98,31 @@ function SkillCard({
         </span>
 
         <div className="flex items-center gap-1">
-          {skill.source !== 'builtin' && (
-            <>
-              {confirmDelete ? (
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={onUninstall}
-                    className="p-1 rounded-md bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
-                    title="确认卸载"
-                  >
-                    <Check size={13} />
-                  </button>
-                  <button
-                    onClick={() => setConfirmDelete(false)}
-                    className="p-1 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                    title="取消"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmDelete(true)}
-                  className="p-1.5 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100"
-                  title="卸载"
-                >
-                  <Trash2 size={13} />
-                </button>
-              )}
-            </>
+          {confirmDelete ? (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={onUninstall}
+                className="p-1 rounded-md bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
+                title="确认卸载"
+              >
+                <Check size={13} />
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="p-1 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                title="取消"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="p-1.5 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100"
+              title="卸载"
+            >
+              <Trash2 size={13} />
+            </button>
           )}
 
           <button
@@ -168,112 +150,64 @@ function SkillCard({
     </div>
   );
 }
-
-const AGENT_LABELS: Record<string, string> = {
-  'generic': '通用',
-  'claude-code': 'Claude Code',
-  'opencode': 'OpenCode',
-  'codex': 'Codex',
-  'cursor': 'Cursor',
-  'workspace': '工作区',
-};
-
-const AGENT_COLORS: Record<string, string> = {
-  'generic': 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
-  'claude-code': 'bg-orange-100 text-orange-600 dark:bg-orange-900/40 dark:text-orange-400',
-  'opencode': 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400',
-  'codex': 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400',
-  'cursor': 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400',
-  'workspace': 'bg-cyan-100 text-cyan-600 dark:bg-cyan-900/40 dark:text-cyan-400',
-};
-
-function DiscoveredSkillCard({
+function MarketSkillCard({
   skill,
-  onImport,
-  importing,
+  onInstall,
+  installing,
+  installed,
 }: {
-  skill: DiscoveredSkill;
-  onImport: () => void;
-  importing: boolean;
+  skill: MarketSkill;
+  onInstall: () => void;
+  installing: boolean;
+  installed: boolean;
 }) {
-  const canImport = skill.format === 'yaml' && !skill.already_imported;
-  const formatLabel = skill.format === 'yaml' ? 'skill.yaml' : 'SKILL.md';
-
   return (
-    <div className="bg-white dark:bg-gray-800/80 rounded-xl border border-gray-100 dark:border-gray-700/60 hover:border-purple-200 dark:hover:border-purple-700/50 hover:shadow-md transition-all duration-200">
+    <div className="group bg-white dark:bg-gray-800/80 rounded-xl border border-gray-100 dark:border-gray-700/60 hover:border-purple-200 dark:hover:border-purple-700/50 hover:shadow-md transition-all duration-200">
       <div className="p-4 pb-3 flex items-start gap-3">
-        <div className="w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center flex-shrink-0 text-indigo-600 dark:text-indigo-400">
-          <ScanLine size={20} />
+        <div className="w-10 h-10 rounded-lg bg-amber-50 dark:bg-amber-900/30 flex items-center justify-center flex-shrink-0 text-amber-600 dark:text-amber-400 group-hover:scale-105 transition-transform">
+          <Download size={20} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
               {skill.name}
             </h3>
-            {skill.version && (
-              <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono">
-                v{skill.version}
-              </span>
-            )}
-            {skill.author && (
-              <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded flex-shrink-0">
-                {skill.author}
-              </span>
-            )}
+            <span className="text-[10px] bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full truncate max-w-[180px]">
+              {skill.source}
+            </span>
           </div>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2 leading-relaxed">
-            {skill.description || '暂无描述'}
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-1 leading-relaxed">
+            {skill.description}
           </p>
-          {/* Agent sources */}
           <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-            {skill.agent_sources.map((src) => (
-              <span
-                key={src}
-                className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${AGENT_COLORS[src] || 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}
-              >
-                {AGENT_LABELS[src] || src}
-              </span>
-            ))}
-            <span className="text-[10px] text-gray-400 dark:text-gray-500 ml-0.5">
-              {formatLabel}
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex items-center gap-1">
+              <Download size={10} />
+              {skill.installs.toLocaleString()}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="px-4 py-2.5 border-t border-gray-50 dark:border-gray-700/30 flex items-center justify-between">
-        <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[200px]" title={skill.path}>
-          {skill.path}
-        </span>
-
-        <div className="flex items-center gap-1">
-          {skill.already_imported ? (
-            <span className="flex items-center gap-1 text-[11px] text-green-600 dark:text-green-400 font-medium">
-              <BadgeCheck size={13} />
-              已导入
-            </span>
-          ) : canImport ? (
-            <button
-              onClick={onImport}
-              disabled={importing}
-              className="flex items-center gap-1 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-all"
-            >
-              {importing ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <Download size={12} />
-              )}
-              导入
-            </button>
-          ) : (
-            <span
-              className="text-[11px] text-gray-400 dark:text-gray-500 italic"
-              title="SKILL.md 格式暂不支持直接导入，需要 skill.yaml"
-            >
-              仅 skill.yaml 可导入
-            </span>
-          )}
-        </div>
+      <div className="px-4 py-2.5 border-t border-gray-50 dark:border-gray-700/30 flex items-center justify-end">
+        {installed ? (
+          <span className="flex items-center gap-1 text-[11px] text-green-600 dark:text-green-400 font-medium">
+            <BadgeCheck size={13} />
+            已安装
+          </span>
+        ) : (
+          <button
+            onClick={onInstall}
+            disabled={installing}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-all"
+          >
+            {installing ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Download size={12} />
+            )}
+            {installing ? '安装中...' : '安装'}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -404,24 +338,35 @@ export function SkillManagerPage() {
     installDialogOpen,
     setInstallDialogOpen,
     addToast,
-    discoveredSkills,
-    scanDiscoveredSkills,
-    importDiscoveredSkill,
-    discoveredLoading,
+    reconciling,
+    reconcileSkills,
+    marketSkills,
+    marketLoading,
+    marketSearching,
+    fetchMarketTopSkills,
+    searchMarketSkills,
+    installMarketSkill,
   } = useStore();
 
-  const [filter, setFilter] = useState<FilterType>('all');
+  const [filter, setFilter] = useState<FilterType>('installed');
   const [searchQuery, setSearchQuery] = useState('');
   const [configureSkillId, setConfigureSkillId] = useState<string | null>(null);
   const [showDetailPanel, setShowDetailPanel] = useState(false);
-  const [importingId, setImportingId] = useState<string | null>(null);
+  const [marketSearchQuery, setMarketSearchQuery] = useState('');
+  const [installingMarketId, setInstallingMarketId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchSkills();
   }, [fetchSkills]);
 
+  // Fetch market top skills when switching to market tab
+  useEffect(() => {
+    if (filter === 'market' && marketSkills.length === 0 && !marketLoading) {
+      fetchMarketTopSkills();
+    }
+  }, [filter, marketSkills.length, marketLoading, fetchMarketTopSkills]);
+
   const filteredSkills = skills.filter((s) => {
-    if (filter !== 'all' && s.source !== filter) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return (
@@ -434,25 +379,30 @@ export function SkillManagerPage() {
     return true;
   });
 
-  const filteredDiscovered = discoveredSkills.filter((s) => {
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      return (
-        s.name.toLowerCase().includes(q) ||
-        s.description.toLowerCase().includes(q) ||
-        s.id.toLowerCase().includes(q) ||
-        (s.tags && s.tags.some((t) => t.toLowerCase().includes(q)))
-      );
+  const handleMarketSearch = async (query: string) => {
+    setMarketSearchQuery(query);
+    if (query.trim()) {
+      await searchMarketSkills(query.trim());
+    } else {
+      await fetchMarketTopSkills();
     }
-    return true;
-  });
+  };
+
+  const handleInstallMarket = async (skill: MarketSkill) => {
+    setInstallingMarketId(skill.id);
+    try {
+      await installMarketSkill(skill.source);
+      addToast('success', `${skill.name} 已成功安装`);
+    } catch (err) {
+      addToast('error', `安装 ${skill.name} 失败: ${String(err)}`);
+    } finally {
+      setInstallingMarketId(null);
+    }
+  };
 
   const skillCounts = {
-    all: skills.length,
-    builtin: skills.filter((s) => s.source === 'builtin').length,
-    local: skills.filter((s) => s.source === 'local').length,
-    registry: skills.filter((s) => s.source === 'registry').length,
-    scanned: discoveredSkills.length,
+    installed: skills.length,
+    market: 0,
   };
 
   const handleToggle = async (skill: SkillInfo, enabled: boolean) => {
@@ -483,31 +433,20 @@ export function SkillManagerPage() {
 
   const handleScan = async () => {
     try {
-      await scanDiscoveredSkills();
-      addToast('success', '本地扫描完成');
+      const result: ReconcileResult = await reconcileSkills();
+      const msgs: string[] = [];
+      if (result.added.length > 0) msgs.push(`新增 ${result.added.length} 个技能`);
+      if (result.removed.length > 0) msgs.push(`移除 ${result.removed.length} 个失效记录`);
+      const msg = msgs.length > 0 ? `同步完成：${msgs.join('，')}` : '数据一致，无需同步';
+      addToast('success', msg);
     } catch {
-      addToast('error', '扫描失败');
-    }
-  };
-
-  const handleImportDiscovered = async (skill: DiscoveredSkill) => {
-    setImportingId(skill.id);
-    try {
-      await importDiscoveredSkill(skill);
-      addToast('success', `${skill.name} 已成功导入`);
-    } catch {
-      addToast('error', `导入 ${skill.name} 失败`);
-    } finally {
-      setImportingId(null);
+      addToast('error', '扫描同步失败');
     }
   };
 
   const filterTabs: { key: FilterType; label: string; count: number }[] = [
-    { key: 'all', label: '全部', count: skillCounts.all },
-    { key: 'builtin', label: '内置', count: skillCounts.builtin },
-    { key: 'local', label: '本地', count: skillCounts.local },
-    { key: 'registry', label: '注册表', count: skillCounts.registry },
-    { key: 'scanned', label: '已扫描', count: skillCounts.scanned },
+    { key: 'installed', label: '已安装', count: skillCounts.installed },
+    { key: 'market', label: '市场', count: 0 },
   ];
 
   return (
@@ -522,20 +461,24 @@ export function SkillManagerPage() {
             <div>
               <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100">技能管理</h1>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                管理当前电脑上已安装的 {skills.length} 个技能工具
+                管理本机已安装的 {skills.length} 个技能
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => fetchSkills()}
-              disabled={skillLoading}
-              className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded-lg text-sm transition-colors disabled:opacity-50"
-              title="刷新"
+              onClick={handleScan}
+              disabled={reconciling}
+              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-lg text-sm transition-colors disabled:opacity-50 border border-indigo-200 dark:border-indigo-800/50"
+              title="扫描同步本地技能数据，纠正磁盘与数据库不一致"
             >
-              <RefreshCw size={14} className={skillLoading ? 'animate-spin' : ''} />
-              <span className="hidden sm:inline">刷新</span>
+              {reconciling ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <ScanLine size={14} />
+              )}
+              <span className="hidden sm:inline">扫描</span>
             </button>
             <button
               onClick={() => setInstallDialogOpen(true)}
@@ -583,15 +526,17 @@ export function SkillManagerPage() {
                 }`}
               >
                 {tab.label}
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                    filter === tab.key
-                      ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400'
-                      : 'bg-gray-200 dark:bg-gray-600 text-gray-500 dark:text-gray-400'
-                  }`}
-                >
-                  {tab.count}
-                </span>
+                {tab.key !== 'market' && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                      filter === tab.key
+                        ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400'
+                        : 'bg-gray-200 dark:bg-gray-600 text-gray-500 dark:text-gray-400'
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -600,64 +545,90 @@ export function SkillManagerPage() {
 
       {/* Skill Grid */}
       <div className="flex-1 overflow-y-auto px-6 py-5">
-        {filter === 'scanned' ? (
-          /* ── Scanned (Discovered) Skills ── */
+        {filter === 'market' ? (
+          /* ── Marketplace (skills.sh) ── */
           <div>
-            {/* Scan Button & Info */}
             <div className="flex items-center justify-between mb-4">
               <div>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">扫描本地 Agent 技能</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">skills.sh 市场</p>
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                  检测 Claude Code、OpenCode、Codex 等 Agent 目录中的可用技能
+                  从 skills.sh 市场浏览和安装社区贡献的技能
                 </p>
               </div>
               <button
-                onClick={handleScan}
-                disabled={discoveredLoading}
-                className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 text-white rounded-lg text-sm transition-all shadow-sm hover:shadow-md font-medium"
+                onClick={() => fetchMarketTopSkills()}
+                disabled={marketLoading}
+                className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded-lg text-sm transition-colors disabled:opacity-50"
+                title="刷新"
               >
-                {discoveredLoading ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <ScanLine size={14} />
-                )}
-                {discoveredLoading ? '扫描中...' : '开始扫描'}
+                <RefreshCw size={14} className={marketLoading ? 'animate-spin' : ''} />
+                刷新
               </button>
             </div>
 
-            {/* Discovered Skills List */}
-            {discoveredLoading && discoveredSkills.length === 0 ? (
+            {/* Market Search */}
+            <div className="relative mb-4">
+              <Search
+                size={14}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
+              />
+              <input
+                type="text"
+                value={marketSearchQuery}
+                onChange={(e) => {
+                  setMarketSearchQuery(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleMarketSearch(marketSearchQuery);
+                  }
+                }}
+                placeholder="搜索 skills.sh 市场..."
+                className="w-full bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-600 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-500"
+              />
+              {marketSearchQuery && (
+                <button
+                  onClick={() => handleMarketSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+
+            {/* Market Skills Grid */}
+            {marketLoading || marketSearching ? (
               <div className="flex items-center justify-center h-64">
                 <div className="flex flex-col items-center gap-3 text-gray-400 dark:text-gray-500">
-                  <Loader2 size={28} className="animate-spin text-indigo-500" />
-                  <span className="text-sm">扫描本地 Agent 目录...</span>
+                  <Loader2 size={28} className="animate-spin text-amber-500" />
+                  <span className="text-sm">
+                    {marketSearching ? '搜索中...' : '加载市场数据...'}
+                  </span>
                 </div>
               </div>
-            ) : filteredDiscovered.length === 0 ? (
+            ) : marketSkills.length === 0 ? (
               <div className="flex items-center justify-center h-64">
                 <div className="flex flex-col items-center gap-3 text-gray-400 dark:text-gray-500">
-                  <ScanLine size={36} className="opacity-40" />
-                  {discoveredSkills.length === 0 ? (
-                    <div className="text-center">
-                      <p className="text-sm font-medium text-gray-500 dark:text-gray-400">尚未扫描</p>
-                      <p className="text-xs mt-1">点击「开始扫描」按钮检测本地 Agent 目录中的技能</p>
-                    </div>
-                  ) : (
-                    <div className="text-center">
-                      <p className="text-sm font-medium text-gray-500 dark:text-gray-400">未找到匹配的扫描结果</p>
-                      <p className="text-xs mt-1">尝试其他关键词或清除搜索</p>
-                    </div>
-                  )}
+                  <Download size={36} className="opacity-40" />
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                      {marketSearchQuery ? '未找到匹配的社区技能' : '暂无市场数据'}
+                    </p>
+                    <p className="text-xs mt-1">
+                      {marketSearchQuery ? '尝试其他关键词' : '请检查网络或稍后重试'}
+                    </p>
+                  </div>
                 </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {filteredDiscovered.map((skill) => (
-                  <DiscoveredSkillCard
-                    key={skill.id + skill.agent_sources.join(',')}
+                {marketSkills.map((skill) => (
+                  <MarketSkillCard
+                    key={skill.id}
                     skill={skill}
-                    onImport={() => handleImportDiscovered(skill)}
-                    importing={importingId === skill.id}
+                    onInstall={() => handleInstallMarket(skill)}
+                    installing={installingMarketId === skill.id}
+                    installed={skills.some((s) => s.name === skill.name)}
                   />
                 ))}
               </div>

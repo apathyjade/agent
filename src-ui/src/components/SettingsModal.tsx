@@ -465,9 +465,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       {skill.author && (
                         <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded flex-shrink-0">{skill.author}</span>
                       )}
-                      {skill.source === 'builtin' && (
-                        <span className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded flex-shrink-0">内置</span>
-                      )}
+
                     </div>
                     <p className="text-xs text-gray-500 mt-0.5 truncate">{skill.description}</p>
                   </div>

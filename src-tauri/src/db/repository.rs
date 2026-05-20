@@ -373,6 +373,12 @@ impl Database {
         Ok(())
     }
 
+    pub fn delete_skills_by_source_type(&self, source_type: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM skills WHERE source_type = ?1", params![source_type])?;
+        Ok(())
+    }
+
     pub fn skill_exists(&self, id: &str) -> Result<bool> {
         let count: i32 = self.conn.query_row("SELECT COUNT(*) FROM skills WHERE id = ?1", params![id], |row| row.get(0))?;
         Ok(count > 0)

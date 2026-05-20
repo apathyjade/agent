@@ -1,6 +1,6 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, DiscoveredSkill } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult } from '../types';
 
 export async function createConversation(
   title: string,
@@ -175,18 +175,21 @@ export async function configureSkill(id: string, config: Record<string, unknown>
   return invoke('configure_skill', { id, config });
 }
 
-export async function scanLocalSkills(): Promise<DiscoveredSkill[]> {
-  return invoke('scan_local_skills');
+export async function reconcileSkills(): Promise<ReconcileResult> {
+  return invoke('reconcile_skills');
 }
 
-export async function importScannedSkill(
-  discoveredId: string,
-  discoveredPath: string,
-  agentSources: string[],
-): Promise<SkillInfo> {
-  return invoke('import_scanned_skill', {
-    discoveredId,
-    discoveredPath,
-    agentSources,
-  });
+export async function listMarketTopSkills(limit?: number): Promise<MarketSkill[]> {
+  return invoke('list_market_top_skills', { limit });
+}
+
+export async function searchMarketSkills(
+  query: string,
+  limit?: number,
+): Promise<MarketSkill[]> {
+  return invoke('search_market_skills', { query, limit });
+}
+
+export async function installMarketSkill(source: string): Promise<string> {
+  return invoke('install_market_skill', { source });
 }

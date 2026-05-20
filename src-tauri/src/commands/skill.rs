@@ -2,8 +2,10 @@ use tauri::State;
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::skills::market::MarketSkill;
+use crate::skills::scanner::ReconcileResult;
+use crate::skills::{SkillInfo, SkillDetail};
 use crate::state::AppState;
-use crate::skills::{DiscoveredSkill, SkillInfo, SkillDetail};
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>> {
@@ -36,16 +38,28 @@ pub async fn configure_skill(state: State<'_, AppState>, id: String, config: Val
 }
 
 #[tauri::command]
-pub async fn scan_local_skills(state: State<'_, AppState>) -> Result<Vec<DiscoveredSkill>> {
-    state.skills.lock().await.scan_local().await
+pub async fn reconcile_skills(state: State<'_, AppState>) -> Result<ReconcileResult> {
+    state.skills.lock().await.reconcile().await
 }
 
 #[tauri::command]
-pub async fn import_scanned_skill(
+pub async fn list_market_top_skills(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<MarketSkill>> {
+    let _ = &*state.skills.lock().await;
+    crate::skills::market::fetch_popular_skills(limit).await
+}
+
+#[tauri::command]
+pub async fn search_market_skills(
     state: State<'_, AppState>,
-    discovered_id: String,
-    discovered_path: String,
-    agent_sources: Vec<String>,
-) -> Result<SkillInfo> {
-    state.skills.lock().await.import_scanned(&discovered_id, &discovered_path, agent_sources).await
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<MarketSkill>> {
+    let _ = &*state.skills.lock().await;
+    crate::skills::market::search_skills(&query, limit).await
+}
+
+#[tauri::command]
+pub async fn install_market_skill(state: State<'_, AppState>, source: String) -> Result<String> {
+    let _ = &*state.skills.lock().await;
+    crate::skills::market::install_market_skill(&source).await
 }

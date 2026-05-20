@@ -27,7 +27,7 @@ impl AppState {
         let db_arc = Arc::new(Mutex::new(db));
         let tools_arc = Arc::new(Mutex::new(tools));
 
-        let skills = SkillManager::new(db_arc.clone(), tools_arc.clone());
+        let skills = SkillManager::new(db_arc.clone());
 
         Ok(Self {
             app_handle: app_handle.clone(),

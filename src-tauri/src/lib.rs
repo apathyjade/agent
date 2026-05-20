@@ -21,14 +21,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_handle = app.handle();
-            let state = state::AppState::new(app_handle)?;
+            let state = AppState::new(app_handle)?;
             app.manage(state);
 
-            // Sync built-in skills in background
+            // Clean up legacy builtin skill records from DB
             let app_handle_clone = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = app_handle_clone.state::<AppState>().skills.lock().await.sync_builtins().await {
-                    log::error!("Failed to sync built-in skills: {}", e);
+                if let Err(e) = app_handle_clone.state::<AppState>().skills.lock().await.cleanup_legacy_builtins().await {
+                    log::error!("Failed to clean up legacy builtin skills: {}", e);
                 }
             });
 
@@ -62,8 +62,10 @@ pub fn run() {
             commands::uninstall_skill,
             commands::toggle_skill,
             commands::configure_skill,
-            commands::scan_local_skills,
-            commands::import_scanned_skill,
+            commands::reconcile_skills,
+            commands::list_market_top_skills,
+            commands::search_market_skills,
+            commands::install_market_skill,
             commands::create_system_prompt,
             commands::list_system_prompts,
             commands::delete_system_prompt,

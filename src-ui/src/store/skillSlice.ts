@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { SkillInfo, SkillDetail, DiscoveredSkill } from '../types';
+import type { SkillInfo, SkillDetail, MarketSkill, ReconcileResult } from '../types';
 import * as api from '../api/tauri';
 
 export interface SkillSlice {
@@ -8,8 +8,10 @@ export interface SkillSlice {
   skillLoading: boolean;
   skillError: string | null;
   installDialogOpen: boolean;
-  discoveredSkills: DiscoveredSkill[];
-  discoveredLoading: boolean;
+  reconciling: boolean;
+  marketSkills: MarketSkill[];
+  marketLoading: boolean;
+  marketSearching: boolean;
 
   fetchSkills: () => Promise<void>;
   toggleSkill: (id: string, enabled: boolean) => Promise<void>;
@@ -20,8 +22,10 @@ export interface SkillSlice {
   clearSkillDetail: () => void;
   setInstallDialogOpen: (open: boolean) => void;
   clearSkillError: () => void;
-  scanDiscoveredSkills: () => Promise<void>;
-  importDiscoveredSkill: (discovered: DiscoveredSkill) => Promise<void>;
+  reconcileSkills: () => Promise<ReconcileResult>;
+  fetchMarketTopSkills: () => Promise<void>;
+  searchMarketSkills: (query: string) => Promise<void>;
+  installMarketSkill: (source: string) => Promise<void>;
 }
 
 export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (set, get) => ({
@@ -30,8 +34,10 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
   skillLoading: false,
   skillError: null,
   installDialogOpen: false,
-  discoveredSkills: [],
-  discoveredLoading: false,
+  reconciling: false,
+  marketSkills: [],
+  marketLoading: false,
+  marketSearching: false,
 
   fetchSkills: async () => {
     try {
@@ -98,22 +104,46 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
     }
   },
 
-  scanDiscoveredSkills: async () => {
-    set({ discoveredLoading: true, skillError: null });
+  reconcileSkills: async () => {
+    set({ reconciling: true, skillError: null });
     try {
-      const skills = await api.scanLocalSkills();
-      set({ discoveredSkills: skills, discoveredLoading: false });
+      const result = await api.reconcileSkills();
+      await get().fetchSkills();
+      set({ reconciling: false });
+      return result;
     } catch (err) {
-      set({ skillError: String(err), discoveredLoading: false });
+      set({ skillError: String(err), reconciling: false });
+      throw err;
     }
   },
 
-  importDiscoveredSkill: async (discovered) => {
+  fetchMarketTopSkills: async () => {
+    set({ marketLoading: true, skillError: null });
+    try {
+      const skills = await api.listMarketTopSkills(30);
+      set({ marketSkills: skills, marketLoading: false });
+    } catch (err) {
+      set({ skillError: String(err), marketLoading: false });
+    }
+  },
+
+  searchMarketSkills: async (query) => {
+    set({ marketSearching: true, skillError: null });
+    try {
+      const skills = await api.searchMarketSkills(query, 30);
+      set({ marketSkills: skills, marketSearching: false });
+    } catch (err) {
+      set({ skillError: String(err), marketSearching: false });
+    }
+  },
+
+  installMarketSkill: async (source) => {
     set({ skillLoading: true, skillError: null });
     try {
-      await api.importScannedSkill(discovered.id, discovered.path, discovered.agent_sources);
-      // Re-scan discovered to update already_imported flags
-      await get().scanDiscoveredSkills();
+      await api.installMarketSkill(source);
+      // Reconcile to pick up the newly installed skill from disk into DB
+      await get().reconcileSkills();
+      // Refresh local skills list
       await get().fetchSkills();
       set({ skillLoading: false });
     } catch (err) {

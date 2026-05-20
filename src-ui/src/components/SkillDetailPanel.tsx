@@ -247,9 +247,8 @@ export function SkillDetailPanel({ skillId, onClose }: SkillDetailPanelProps) {
           ) : (
             <button
               onClick={() => setConfirmUninstall(true)}
-              disabled={detail.source === 'builtin'}
-              className="flex items-center gap-1.5 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-              title={detail.source === 'builtin' ? '内置 Skill 不能卸载' : '卸载此 Skill'}
+              className="flex items-center gap-1.5 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg text-sm transition-colors"
+              title="卸载此 Skill"
             >
               <Trash2 size={14} />
               卸载

@@ -88,7 +88,7 @@ export interface SkillInfo {
   author?: string | null;
   icon?: string | null;
   tags?: string[] | null;
-  source: 'builtin' | 'local' | 'registry' | 'scanned';
+  source: 'local' | 'registry' | 'scanned';
   agent_sources?: string[] | null;
   enabled: boolean;
   installed_at: string;
@@ -106,21 +106,22 @@ export interface SkillDetail extends SkillInfo {
 /** Agent source identifier — which AI agent's skill directory this was found in */
 export type AgentSource = 'generic' | 'claude-code' | 'opencode' | 'codex' | 'cursor' | 'workspace';
 
-/** A skill discovered by scanning local agent directories (not yet imported) */
-export interface DiscoveredSkill {
+/** A skill from the skills.sh marketplace search API */
+export interface MarketSkill {
   id: string;
   name: string;
+  /** Human-readable install count (e.g. "1.6M installs") */
   description: string;
-  /** Path to the skill directory */
-  path: string;
-  version?: string | null;
-  author?: string | null;
-  icon?: string | null;
-  tags?: string[] | null;
-  /** Which agent(s) this skill was found in */
-  agent_sources: string[];
-  /** Whether this skill is already imported */
-  already_imported: boolean;
-  /** The format of the skill definition ('sk.md' or 'yaml') */
-  format: string;
+  /** GitHub owner/repo source (e.g. "vercel-labs/agent-skills") */
+  source: string;
+  /** Raw install count number */
+  installs: number;
+}
+
+/** Result of a reconcile scan operation */
+export interface ReconcileResult {
+  /** Skill IDs that were auto-added (found on disk, missing from DB) */
+  added: string[];
+  /** Skill IDs that were auto-removed (DB record, but files missing) */
+  removed: string[];
 }

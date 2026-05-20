@@ -5,34 +5,49 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::skills::loader;
 
-/// Known agent types and their skill directory paths (relative to home dir)
-pub const AGENT_SCAN_PATHS: &[(&str, &[&str])] = &[
-    ("generic", &[".agents/skills"]),
-    ("claude-code", &[".claude/skills"]),
-    ("opencode", &[".config/opencode/skills"]),
-    ("codex", &[".codex/skills"]),
-    ("cursor", &[".cursor/rules"]),
-];
-
-/// A skill found on disk by scanning agent skill directories
+/// Result of a reconcile operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscoveredSkill {
+pub struct ReconcileResult {
+    /// Skill IDs that were auto-added (found on disk, missing from DB)
+    pub added: Vec<String>,
+    /// Skill IDs that were auto-removed (DB record, but files missing)
+    pub removed: Vec<String>,
+}
+
+/// A skill directory found on disk during scanning.
+pub struct ScannedSkill {
     pub id: String,
+    pub path: PathBuf,
+    /// "yaml" if skill.yaml present, "sk.md" if only SKILL.md found
+    pub format: String,
     pub name: String,
     pub description: String,
-    /// Path to the skill directory (containing SKILL.md or skill.yaml)
-    pub path: String,
-    pub version: Option<String>,
+    pub version: String,
     pub author: Option<String>,
     pub icon: Option<String>,
     pub tags: Option<Vec<String>>,
-    /// Which agent(s) this skill was found in (e.g. ["claude-code", "opencode"])
-    pub agent_sources: Vec<String>,
-    /// Whether this skill is already imported into the local DB
-    pub already_imported: bool,
-    /// The format of the skill definition found
-    pub format: String, // "sk.md" or "yaml"
+}
+
+/// Directories to scan for skills, relative to user home.
+pub const HOME_SKILL_DIRS: &[&str] = &[
+    ".agent/skills",
+    ".agents/skills",
+];
+
+/// Parse YAML frontmatter from a Markdown file (between --- markers).
+pub fn parse_yaml_frontmatter(content: &str) -> Option<(Value, usize)> {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    let after_opening = &trimmed[3..];
+    let end = after_opening.find("\n---")?;
+    let yaml_str = &after_opening[..end];
+    let frontmatter: Value = serde_yaml::from_str(yaml_str).ok()?;
+    let body_start = 3 + end + 5;
+    Some((frontmatter, body_start))
 }
 
 /// Metadata extracted from SKILL.md YAML frontmatter
@@ -48,52 +63,16 @@ pub struct SkillMdFrontmatter {
     pub extra: HashMap<String, Value>,
 }
 
-/// Parse YAML frontmatter from a Markdown file.
-/// Returns the parsed YAML value and the byte offset where the body starts.
-pub fn parse_yaml_frontmatter(content: &str) -> Option<(Value, usize)> {
-    let trimmed = content.trim();
-    if !trimmed.starts_with("---") {
-        return None;
-    }
-
-    // Find closing --- after the opening
-    let after_opening = &trimmed[3..];
-    let end = after_opening.find("\n---")?;
-    let yaml_str = &after_opening[..end];
-
-    let frontmatter: Value = serde_yaml::from_str(yaml_str).ok()?;
-    // body starts after opening --- + yaml + closing ---
-    let body_start = 3 + end + 5; // 3 for "---", +5 for "\n---" trailing
-    Some((frontmatter, body_start))
-}
-
-/// Read and parse SKILL.md from a directory
-pub fn read_skill_md(dir: &Path) -> Result<Option<SkillMdFrontmatter>> {
-    let path = dir.join("SKILL.md");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = std::fs::read_to_string(&path)?;
-    if let Some((fm, _)) = parse_yaml_frontmatter(&content) {
-        let parsed: SkillMdFrontmatter = serde_json::from_value(fm)
-            .map_err(|e| crate::error::AppError::SkillValidation(format!(
-                "Invalid SKILL.md frontmatter: {}", e
-            )))?;
-        Ok(Some(parsed))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Scan a single agent directory for skills (one level deep).
-/// Each child directory containing SKILL.md or skill.yaml is a discovered skill.
-fn scan_agent_dir(dir: &Path, agent_source: &str) -> Result<Vec<DiscoveredSkill>> {
+/// Scan a single directory for skill subdirectories.
+/// Accepts subdirs with skill.yaml (full format) or SKILL.md (YAML frontmatter).
+pub fn scan_data_dir(data_dir: &Path) -> Result<Vec<ScannedSkill>> {
     let mut results = Vec::new();
-    if !dir.exists() || !dir.is_dir() {
+
+    if !data_dir.exists() || !data_dir.is_dir() {
         return Ok(results);
     }
 
-    let read_dir = match std::fs::read_dir(dir) {
+    let read_dir = match std::fs::read_dir(data_dir) {
         Ok(rd) => rd,
         Err(_) => return Ok(results),
     };
@@ -108,127 +87,66 @@ fn scan_agent_dir(dir: &Path, agent_source: &str) -> Result<Vec<DiscoveredSkill>
             continue;
         }
 
-        let skill_dir_name = match path.file_name().and_then(|n| n.to_str()) {
+        let id = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
             None => continue,
         };
 
-        // Check for SKILL.md or skill.yaml
-        let skill_md_path = path.join("SKILL.md");
-        let skill_yaml_path = path.join("skill.yaml");
-
-        let (format, name, description, version, author, icon, tags) =
-            if skill_md_path.exists() && skill_md_path.is_file() {
-                // Parse SKILL.md frontmatter
-                let content = match std::fs::read_to_string(&skill_md_path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                let (fm, _) = match parse_yaml_frontmatter(&content) {
-                    Some(f) => f,
-                    None => continue,
-                };
-                let parsed: SkillMdFrontmatter = match serde_json::from_value(fm) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                (
-                    "sk.md".to_string(),
-                    parsed.name.unwrap_or_else(|| skill_dir_name.clone()),
-                    parsed.description.unwrap_or_default(),
-                    parsed.version,
-                    parsed.author,
-                    parsed.icon,
-                    parsed.tags,
-                )
-            } else if skill_yaml_path.exists() && skill_yaml_path.is_file() {
-                // Parse skill.yaml
-                match crate::skills::loader::parse_skill_yaml(&skill_yaml_path) {
-                    Ok(meta) => (
-                        "yaml".to_string(),
-                        meta.name,
-                        meta.description,
-                        Some(meta.version),
-                        meta.author,
-                        meta.icon,
-                        meta.tags,
-                    ),
-                    Err(_) => continue,
-                }
-            } else {
+        // Check for skill.yaml
+        let skill_yaml = path.join("skill.yaml");
+        if skill_yaml.exists() && skill_yaml.is_file() {
+            if let Ok(meta) = loader::parse_skill_yaml(&skill_yaml) {
+                results.push(ScannedSkill {
+                    id,
+                    path,
+                    format: "yaml".to_string(),
+                    name: meta.name,
+                    description: meta.description,
+                    version: meta.version,
+                    author: meta.author,
+                    icon: meta.icon,
+                    tags: meta.tags,
+                });
                 continue;
-            };
+            }
+        }
 
-        results.push(DiscoveredSkill {
-            id: skill_dir_name,
-            name,
-            description,
-            path: path.to_string_lossy().to_string(),
-            version,
-            author,
-            icon,
-            tags,
-            agent_sources: vec![agent_source.to_string()],
-            already_imported: false, // filled by caller
-            format,
-        });
+        // Check for SKILL.md
+        let skill_md = path.join("SKILL.md");
+        if skill_md.exists() && skill_md.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&skill_md) {
+                if let Some((fm, _)) = parse_yaml_frontmatter(&content) {
+                    if let Ok(parsed) = serde_json::from_value::<SkillMdFrontmatter>(fm) {
+                        results.push(ScannedSkill {
+                            name: parsed.name.clone().unwrap_or_else(|| id.clone()),
+                            description: parsed.description.unwrap_or_default(),
+                            version: parsed.version.clone().unwrap_or_else(|| "0.1.0".to_string()),
+                            author: parsed.author,
+                            icon: parsed.icon,
+                            tags: parsed.tags,
+                            id,
+                            path,
+                            format: "sk.md".to_string(),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     Ok(results)
 }
 
-/// Scan all known agent directories and the workspace for skills.
-/// Deduplicates by skill directory name and merges agent_sources.
-///
-/// * `workspace_skills_dir` - Optional path to the project's skills dir (e.g. `.opencode/skills/`)
-pub fn scan_all(workspace_skills_dir: Option<&str>) -> Result<Vec<DiscoveredSkill>> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let mut seen: HashMap<String, DiscoveredSkill> = HashMap::new();
-
-    // Scan known agent directories
-    for (agent, rel_paths) in AGENT_SCAN_PATHS {
-        for rel in rel_paths.iter() {
-            let dir = home.join(rel);
-            let skills = scan_agent_dir(&dir, agent)?;
-            merge_skills(&mut seen, skills);
-        }
-    }
-
-    // Scan workspace skills if provided
-    if let Some(ws_path) = workspace_skills_dir {
-        let ws_dir = Path::new(ws_path);
-        if ws_dir.exists() && ws_dir.is_dir() {
-            let skills = scan_agent_dir(ws_dir, "workspace")?;
-            merge_skills(&mut seen, skills);
-        }
-    }
-
-    Ok(seen.into_values().collect())
-}
-
-/// Merge discovered skills, combining agent_sources for duplicates
-fn merge_skills(seen: &mut HashMap<String, DiscoveredSkill>, skills: Vec<DiscoveredSkill>) {
-    for skill in skills {
-        if let Some(existing) = seen.get_mut(&skill.id) {
-            for src in &skill.agent_sources {
-                if !existing.agent_sources.contains(src) {
-                    existing.agent_sources.push(src.clone());
-                }
+/// Scan multiple directories and merge results (deduplicates by id, first wins).
+pub fn scan_dirs(dirs: &[&Path]) -> Result<Vec<ScannedSkill>> {
+    let mut seen: HashMap<String, ScannedSkill> = HashMap::new();
+    for dir in dirs {
+        let skills = scan_data_dir(dir)?;
+        for skill in skills {
+            if !seen.contains_key(&skill.id) {
+                seen.insert(skill.id.clone(), skill);
             }
-        } else {
-            seen.insert(skill.id.clone(), skill);
         }
     }
-}
-
-/// Mark skills that are already imported
-pub fn mark_imported(
-    skills: &mut [DiscoveredSkill],
-    imported_ids: &[String],
-) {
-    for skill in skills.iter_mut() {
-        if imported_ids.contains(&skill.id) {
-            skill.already_imported = true;
-        }
-    }
+    Ok(seen.into_values().collect())
 }
