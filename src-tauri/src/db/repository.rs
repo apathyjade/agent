@@ -1,7 +1,7 @@
 ﻿use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 
-use crate::db::models::{Conversation, Message, Setting, SystemPrompt};
+use crate::db::models::{Conversation, Message, Setting, SkillRecord, SystemPrompt};
 use crate::error::Result;
 
 pub struct Database {
@@ -68,6 +68,25 @@ impl Database {
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                version TEXT NOT NULL DEFAULT '0.1.0',
+                author TEXT,
+                icon TEXT,
+                tags TEXT,
+                source_type TEXT NOT NULL,
+                source_path TEXT,
+                entry_type TEXT NOT NULL,
+                entry_value TEXT NOT NULL,
+                config_schema TEXT,
+                config TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                installed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
             ",
         )?;
@@ -101,6 +120,19 @@ impl Database {
 
                 DROP TABLE conversations_old;
                 ",
+            )?;
+        }
+
+        // Migration v2: add agent_sources column to skills table
+        let has_agent_sources = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name='agent_sources'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_agent_sources == 0 {
+            conn.execute_batch(
+                "ALTER TABLE skills ADD COLUMN agent_sources TEXT;",
             )?;
         }
 
@@ -243,5 +275,106 @@ impl Database {
             Ok(SystemPrompt { id: row.get(0)?, name: row.get(1)?, content: row.get(2)?, is_default: row.get::<_, i32>(3)? != 0, created_at: row.get(4)? })
         }).optional()?;
         Ok(prompt)
+    }
+
+    pub fn insert_skill(&self, skill: &SkillRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO skills (id, name, description, version, author, icon, tags, source_type, source_path, entry_type, entry_value, config_schema, config, enabled, agent_sources, installed_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            params![skill.id, skill.name, skill.description, skill.version, skill.author, skill.icon, skill.tags, skill.source_type, skill.source_path, skill.entry_type, skill.entry_value, skill.config_schema, skill.config, skill.enabled as i32, skill.agent_sources, skill.installed_at, skill.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_skill(&self, id: &str) -> Result<Option<SkillRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, version, author, icon, tags, source_type, source_path, entry_type, entry_value, config_schema, config, enabled, agent_sources, installed_at, updated_at FROM skills WHERE id = ?1",
+        )?;
+        let skill = stmt.query_row(params![id], |row| {
+            Ok(SkillRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                version: row.get(3)?,
+                author: row.get(4)?,
+                icon: row.get(5)?,
+                tags: row.get(6)?,
+                source_type: row.get(7)?,
+                source_path: row.get(8)?,
+                entry_type: row.get(9)?,
+                entry_value: row.get(10)?,
+                config_schema: row.get(11)?,
+                config: row.get(12)?,
+                enabled: row.get::<_, i32>(13)? != 0,
+                agent_sources: row.get(14)?,
+                installed_at: row.get(15)?,
+                updated_at: row.get(16)?,
+            })
+        }).optional()?;
+        Ok(skill)
+    }
+
+    pub fn list_skills(&self) -> Result<Vec<SkillRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, version, author, icon, tags, source_type, source_path, entry_type, entry_value, config_schema, config, enabled, agent_sources, installed_at, updated_at FROM skills ORDER BY name ASC",
+        )?;
+        let skills = stmt.query_map([], |row| {
+            Ok(SkillRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                version: row.get(3)?,
+                author: row.get(4)?,
+                icon: row.get(5)?,
+                tags: row.get(6)?,
+                source_type: row.get(7)?,
+                source_path: row.get(8)?,
+                entry_type: row.get(9)?,
+                entry_value: row.get(10)?,
+                config_schema: row.get(11)?,
+                config: row.get(12)?,
+                enabled: row.get::<_, i32>(13)? != 0,
+                agent_sources: row.get(14)?,
+                installed_at: row.get(15)?,
+                updated_at: row.get(16)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(skills)
+    }
+
+    pub fn update_skill_agent_sources(&self, id: &str, agent_sources: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE skills SET agent_sources = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, agent_sources],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_skill_source_type(&self, id: &str, source_type: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE skills SET source_type = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, source_type],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_skill_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        self.conn.execute("UPDATE skills SET enabled = ?2, updated_at = datetime('now') WHERE id = ?1", params![id, enabled as i32])?;
+        Ok(())
+    }
+
+    pub fn update_skill_config(&self, id: &str, config: &str) -> Result<()> {
+        self.conn.execute("UPDATE skills SET config = ?2, updated_at = datetime('now') WHERE id = ?1", params![id, config])?;
+        Ok(())
+    }
+
+    pub fn delete_skill(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM skills WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn skill_exists(&self, id: &str) -> Result<bool> {
+        let count: i32 = self.conn.query_row("SELECT COUNT(*) FROM skills WHERE id = ?1", params![id], |row| row.get(0))?;
+        Ok(count > 0)
     }
 }

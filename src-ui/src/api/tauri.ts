@@ -1,6 +1,6 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, DiscoveredSkill } from '../types';
 
 export async function createConversation(
   title: string,
@@ -34,14 +34,15 @@ export async function clearConversation(conversationId: string): Promise<void> {
   return invoke('clear_conversation', { conversationId });
 }
 
-export async function sendMessage(conversationId: string, content: string): Promise<Message> {
-  return invoke('send_message', { conversationId, content });
+export async function sendMessage(conversationId: string, content: string, toolsEnabled?: boolean): Promise<Message> {
+  return invoke('send_message', { conversationId, content, toolsEnabled });
 }
 
 export async function sendMessageStream(
   conversationId: string,
   content: string,
-  onChunk: (chunk: StreamChunk) => void
+  onChunk: (chunk: StreamChunk) => void,
+  toolsEnabled?: boolean,
 ): Promise<string> {
   const unlisten = await listen<StreamChunk>('stream_chunk', (event) => {
     onChunk(event.payload);
@@ -51,6 +52,7 @@ export async function sendMessageStream(
     const result = await invoke<string>('send_message_stream', {
       conversationId,
       content,
+      toolsEnabled,
     });
     return result;
   } finally {
@@ -147,4 +149,44 @@ export async function setDefaultSystemPrompt(id: string): Promise<void> {
 
 export async function getDefaultSystemPrompt(): Promise<SystemPrompt | null> {
   return invoke('get_default_system_prompt');
+}
+
+export async function listSkills(): Promise<SkillInfo[]> {
+  return invoke('list_skills');
+}
+
+export async function getSkillDetail(id: string): Promise<SkillDetail> {
+  return invoke('get_skill_detail', { id });
+}
+
+export async function installSkillFromPath(path: string): Promise<SkillInfo> {
+  return invoke('install_skill_from_path', { path });
+}
+
+export async function uninstallSkill(id: string): Promise<void> {
+  return invoke('uninstall_skill', { id });
+}
+
+export async function toggleSkill(id: string, enabled: boolean): Promise<void> {
+  return invoke('toggle_skill', { id, enabled });
+}
+
+export async function configureSkill(id: string, config: Record<string, unknown>): Promise<void> {
+  return invoke('configure_skill', { id, config });
+}
+
+export async function scanLocalSkills(): Promise<DiscoveredSkill[]> {
+  return invoke('scan_local_skills');
+}
+
+export async function importScannedSkill(
+  discoveredId: string,
+  discoveredPath: string,
+  agentSources: string[],
+): Promise<SkillInfo> {
+  return invoke('import_scanned_skill', {
+    discoveredId,
+    discoveredPath,
+    agentSources,
+  });
 }

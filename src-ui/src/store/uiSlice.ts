@@ -6,6 +6,8 @@ export interface Toast {
   message: string;
 }
 
+export type AppView = 'chat' | 'skill-manager';
+
 export interface UISlice {
   loading: boolean;
   error: string | null;
@@ -14,6 +16,8 @@ export interface UISlice {
   activeToolCalls: Array<{ id: string; name: string; status: string; result?: string }>;
   darkMode: boolean;
   toasts: Toast[];
+  currentView: AppView;
+  sidebarOpen: boolean;
 
   setError: (error: string | null) => void;
   toggleDarkMode: () => void;
@@ -24,6 +28,8 @@ export interface UISlice {
   setStreamingContent: (content: string) => void;
   appendStreamingContent: (content: string) => void;
   setLoading: (loading: boolean) => void;
+  setCurrentView: (view: AppView) => void;
+  setSidebarOpen: (open: boolean) => void;
 }
 
 export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) => ({
@@ -34,6 +40,8 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) 
   activeToolCalls: [],
   darkMode: localStorage.getItem('darkMode') === 'true',
   toasts: [],
+  currentView: 'chat',
+  sidebarOpen: true,
 
   setError: (error) => set({ error }),
 
@@ -81,4 +89,6 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) 
   appendStreamingContent: (content) =>
     set((state) => ({ streamingContent: state.streamingContent + content })),
   setLoading: (loading) => set({ loading }),
+  setCurrentView: (view) => set({ currentView: view }),
+  setSidebarOpen: (open) => set({ sidebarOpen: open }),
 });

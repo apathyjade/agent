@@ -1,7 +1,9 @@
-﻿import { useEffect, useState } from 'react';
+﻿import { useEffect } from 'react';
+import { ModuleBar } from './components/ModuleBar';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { WelcomePage } from './components/WelcomePage';
+import { SkillManagerPage } from './components/SkillManagerPage';
 import { ToastContainer } from './components/Toast';
 import { useStore } from './store';
 import './styles/global.css';
@@ -12,7 +14,8 @@ function App() {
   const fetchModels = useStore((state) => state.fetchModels);
   const darkMode = useStore((state) => state.darkMode);
   const currentConversation = useStore((state) => state.currentConversation);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const currentView = useStore((state) => state.currentView);
+  const sidebarOpen = useStore((state) => state.sidebarOpen);
 
   useEffect(() => {
     fetchConversations();
@@ -29,28 +32,28 @@ function App() {
     }
   }, []);
 
+  const renderMainContent = () => {
+    if (currentView === 'skill-manager') {
+      return <SkillManagerPage />;
+    }
+    return currentConversation ? <ChatArea /> : <WelcomePage />;
+  };
+
   return (
     <div className="flex h-screen w-screen bg-white dark:bg-gray-900 transition-colors">
-      {sidebarOpen ? (
+      {/* Module Bar — always visible, far left */}
+      <ModuleBar />
+
+      {/* Contextual Sidebar — only for chat module */}
+      {currentView === 'chat' && sidebarOpen && (
         <div className="w-64 flex-shrink-0">
-          <Sidebar onClose={() => setSidebarOpen(false)} />
-        </div>
-      ) : (
-        <div className="w-10 flex-shrink-0 border-r border-gray-100 dark:border-gray-700 flex items-start justify-center pt-4 bg-gray-50 dark:bg-gray-800">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-            title="打开侧边栏"
-          >
-            <svg className="w-5 h-5 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
+          <Sidebar />
         </div>
       )}
-      
+
+      {/* Main Content */}
       <div className="flex-1 flex flex-col min-h-0">
-        {currentConversation ? <ChatArea /> : <WelcomePage />}
+        {renderMainContent()}
       </div>
 
       <ToastContainer />

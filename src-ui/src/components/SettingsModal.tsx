@@ -1,6 +1,8 @@
 ﻿import { useState, useEffect } from 'react';
-import { X, Eye, EyeOff, Check, Wrench, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles } from 'lucide-react';
+import { X, Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings } from 'lucide-react';
 import { useStore } from '../store';
+import { SkillDetailPanel } from './SkillDetailPanel';
+import { SkillInstallDialog } from './SkillInstallDialog';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -8,10 +10,10 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'prompts'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills'>('providers');
   const {
     providers, fetchProviders, setupProvider, updateProviderConfig, removeProvider,
-    tools, fetchTools, toggleTool,
+    skills, fetchSkills, toggleSkill,
     systemPrompts, fetchSystemPrompts, deleteSystemPrompt, setDefaultSystemPrompt,
     models, fetchModels, defaultModel, setDefaultModel,
   } = useStore();
@@ -30,12 +32,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [newModels, setNewModels] = useState<string[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
 
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const [showSkillDetail, setShowSkillDetail] = useState(false);
+  const [showSkillInstall, setShowSkillInstall] = useState(false);
+
   useEffect(() => {
     if (isOpen) {
       fetchProviders();
-      fetchTools();
       fetchSystemPrompts();
       fetchModels();
+      fetchSkills();
     }
   }, [isOpen]);
 
@@ -127,8 +133,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   const tabs = [
     { id: 'providers' as const, icon: <Cpu size={16} />, label: '模型提供商' },
-    { id: 'tools' as const, icon: <Wrench size={16} />, label: '工具' },
     { id: 'prompts' as const, icon: <FileText size={16} />, label: '提示词' },
+    { id: 'skills' as const, icon: <BrainCircuit size={16} />, label: '技能' },
   ];
 
   return (
@@ -445,25 +451,53 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             </>
           )}
 
-          {activeTab === 'tools' && (
+          {activeTab === 'skills' && (
             <div className="space-y-3">
-              {tools.map((tool) => (
-                <div key={tool.name} className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
-                  <div className="flex-1">
-                    <h4 className="text-sm font-medium text-gray-900 capitalize">{tool.name.replace('_', ' ')}</h4>
-                    <p className="text-xs text-gray-500 mt-1">{tool.description}</p>
+              {skills.map((skill) => (
+                <div key={skill.id} className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                  <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center flex-shrink-0">
+                    <BrainCircuit size={18} className="text-purple-600" />
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={tool.enabled}
-                      onChange={(e) => toggleTool(tool.name, e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-sm"></div>
-                  </label>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-medium text-gray-900 truncate">{skill.name}</h4>
+                      <span className="text-xs text-gray-400 flex-shrink-0">v{skill.version}</span>
+                      {skill.author && (
+                        <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded flex-shrink-0">{skill.author}</span>
+                      )}
+                      {skill.source === 'builtin' && (
+                        <span className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded flex-shrink-0">内置</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5 truncate">{skill.description}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      onClick={() => { setSelectedSkillId(skill.id); setShowSkillDetail(true); }}
+                      className="p-1.5 rounded-lg hover:bg-gray-200 text-gray-400 hover:text-purple-600 transition-colors"
+                      title="配置"
+                    >
+                      <Settings size={14} />
+                    </button>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={skill.enabled}
+                        onChange={(e) => toggleSkill(skill.id, e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-sm"></div>
+                    </label>
+                  </div>
                 </div>
               ))}
+              <button
+                onClick={() => setShowSkillInstall(true)}
+                className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-gray-200 rounded-xl text-sm text-gray-400 hover:text-purple-600 hover:border-purple-300 transition-colors"
+              >
+                <Plus size={16} />
+                安装 Skill
+              </button>
             </div>
           )}
 
@@ -507,6 +541,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           )}
         </div>
       </div>
+
+      {showSkillDetail && selectedSkillId && (
+        <SkillDetailPanel
+          skillId={selectedSkillId}
+          onClose={() => { setShowSkillDetail(false); setSelectedSkillId(null); fetchSkills(); }}
+        />
+      )}
+
+      {showSkillInstall && (
+        <SkillInstallDialog
+          onClose={() => { setShowSkillInstall(false); fetchSkills(); }}
+        />
+      )}
     </div>
   );
 }

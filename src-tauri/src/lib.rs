@@ -8,8 +8,11 @@ pub mod keychain;
 pub mod state;
 pub mod tools;
 pub mod agent;
+pub mod skills;
 
 use tauri::Manager;
+
+use crate::state::AppState;
 
 pub fn run() {
     env_logger::init();
@@ -20,6 +23,15 @@ pub fn run() {
             let app_handle = app.handle();
             let state = state::AppState::new(app_handle)?;
             app.manage(state);
+
+            // Sync built-in skills in background
+            let app_handle_clone = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = app_handle_clone.state::<AppState>().skills.lock().await.sync_builtins().await {
+                    log::error!("Failed to sync built-in skills: {}", e);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -44,6 +56,14 @@ pub fn run() {
             commands::get_settings,
             commands::list_tools,
             commands::toggle_tool,
+            commands::list_skills,
+            commands::get_skill_detail,
+            commands::install_skill_from_path,
+            commands::uninstall_skill,
+            commands::toggle_skill,
+            commands::configure_skill,
+            commands::scan_local_skills,
+            commands::import_scanned_skill,
             commands::create_system_prompt,
             commands::list_system_prompts,
             commands::delete_system_prompt,

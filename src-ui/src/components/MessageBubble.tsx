@@ -1,7 +1,9 @@
-import { useState, memo } from 'react';
+import { useState, memo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Sparkles, Wrench, ChevronDown, ChevronRight, User, Info } from 'lucide-react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Sparkles, Wrench, ChevronDown, ChevronRight, User, Info, Copy, Check } from 'lucide-react';
 import { CodeBlock } from './CodeBlock';
 import type { Message } from '../types';
 
@@ -102,7 +104,9 @@ const SystemMessage = memo(function SystemMessage({ message }: MessageBubbleProp
 });
 
 const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true); // default expanded for recent tool calls
+  const [copied, setCopied] = useState(false);
+
   let parsed: { name?: string; args?: string; result?: string } | null = null;
   try {
     parsed = JSON.parse(message.content);
@@ -110,36 +114,108 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
     parsed = null;
   }
 
+  const displayContent = parsed?.result || message.content;
+  const displayArgs = parsed?.args || '';
+  const toolName = parsed?.name || message.tool_call_id || '工具调用';
+
+  // Try to pretty-print JSON for display
+  let prettyResult = displayContent;
+  try {
+    const json = JSON.parse(displayContent);
+    prettyResult = JSON.stringify(json, null, 2);
+  } catch { /* not JSON, use as-is */ }
+
+  let prettyArgs = displayArgs;
+  try {
+    if (displayArgs) {
+      const json = JSON.parse(displayArgs);
+      prettyArgs = JSON.stringify(json, null, 2);
+    }
+  } catch { /* not JSON */ }
+
+  const handleCopy = useCallback(async () => {
+    await navigator.clipboard.writeText(prettyResult);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [prettyResult]);
+
   return (
     <div className="flex gap-4 pl-10 animate-in fade-in duration-300">
       <div className="flex-1 min-w-0">
         <div
-          className="rounded-xl border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-900/10 overflow-hidden cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-colors"
+          className="rounded-xl border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-900/10 overflow-hidden cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-all"
           onClick={() => setExpanded(!expanded)}
         >
-          <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700">
+          <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700 dark:text-orange-400">
             <Wrench size={14} className="text-orange-500" />
-            <span className="font-medium">
-              {parsed?.name || '工具调用'}
-            </span>
+            <span className="font-medium capitalize">{toolName}</span>
+            <span className="text-xs text-orange-400 dark:text-orange-500">工具调用</span>
             <span className="flex-1" />
+            <span className="text-xs text-gray-400">{message.tokens ? `${message.tokens} tokens` : ''}</span>
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </div>
           {expanded && (
-            <div className="border-t border-orange-200 px-3 py-2 space-y-2">
-              {parsed?.args && (
+            <div className="border-t border-orange-200 dark:border-orange-700 px-3 py-2 space-y-2">
+              {displayArgs && (
                 <div>
-                  <span className="text-xs font-medium text-gray-500">参数</span>
-                  <pre className="mt-1 text-xs text-gray-700 bg-white rounded p-2 overflow-x-auto whitespace-pre-wrap">
-                    {parsed.args}
-                  </pre>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">参数</span>
+                  <div className="mt-1 rounded overflow-hidden">
+                    <SyntaxHighlighter
+                      language="json"
+                      style={oneDark}
+                      customStyle={{
+                        margin: 0,
+                        borderRadius: '0.375rem',
+                        fontSize: '0.75rem',
+                        lineHeight: '1.5',
+                        padding: '0.5rem',
+                        maxHeight: '12rem',
+                      }}
+                    >
+                      {prettyArgs}
+                    </SyntaxHighlighter>
+                  </div>
                 </div>
               )}
               <div>
-                <span className="text-xs font-medium text-gray-500">结果</span>
-                <pre className="mt-1 text-xs text-gray-700 bg-white rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
-                  {parsed?.result || message.content}
-                </pre>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">结果</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleCopy(); }}
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                  >
+                    {copied ? (
+                      <>
+                        <Check size={12} className="text-green-500" />
+                        <span className="text-green-500">已复制</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={12} />
+                        <span>复制</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="mt-1 rounded overflow-hidden">
+                  <SyntaxHighlighter
+                    language="json"
+                    style={oneDark}
+                    customStyle={{
+                      margin: 0,
+                      borderRadius: '0.375rem',
+                      fontSize: '0.75rem',
+                      lineHeight: '1.5',
+                      padding: '0.5rem',
+                      maxHeight: '16rem',
+                    }}
+                    codeTagProps={{
+                      style: { fontFamily: "'JetBrains Mono', 'Fira Code', monospace" },
+                    }}
+                  >
+                    {prettyResult}
+                  </SyntaxHighlighter>
+                </div>
               </div>
             </div>
           )}

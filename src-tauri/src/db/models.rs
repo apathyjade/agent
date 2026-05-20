@@ -36,3 +36,24 @@ pub struct SystemPrompt {
     pub is_default: bool,
     pub created_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub author: Option<String>,
+    pub icon: Option<String>,
+    pub tags: Option<String>,
+    pub source_type: String,
+    pub source_path: Option<String>,
+    pub entry_type: String,
+    pub entry_value: String,
+    pub config_schema: Option<String>,
+    pub config: Option<String>,
+    pub enabled: bool,
+    pub agent_sources: Option<String>, // JSON array of agent source names, e.g. ["claude-code","opencode"]
+    pub installed_at: String,
+    pub updated_at: String,
+}

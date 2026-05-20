@@ -79,3 +79,48 @@ export interface SystemPrompt {
   is_default: boolean;
   created_at: string;
 }
+
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author?: string | null;
+  icon?: string | null;
+  tags?: string[] | null;
+  source: 'builtin' | 'local' | 'registry' | 'scanned';
+  agent_sources?: string[] | null;
+  enabled: boolean;
+  installed_at: string;
+  updated_at: string;
+}
+
+export interface SkillDetail extends SkillInfo {
+  config_schema?: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
+  source_path?: string | null;
+  entry_type: string;
+  entry_value: string;
+}
+
+/** Agent source identifier — which AI agent's skill directory this was found in */
+export type AgentSource = 'generic' | 'claude-code' | 'opencode' | 'codex' | 'cursor' | 'workspace';
+
+/** A skill discovered by scanning local agent directories (not yet imported) */
+export interface DiscoveredSkill {
+  id: string;
+  name: string;
+  description: string;
+  /** Path to the skill directory */
+  path: string;
+  version?: string | null;
+  author?: string | null;
+  icon?: string | null;
+  tags?: string[] | null;
+  /** Which agent(s) this skill was found in */
+  agent_sources: string[];
+  /** Whether this skill is already imported */
+  already_imported: boolean;
+  /** The format of the skill definition ('sk.md' or 'yaml') */
+  format: string;
+}

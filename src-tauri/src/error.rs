@@ -26,6 +26,12 @@ pub enum AppError {
 
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+
+    #[error("Skill error: {0}")]
+    Skill(String),
+
+    #[error("Skill validation error: {0}")]
+    SkillValidation(String),
 }
 
 impl serde::Serialize for AppError {
@@ -62,6 +68,8 @@ impl AppError {
             AppError::NotFound(_) => false,
             AppError::InvalidInput(_) => false,
             AppError::Tool(_) => false,
+            AppError::Skill(_) => false,
+            AppError::SkillValidation(_) => false,
         }
     }
 }

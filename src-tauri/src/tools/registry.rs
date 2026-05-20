@@ -60,6 +60,20 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn register_dynamic(&mut self, name: &str, tool: Arc<dyn Tool>, enabled: bool) {
+        self.tools.insert(name.to_string(), tool);
+        self.enabled.insert(name.to_string(), enabled);
+    }
+
+    pub fn unregister(&mut self, name: &str) {
+        self.tools.remove(name);
+        self.enabled.remove(name);
+    }
+
+    pub fn is_registered(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
     pub fn toggle(&mut self, name: &str, enabled: bool) -> Result<()> {
         if self.tools.contains_key(name) {
             self.enabled.insert(name.to_string(), enabled);

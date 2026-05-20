@@ -1,10 +1,8 @@
 ﻿import { useState, useEffect } from 'react';
-import { Plus, Trash2, Settings, MessageSquare, Eraser, X, Sparkles } from 'lucide-react';
+import { Plus, Trash2, MessageSquare, Eraser, X, Sparkles } from 'lucide-react';
 import { useStore } from '../store';
-import { SettingsModal } from './SettingsModal';
-import { ThemeToggle } from './ThemeToggle';
 
-export function Sidebar({ onClose }: { onClose: () => void }) {
+export function Sidebar() {
   const {
     conversations,
     currentConversation,
@@ -21,10 +19,10 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
     clearConversation,
     systemPrompts,
     fetchSystemPrompts,
+    setSidebarOpen,
   } = useStore();
 
   const [showNewChat, setShowNewChat] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [selectedPrompt, setSelectedPrompt] = useState<string>('');
@@ -92,7 +90,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
             </div>
             <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agent</h1>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+          <button onClick={() => setSidebarOpen(false)} className="p-1 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
             <X size={18} className="text-gray-500 dark:text-gray-400" />
           </button>
         </div>
@@ -225,19 +223,7 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
-        <div className="p-3 border-t border-gray-100 dark:border-gray-700 space-y-1">
-          <ThemeToggle />
-          <button
-            onClick={() => setShowSettings(true)}
-            className="w-full flex items-center gap-2 text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-sm"
-          >
-            <Settings size={16} />
-            设置
-          </button>
-        </div>
       </div>
-
-      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </>
   );
 }

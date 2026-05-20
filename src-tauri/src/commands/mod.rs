@@ -4,12 +4,14 @@ pub mod conversation;
 pub mod model;
 pub mod prompt;
 pub mod settings;
+pub mod skill;
 pub mod tool;
 
 pub use conversation::*;
 pub use model::*;
 pub use prompt::*;
 pub use settings::*;
+pub use skill::*;
 pub use tool::*;
 
 // ── Shared types ──

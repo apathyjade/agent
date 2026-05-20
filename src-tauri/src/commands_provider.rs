@@ -133,12 +133,25 @@ pub async fn setup_provider(
     }
     drop(providers);
 
-    // Store API key in OS keychain
+    // Store API key in OS keychain; if that fails, fall back to config.json
     let requires_api_key = provider != "ollama" && provider != "lmstudio";
+    let mut keychain_failed = false;
     if requires_api_key && !api_key.is_empty() {
         for model_id in &enabled_models {
-            let _ = keychain::store_api_key(model_id, &api_key);
+            if keychain::store_api_key(model_id, &api_key).is_err() {
+                keychain_failed = true;
+            }
         }
+    }
+
+    // If keychain is unavailable (mock backend, CI, etc.), store key in config.json
+    if keychain_failed {
+        for model in &mut config.models {
+            if model.provider.to_string() == provider {
+                model.api_key = api_key.clone();
+            }
+        }
+        config.save()?;
     }
 
     let mut providers = state.providers.lock().await;
@@ -167,11 +180,14 @@ pub async fn update_provider_config(
     let mut config = state.config.lock().await;
 
     // Update keychain first if a new API key is provided
+    let mut keychain_failed = false;
     if let Some(key) = &api_key {
         if !key.is_empty() {
             for model in &config.models {
                 if model.provider.to_string() == provider {
-                    let _ = keychain::store_api_key(&model.id, key);
+                    if keychain::store_api_key(&model.id, key).is_err() {
+                        keychain_failed = true;
+                    }
                 }
             }
         }
@@ -181,7 +197,12 @@ pub async fn update_provider_config(
         if model.provider.to_string() == provider {
             if let Some(key) = &api_key {
                 if !key.is_empty() {
-                    model.api_key = String::new(); // stored in keychain
+                    // Clear keychain flag - if keychain failed, store in config
+                    if keychain_failed {
+                        model.api_key = key.clone();
+                    } else {
+                        model.api_key = String::new(); // stored in keychain
+                    }
                 }
             }
             if let Some(url) = &base_url {

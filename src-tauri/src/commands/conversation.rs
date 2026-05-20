@@ -105,6 +105,7 @@ pub async fn send_message(
     state: State<'_, AppState>,
     conversation_id: String,
     content: String,
+    tools_enabled: Option<bool>,
 ) -> Result<DbMessage> {
     let db = state.db.lock().await;
 
@@ -170,7 +171,7 @@ pub async fn send_message(
     if let Some(ctx) = context_window {
         agent = agent.with_context_limit(ctx);
     }
-    let response = agent.run(&conv.model_id, api_messages, false).await?;
+    let response = agent.run(&conv.model_id, api_messages, tools_enabled.unwrap_or(true)).await?;
 
     let db = state.db.lock().await;
     if let Some(choice) = response.choices.first() {
@@ -198,6 +199,7 @@ pub async fn send_message_stream(
     app_handle: tauri::AppHandle,
     conversation_id: String,
     content: String,
+    tools_enabled: Option<bool>,
 ) -> Result<String> {
     let db = state.db.lock().await;
 
@@ -263,9 +265,10 @@ pub async fn send_message_stream(
     if let Some(ctx) = context_window {
         agent = agent.with_context_limit(ctx);
     }
-    let mut stream = agent.run_stream(&conv.model_id, api_messages, false).await?;
+    let mut stream = agent.run_stream(&conv.model_id, api_messages, tools_enabled.unwrap_or(true)).await?;
 
     let mut full_content = String::new();
+    let conv_id_for_messages = conversation_id.clone();
 
     while let Some(chunk) = stream.recv().await {
         match chunk {
@@ -290,6 +293,22 @@ pub async fn send_message_stream(
                 });
             }
             crate::agent::r#loop::StreamEvent::ToolResult(tool_result) => {
+                // Persist tool result message to DB
+                {
+                    let db = state.db.lock().await;
+                    let tool_msg = DbMessage {
+                        id: Uuid::new_v4().to_string(),
+                        conversation_id: conv_id_for_messages.clone(),
+                        role: "tool".to_string(),
+                        content: tool_result.result.clone(),
+                        tool_calls: None,
+                        tool_call_id: Some(tool_result.call_id.clone()),
+                        tokens: None,
+                        created_at: Utc::now().to_rfc3339(),
+                    };
+                    let _ = db.insert_message(&tool_msg);
+                } // db lock released here
+
                 let _ = app_handle.emit("stream_chunk", StreamChunk {
                     content: String::new(),
                     done: false,

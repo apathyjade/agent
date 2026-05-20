@@ -7,15 +7,16 @@ import { type ConversationSlice, createConversationSlice } from './conversationS
 import { type ModelSlice, createModelSlice } from './modelSlice';
 import { type ToolSlice, createToolSlice } from './toolSlice';
 import { type PromptSlice, createPromptSlice } from './promptSlice';
+import { type SkillSlice, createSkillSlice } from './skillSlice';
 
 export type { Toast } from './uiSlice';
 
 // Cross-slice method for streaming (spans messages + UI state)
 export interface StreamSlice {
-  sendMessageStream: (content: string) => Promise<void>;
+  sendMessageStream: (content: string, toolsEnabled?: boolean) => Promise<void>;
 }
 
-export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & StreamSlice;
+export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & StreamSlice;
 
 export const useStore = create<AppState>()((set, get, store) => ({
   ...createUISlice(set, get, store),
@@ -23,9 +24,10 @@ export const useStore = create<AppState>()((set, get, store) => ({
   ...createModelSlice(set, get, store),
   ...createToolSlice(set, get, store),
   ...createPromptSlice(set, get, store),
+  ...createSkillSlice(set, get, store),
 
   // sendMessageStream spans both conversation and UI state
-  sendMessageStream: async (content: string) => {
+  sendMessageStream: async (content: string, toolsEnabled?: boolean) => {
     const { currentConversation } = get();
     if (!currentConversation) return;
 
@@ -75,7 +77,8 @@ export const useStore = create<AppState>()((set, get, store) => ({
               streamingContent: '',
             }));
           }
-        }
+        },
+        toolsEnabled
       );
     } catch (err) {
       set({ error: String(err), loading: false, isStreaming: false });

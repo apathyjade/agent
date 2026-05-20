@@ -3,7 +3,7 @@ use tokio::sync::{Mutex, mpsc};
 use serde::{Serialize, Deserialize};
 use futures::StreamExt;
 
-use crate::api::provider::ProviderRegistry;
+use crate::api::provider::{LLMProvider, ProviderRegistry};
 use crate::api::types::{
     ChatRequest, ChatResponse, Message, MessageRole, ToolCall, ToolDefinition,
 };
@@ -59,21 +59,26 @@ impl AgentLoop {
     }
 
     pub async fn run(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool) -> Result<ChatResponse> {
-        let _provider = self.providers.lock().await.get(model_id)?;
+        let provider = self.providers.lock().await.get(model_id)?;
         let tool_registry = self.tools.lock().await;
-        let enabled_tools = if tools_enabled { tool_registry.get_enabled() } else { vec![] };
 
-        let tool_definitions: Vec<ToolDefinition> = enabled_tools
-            .iter()
-            .map(|tool| ToolDefinition {
-                tool_type: "function".to_string(),
-                function: crate::api::types::FunctionDefinition {
-                    name: tool.name().to_string(),
-                    description: tool.description().to_string(),
-                    parameters: tool.parameters(),
-                },
-            })
-            .collect();
+        let tool_definitions: Vec<ToolDefinition> = if tools_enabled {
+            tool_registry.get_enabled()
+                .iter()
+                .map(|tool| ToolDefinition {
+                    tool_type: "function".to_string(),
+                    function: crate::api::types::FunctionDefinition {
+                        name: tool.name().to_string(),
+                        description: tool.description().to_string(),
+                        parameters: tool.parameters(),
+                    },
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        drop(tool_registry);
 
         let optimized_messages = Self::optimize_context(&messages, self.max_context_tokens);
         let mut current_messages = optimized_messages;
@@ -91,7 +96,7 @@ impl AgentLoop {
                 stream: Some(false),
             };
 
-            let response = self.retry_with_backoff(&chat_request, 3).await?;
+            let response = Self::retry_with_backoff(&chat_request, 3, provider.clone()).await?;
 
             if let Some(choice) = response.choices.first() {
                 let assistant_message = &choice.message;
@@ -213,15 +218,10 @@ impl AgentLoop {
         if total == 0 && !content.is_empty() { 1 } else { total }
     }
 
-    async fn retry_with_backoff(&self, request: &ChatRequest, max_retries: u32) -> Result<ChatResponse> {
+    async fn retry_with_backoff(request: &ChatRequest, max_retries: u32, provider: Arc<dyn LLMProvider>) -> Result<ChatResponse> {
         let mut last_error = None;
 
         for attempt in 0..max_retries {
-            let provider = match self.providers.lock().await.get(&request.model) {
-                Ok(p) => p,
-                Err(e) => return Err(e),
-            };
-
             match provider.chat(request.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
@@ -250,6 +250,26 @@ impl AgentLoop {
         tx: &mpsc::Sender<StreamEvent>,
         max_iterations: usize,
     ) -> Result<()> {
+        let provider = providers.lock().await.get(model_id)?;
+        let tool_definitions = {
+            let tool_registry = tools.lock().await;
+            if tools_enabled {
+                tool_registry.get_enabled()
+                    .iter()
+                    .map(|tool| ToolDefinition {
+                        tool_type: "function".to_string(),
+                        function: crate::api::types::FunctionDefinition {
+                            name: tool.name().to_string(),
+                            description: tool.description().to_string(),
+                            parameters: tool.parameters(),
+                        },
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        };
+
         let mut current_messages = messages;
         let mut iteration = 0;
 
@@ -257,23 +277,6 @@ impl AgentLoop {
             if iteration >= max_iterations {
                 return Err(AppError::Tool("Max iterations reached".to_string()));
             }
-
-            let provider = providers.lock().await.get(model_id)?;
-            let tool_registry = tools.lock().await;
-            let enabled_tools = if tools_enabled { tool_registry.get_enabled() } else { vec![] };
-            drop(tool_registry);
-
-            let tool_definitions: Vec<ToolDefinition> = enabled_tools
-                .iter()
-                .map(|tool| ToolDefinition {
-                    tool_type: "function".to_string(),
-                    function: crate::api::types::FunctionDefinition {
-                        name: tool.name().to_string(),
-                        description: tool.description().to_string(),
-                        parameters: tool.parameters(),
-                    },
-                })
-                .collect();
 
             let chat_request = ChatRequest {
                 messages: current_messages.clone(),
