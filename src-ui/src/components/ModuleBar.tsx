@@ -23,11 +23,7 @@ export function ModuleBar() {
 
   return (
     <>
-      <div className="w-[50px] flex-shrink-0 bg-gray-900 dark:bg-black flex flex-col items-center py-3 border-r border-gray-800 select-none">
-        {/* App Logo */}
-        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-500 flex items-center justify-center flex-shrink-0 mb-4 shadow-sm">
-          <span className="text-white text-[10px] font-bold">A</span>
-        </div>
+      <div className="w-[50px] flex-shrink-0 bg-white dark:bg-gray-800 flex flex-col items-center py-3 border-r border-gray-200 dark:border-gray-700 select-none">
 
         {/* Module icons */}
         <div className="flex-1 flex flex-col items-center gap-1">
@@ -35,8 +31,8 @@ export function ModuleBar() {
             onClick={handleChatClick}
             className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all relative ${
               currentView === 'chat'
-                ? 'bg-purple-500/15 text-purple-400'
-                : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+                ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'
+                : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
             }`}
             title="对话"
           >
@@ -50,8 +46,8 @@ export function ModuleBar() {
             onClick={handleSkillsClick}
             className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all relative ${
               currentView === 'skill-manager'
-                ? 'bg-purple-500/15 text-purple-400'
-                : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+                ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'
+                : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
             }`}
             title="技能管理"
           >
@@ -65,15 +61,15 @@ export function ModuleBar() {
         {/* Bottom: Theme + Settings */}
         <button
           onClick={toggleDarkMode}
-          className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all"
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all"
           title={darkMode ? '切换浅色模式' : '切换深色模式'}
         >
           {darkMode ? <Sun size={18} /> : <Moon size={18} />}
         </button>
-        <div className="w-5 h-px bg-gray-800 my-1.5" />
+        <div className="w-5 h-px bg-gray-200 dark:bg-gray-700 my-1.5" />
         <button
           onClick={() => setShowSettings(true)}
-          className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all"
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all"
           title="设置"
         >
           <Settings size={18} />

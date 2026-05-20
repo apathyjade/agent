@@ -1,5 +1,11 @@
 ﻿import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+
+export async function setWindowPosition(x: number, y: number): Promise<void> {
+  return invoke('set_window_position', { x, y });
+}
+
+
 import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult } from '../types';
 
 export async function createConversation(

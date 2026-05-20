@@ -18,14 +18,14 @@ export function CodeBlock({ language, value }: CodeBlockProps) {
   }, [value]);
 
   return (
-    <div className="relative group rounded-xl overflow-hidden border border-gray-200 my-3">
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-100 border-b border-gray-200">
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+    <div className="relative group rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 my-3">
+      <div className="flex items-center justify-between px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
           {language}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+          className="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
         >
           {copied ? (
             <>

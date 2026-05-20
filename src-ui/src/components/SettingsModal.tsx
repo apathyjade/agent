@@ -170,13 +170,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               <div className="mb-4 p-4 bg-purple-50 border border-purple-100 rounded-xl">
                 <div className="flex items-center gap-2 mb-3">
                   <Sparkles size={16} className="text-purple-600" />
-                  <h3 className="text-sm font-medium text-purple-900">默认模型</h3>
+                  <h3 className="text-sm font-medium text-purple-900 dark:text-purple-300">默认模型</h3>
                 </div>
-                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3">
                   <select
                     value={defaultModel || ''}
                     onChange={(e) => { if (e.target.value) setDefaultModel(e.target.value); }}
-                    className="flex-1 bg-white border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="flex-1 bg-white dark:bg-gray-700 border border-purple-200 dark:border-purple-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100"
                   >
                     <option value="">选择默认模型...</option>
                     {models.filter(m => m.enabled).map((model) => (
@@ -186,7 +186,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     ))}
                   </select>
                   {defaultModel && (
-                    <span className="text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full whitespace-nowrap">
+                    <span className="text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 px-2 py-1 rounded-full whitespace-nowrap">
                       当前: {models.find(m => m.id === defaultModel)?.display_name || defaultModel}
                     </span>
                   )}
@@ -204,8 +204,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     onClick={() => handleSelectProvider(provider)}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all ${
                       selectedProvider === provider.id
-                        ? 'bg-purple-50 text-purple-700'
-                        : 'hover:bg-gray-50 text-gray-700'
+                        ? 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+                        : 'hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300'
                     }`}
                   >
                     <span className={`text-xs px-2 py-0.5 rounded-full ${getProviderColor(provider.id)}`}>
@@ -230,22 +230,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         {selected.name}
                       </span>
                       {selected.configured ? (
-                        <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">已配置</span>
+                        <span className="text-xs bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 px-2 py-0.5 rounded-full">已配置</span>
                       ) : (
-                        <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">未配置</span>
+                        <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">未配置</span>
                       )}
                     </div>
 
                     {selected.configured && (
                       <>
                         <div>
-                          <label className="text-xs text-gray-500 mb-1 block">已启用模型</label>
+                          <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">已启用模型</label>
                           <div className="space-y-1">
                             {selected.available_models.map((model) => (
-                              <div key={model.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-gray-50">
-                                <Check size={14} className={`flex-shrink-0 ${selected.enabled_models.includes(model.id) ? 'text-green-500' : 'text-gray-300'}`} />
-                                <span className="text-sm text-gray-700">{model.name}</span>
-                                <span className="text-xs text-gray-400 ml-auto">{model.id}</span>
+                              <div key={model.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-gray-50 dark:bg-gray-700/50">
+                                <Check size={14} className={`flex-shrink-0 ${selected.enabled_models.includes(model.id) ? 'text-green-500' : 'text-gray-300 dark:text-gray-600'}`} />
+                                <span className="text-sm text-gray-700 dark:text-gray-300">{model.name}</span>
+                                <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">{model.id}</span>
                                 {model.context_window && (
                                   <span className="text-xs text-gray-400">{(model.context_window / 1000).toFixed(0)}K</span>
                                 )}
@@ -288,18 +288,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                 {selected && showAddForm && (
                   <div className="space-y-3">
-                    <h3 className="text-sm font-medium text-gray-900">配置 {selected.name}</h3>
+                    <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">配置 {selected.name}</h3>
 
                     {selected.requires_api_key && (
                       <div>
-                        <label className="text-xs text-gray-500 mb-1 block">API Key</label>
+                        <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">API Key</label>
                         <div className="relative">
                           <input
                             type={showApiKey ? 'text' : 'password'}
                             value={newApiKey}
                             onChange={(e) => setNewApiKey(e.target.value)}
                             placeholder="sk-..."
-                            className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
                           />
                           <button
                             onClick={() => setShowApiKey(!showApiKey)}
@@ -312,29 +312,29 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     )}
 
                     <div>
-                      <label className="text-xs text-gray-500 mb-1 block">Base URL (可选)</label>
+                      <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Base URL (可选)</label>
                       <input
                         type="text"
                         value={newBaseUrl}
                         onChange={(e) => setNewBaseUrl(e.target.value)}
                         placeholder={selected.base_url || '使用默认地址'}
-                        className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
                       />
                     </div>
 
                     <div>
-                      <label className="text-xs text-gray-500 mb-1 block">选择模型</label>
+                      <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">选择模型</label>
                       <div className="space-y-1 max-h-48 overflow-y-auto">
                         {selected.available_models.map((model) => (
-                          <label key={model.id} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-gray-50 cursor-pointer">
+                          <label key={model.id} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer">
                             <input
                               type="checkbox"
                               checked={newModels.includes(model.id)}
                               onChange={(e) => toggleModel(model.id, e.target.checked)}
-                              className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                              className="rounded border-gray-300 dark:border-gray-600 text-purple-600 focus:ring-purple-500"
                             />
-                            <span className="text-sm text-gray-700">{model.name}</span>
-                            <span className="text-xs text-gray-400 ml-auto">{model.id}</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">{model.name}</span>
+                            <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">{model.id}</span>
                           </label>
                         ))}
                       </div>
@@ -369,18 +369,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                 {selected && isEditing && (
                   <div className="space-y-3">
-                    <h3 className="text-sm font-medium text-gray-900">编辑 {selected.name}</h3>
+                    <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">编辑 {selected.name}</h3>
 
                     {selected.requires_api_key && (
                       <div>
-                        <label className="text-xs text-gray-500 mb-1 block">API Key (留空保持不变)</label>
+                        <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">API Key (留空保持不变)</label>
                         <div className="relative">
                           <input
                             type={showApiKey ? 'text' : 'password'}
                             value={newApiKey}
                             onChange={(e) => setNewApiKey(e.target.value)}
                             placeholder="留空保持不变"
-                            className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
                           />
                           {newApiKey && (
                             <button
@@ -395,29 +395,29 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     )}
 
                     <div>
-                      <label className="text-xs text-gray-500 mb-1 block">Base URL (可选)</label>
+                      <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Base URL (可选)</label>
                       <input
                         type="text"
                         value={newBaseUrl}
                         onChange={(e) => setNewBaseUrl(e.target.value)}
                         placeholder="使用默认地址"
-                        className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
                       />
                     </div>
 
                     <div>
-                      <label className="text-xs text-gray-500 mb-1 block">选择模型</label>
+                      <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">选择模型</label>
                       <div className="space-y-1 max-h-48 overflow-y-auto">
                         {selected.available_models.map((model) => (
-                          <label key={model.id} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-gray-50 cursor-pointer">
+                          <label key={model.id} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer">
                             <input
                               type="checkbox"
                               checked={newModels.includes(model.id)}
                               onChange={(e) => toggleModel(model.id, e.target.checked)}
-                              className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                              className="rounded border-gray-300 dark:border-gray-600 text-purple-600 focus:ring-purple-500"
                             />
-                            <span className="text-sm text-gray-700">{model.name}</span>
-                            <span className="text-xs text-gray-400 ml-auto">{model.id}</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">{model.name}</span>
+                            <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">{model.id}</span>
                           </label>
                         ))}
                       </div>
@@ -442,7 +442,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 )}
 
                 {!selected && (
-                  <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
+                  <div className="flex items-center justify-center h-48 text-gray-400 dark:text-gray-500 text-sm">
                     选择左侧的模型提供商进行配置
                   </div>
                 )}
@@ -454,13 +454,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           {activeTab === 'skills' && (
             <div className="space-y-3">
               {skills.map((skill) => (
-                <div key={skill.id} className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
-                  <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center flex-shrink-0">
-                    <BrainCircuit size={18} className="text-purple-600" />
+                <div key={skill.id} className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                  <div className="w-9 h-9 rounded-lg bg-purple-100 dark:bg-purple-900/40 flex items-center justify-center flex-shrink-0">
+                    <BrainCircuit size={18} className="text-purple-600 dark:text-purple-400" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-medium text-gray-900 truncate">{skill.name}</h4>
+                      <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{skill.name}</h4>
                       <span className="text-xs text-gray-400 flex-shrink-0">v{skill.version}</span>
                       {skill.author && (
                         <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded flex-shrink-0">{skill.author}</span>
@@ -504,15 +504,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               <PromptForm />
               <div className="space-y-2">
                 {systemPrompts.map((prompt) => (
-                  <div key={prompt.id} className="p-4 bg-gray-50 rounded-xl border border-gray-100 flex items-start gap-3">
+                  <div key={prompt.id} className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700 flex items-start gap-3">
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <h4 className="text-sm font-medium text-gray-900">{prompt.name}</h4>
+                        <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100">{prompt.name}</h4>
                         {prompt.is_default && (
-                          <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full">默认</span>
+                          <span className="text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 px-2 py-0.5 rounded-full">默认</span>
                         )}
                       </div>
-                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">{prompt.content}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{prompt.content}</p>
                     </div>
                     <div className="flex items-center gap-1">
                       {!prompt.is_default && (
@@ -569,20 +569,20 @@ function PromptForm() {
   };
 
   return (
-    <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-100">
+    <div className="space-y-3 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
       <input
         type="text"
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="提示词名称"
-        className="w-full bg-white border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+        className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
       />
       <textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
         placeholder="系统提示词内容..."
         rows={3}
-        className="w-full bg-white border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+        className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400 resize-none"
       />
       <button
         onClick={handleSubmit}

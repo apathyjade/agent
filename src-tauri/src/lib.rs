@@ -77,6 +77,7 @@ pub fn run() {
             commands_provider::remove_provider,
             commands_provider::get_provider_models,
             commands_provider::get_available_models,
+            commands::window::set_window_position,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

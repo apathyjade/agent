@@ -132,14 +132,9 @@ export function ChatArea() {
 
   return (
     <div className="flex-1 flex flex-col bg-white dark:bg-gray-900 min-h-0 transition-colors">
-      <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-sm">
-            <Sparkles size={20} className="text-white" />
-          </div>
-          <div>
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{currentConversation.title}</h2>
-            <div className="relative model-picker">
+      <div className="px-6 py-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm sticky top-0 z-10">
+        <div className="flex items-center gap-2">
+          <div className="relative model-picker">
               <button
                 onClick={(e) => { e.stopPropagation(); setShowModelPicker(!showModelPicker); }}
                 className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
@@ -175,8 +170,7 @@ export function ChatArea() {
               )}
             </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3">
           {currentConversation.system_prompt && (
             <span className="px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs rounded-lg">提示词已加载</span>
           )}
