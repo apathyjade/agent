@@ -5,6 +5,7 @@
   "identifier": "com.agent.app",
   "build": {
     "frontendDist": "../src-ui/dist",
+    "devUrl": "http://localhost:1420",
     "beforeDevCommand": "",
     "beforeBuildCommand": ""
   },
@@ -15,7 +16,8 @@
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": false
       }
     ],
     "security": {
