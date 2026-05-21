@@ -32,3 +32,6 @@ src-ui/.eslintcache
 # Test artifacts
 src-ui/test-results/
 src-ui/playwright-report/
+
+# Log files
+*.log

@@ -41,3 +41,5 @@ config = { version = "0.14", features = ["toml"] }
 regex = "1"
 urlencoding = "2.1"
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+rmcp = { version = "1", default-features = false, features = ["client", "transport-child-process"] }
+tokio-cron-scheduler = "0.15"

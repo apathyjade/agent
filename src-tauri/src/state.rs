@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 use crate::api::provider::ProviderRegistry;
 use crate::config::AppConfig;
 use crate::db::repository::Database;
+use crate::mcp::McpServerManager;
 use crate::skills::SkillManager;
 use crate::tools::registry::ToolRegistry;
 
@@ -15,6 +16,7 @@ pub struct AppState {
     pub providers: Arc<Mutex<ProviderRegistry>>,
     pub tools: Arc<Mutex<ToolRegistry>>,
     pub skills: Arc<Mutex<SkillManager>>,
+    pub mcp: McpServerManager,
 }
 
 impl AppState {
@@ -27,7 +29,8 @@ impl AppState {
         let db_arc = Arc::new(Mutex::new(db));
         let tools_arc = Arc::new(Mutex::new(tools));
 
-        let skills = SkillManager::new(db_arc.clone());
+        let skills = SkillManager::new(db_arc.clone(), tools_arc.clone());
+        let mcp = McpServerManager::new(tools_arc.clone());
 
         Ok(Self {
             app_handle: app_handle.clone(),
@@ -36,6 +39,7 @@ impl AppState {
             providers: Arc::new(Mutex::new(providers)),
             tools: tools_arc,
             skills: Arc::new(Mutex::new(skills)),
+            mcp,
         })
     }
 }

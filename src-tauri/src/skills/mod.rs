@@ -8,6 +8,8 @@ use tokio::sync::Mutex;
 use crate::db::models::SkillRecord;
 use crate::db::repository::Database;
 use crate::error::{AppError, Result};
+use crate::tools::registry::ToolRegistry;
+use crate::tools::script_tool::ScriptTool;
 
 // ── Re-export types used by commands ──
 pub mod loader;
@@ -55,15 +57,128 @@ pub struct SkillDetail {
 }
 
 /// Manages skill lifecycle: install, uninstall, toggle, configure, list.
-/// This is an independent module for managing skills.sh ecosystem skills
-/// on the local machine. It does NOT interact with the project's ToolRegistry.
+/// Also syncs enabled skills as ScriptTool instances into the project's ToolRegistry
+/// so the chat agent can invoke them as tools.
 pub struct SkillManager {
     db: Arc<Mutex<Database>>,
+    tools: Arc<Mutex<ToolRegistry>>,
 }
 
 impl SkillManager {
-    pub fn new(db: Arc<Mutex<Database>>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<Mutex<Database>>, tools: Arc<Mutex<ToolRegistry>>) -> Self {
+        Self { db, tools }
+    }
+
+    /// Register a skill as a dynamic tool in ToolRegistry.
+    /// Only script-type skills with a valid skill.yaml are registered.
+    async fn register_skill_tool(&self, id: &str) -> Result<()> {
+        let record = {
+            let db = self.db.lock().await;
+            db.get_skill(id)?
+                .ok_or_else(|| AppError::NotFound(format!("Skill '{}' not found", id)))?
+        };
+
+        let source_path = match &record.source_path {
+            Some(p) => PathBuf::from(p),
+            None => return Err(AppError::SkillValidation(format!("Skill '{}' has no source path", id))),
+        };
+
+        let yaml_path = source_path.join("skill.yaml");
+        if !yaml_path.exists() {
+            return Err(AppError::SkillValidation(format!(
+                "skill.yaml not found for '{}' at {:?}",
+                id, yaml_path
+            )));
+        }
+
+        let meta = loader::parse_skill_yaml(&yaml_path)?;
+
+        // Only register script-type skills
+        let (interpreter, script_path) = match &meta.entry {
+            SkillEntry::Script { interpreter, script_path } => {
+                let full_script_path = if Path::new(script_path).is_absolute() {
+                    script_path.clone()
+                } else {
+                    source_path.join(script_path).to_string_lossy().to_string()
+                };
+                (interpreter.clone(), full_script_path)
+            }
+            SkillEntry::BuiltinTool { .. } | SkillEntry::Wasm { .. } => {
+                return Err(AppError::SkillValidation(format!(
+                    "Skill '{}' has unsupported entry type for tool registration",
+                    id
+                )));
+            }
+        };
+
+        let tool = Arc::new(ScriptTool::new(
+            id,
+            &meta.tool_name,
+            &meta.tool_description,
+            meta.tool_parameters.clone(),
+            &interpreter,
+            &script_path,
+            meta.timeout_secs.unwrap_or(30),
+        ));
+
+        let mut tools = self.tools.lock().await;
+        // Remove existing registration first to allow updates
+        if tools.is_registered(&meta.tool_name) {
+            tools.unregister(&meta.tool_name);
+        }
+        tools.register_dynamic(&meta.tool_name, tool, true);
+
+        log::info!("Registered skill '{}' as tool '{}'", id, meta.tool_name);
+        Ok(())
+    }
+
+    /// Unregister a skill's tool from ToolRegistry.
+    async fn unregister_skill_tool(&self, id: &str) -> Result<()> {
+        // Read the yaml to get the tool_name for unregistration
+        let record = {
+            let db = self.db.lock().await;
+            db.get_skill(id)?
+        };
+
+        if let Some(record) = record {
+            if let Some(ref source_path) = record.source_path {
+                let yaml_path = Path::new(source_path).join("skill.yaml");
+                if yaml_path.exists() {
+                    if let Ok(meta) = loader::parse_skill_yaml(&yaml_path) {
+                        let mut tools = self.tools.lock().await;
+                        tools.unregister(&meta.tool_name);
+                        log::info!("Unregistered skill '{}' tool '{}'", id, meta.tool_name);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Sync all enabled skills from DB into ToolRegistry.
+    /// Iterates all skills where enabled=true and tries to register them.
+    /// Skills without a valid script entry are silently skipped.
+    pub async fn sync_enabled_to_tools(&self) -> Result<()> {
+        let records = {
+            let db = self.db.lock().await;
+            db.list_skills()?
+        };
+
+        for record in &records {
+            if !record.enabled {
+                continue;
+            }
+            // Skip non-local / non-script skills (e.g. builtin legacy records)
+            if record.source_type != "local" {
+                continue;
+            }
+
+            if let Err(e) = self.register_skill_tool(&record.id).await {
+                log::warn!("Failed to register skill tool '{}': {}", record.id, e);
+            }
+        }
+
+        Ok(())
     }
 
     /// Install a skill from a local path (skill.yaml file).
@@ -128,11 +243,22 @@ impl SkillManager {
             db.insert_skill(&record)?;
         }
 
+        // If enabled and script-type, register as tool
+        if record.enabled {
+            if let Err(e) = self.register_skill_tool(&record.id).await {
+                log::warn!("Installed skill '{}' but failed to register tool: {}", record.id, e);
+                // Non-fatal: skill is installed and enabled, just tool registration failed
+            }
+        }
+
         Ok(Self::record_to_info(&record))
     }
 
-    /// Uninstall a skill: remove DB record and installed files.
+    /// Uninstall a skill: remove DB record, unregister from ToolRegistry, and remove installed files.
     pub async fn uninstall(&self, id: &str) -> Result<()> {
+        // Unregister tool first (needs the record to read tool_name from yaml)
+        self.unregister_skill_tool(id).await?;
+
         let db = self.db.lock().await;
         let skill = db
             .get_skill(id)?
@@ -152,10 +278,26 @@ impl SkillManager {
         Ok(())
     }
 
-    /// Toggle skill enabled/disabled (DB-only, independent of ToolRegistry)
+    /// Toggle skill enabled/disabled. Also registers/unregisters the ScriptTool
+    /// in ToolRegistry so the chat agent can use it.
     pub async fn toggle(&self, id: &str, enabled: bool) -> Result<()> {
-        let db = self.db.lock().await;
-        db.update_skill_enabled(id, enabled)?;
+        // Update DB first
+        {
+            let db = self.db.lock().await;
+            db.update_skill_enabled(id, enabled)?;
+        }
+
+        // Sync with ToolRegistry
+        if enabled {
+            // Attempt to register; warn on failure but don't rollback DB change
+            if let Err(e) = self.register_skill_tool(id).await {
+                log::warn!("Failed to register skill tool '{}': {}", id, e);
+                return Err(e);
+            }
+        } else {
+            self.unregister_skill_tool(id).await?;
+        }
+
         Ok(())
     }
 
@@ -237,6 +379,8 @@ impl SkillManager {
 
         let mut added = Vec::new();
         let mut removed = Vec::new();
+        let mut to_remove_tool: Vec<String> = Vec::new();
+        let mut to_add_tool: Vec<String> = Vec::new();
         let now = chrono::Utc::now().to_rfc3339();
 
         // 1. Auto-add skills on disk that are missing from DB
@@ -283,6 +427,7 @@ impl SkillManager {
             let db = self.db.lock().await;
             if db.insert_skill(&record).is_ok() {
                 added.push(skill.id.clone());
+                to_add_tool.push(skill.id.clone());
             }
         }
 
@@ -293,6 +438,7 @@ impl SkillManager {
                 let disk_path = Path::new(sp);
                 if !disk_path.exists() {
                     log::info!("Reconcile: skill '{}' in DB but directory missing at '{}' — removing", db_skill.id, sp);
+                    to_remove_tool.push(db_skill.id.clone());
                     if db.delete_skill(&db_skill.id).is_ok() {
                         removed.push(db_skill.id.clone());
                     }
@@ -300,6 +446,18 @@ impl SkillManager {
             }
         }
         drop(db);
+
+        // 3. Sync ToolRegistry: unregister removed, register newly added
+        for id in &to_remove_tool {
+            if let Err(e) = self.unregister_skill_tool(id).await {
+                log::warn!("Reconcile: failed to unregister tool for '{}': {}", id, e);
+            }
+        }
+        for id in &to_add_tool {
+            if let Err(e) = self.register_skill_tool(id).await {
+                log::warn!("Reconcile: failed to register tool for '{}': {}", id, e);
+            }
+        }
 
         Ok(scanner::ReconcileResult { added, removed })
     }

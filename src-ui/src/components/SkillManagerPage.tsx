@@ -18,6 +18,7 @@ import {
   BadgeCheck,
 } from 'lucide-react';
 import { useStore } from '../store';
+import { ManagerPageLayout } from './ManagerPageLayout';
 import { SkillDetailPanel } from './SkillDetailPanel';
 import type { SkillInfo, MarketSkill, ReconcileResult } from '../types';
 
@@ -450,48 +451,36 @@ export function SkillManagerPage() {
   ];
 
   return (
-    <div className="h-full flex flex-col bg-gray-50 dark:bg-gray-900/50">
-      {/* Header */}
-      <div className="bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700/60 px-6 py-4 flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-sm">
-              <BrainCircuit size={20} className="text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100">技能管理</h1>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                管理本机已安装的 {skills.length} 个技能
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleScan}
-              disabled={reconciling}
-              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-lg text-sm transition-colors disabled:opacity-50 border border-indigo-200 dark:border-indigo-800/50"
-              title="扫描同步本地技能数据，纠正磁盘与数据库不一致"
-            >
-              {reconciling ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <ScanLine size={14} />
-              )}
-              <span className="hidden sm:inline">扫描</span>
-            </button>
-            <button
-              onClick={() => setInstallDialogOpen(true)}
-              className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-lg text-sm transition-all shadow-sm hover:shadow-md font-medium"
-            >
-              <Plus size={15} />
-              安装 Skill
-            </button>
-          </div>
-        </div>
-
-        {/* Search & Filter Bar */}
-        <div className="flex items-center gap-3 mt-4">
+    <ManagerPageLayout
+      icon={<BrainCircuit size={20} className="text-white" />}
+      title="技能管理"
+      subtitle={`管理本机已安装的 ${skills.length} 个技能`}
+      headerActions={
+        <>
+          <button
+            onClick={handleScan}
+            disabled={reconciling}
+            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-lg text-sm transition-colors disabled:opacity-50 border border-indigo-200 dark:border-indigo-800/50"
+            title="扫描同步本地技能数据，纠正磁盘与数据库不一致"
+          >
+            {reconciling ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <ScanLine size={14} />
+            )}
+            <span className="hidden sm:inline">扫描</span>
+          </button>
+          <button
+            onClick={() => setInstallDialogOpen(true)}
+            className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-lg text-sm transition-all shadow-sm hover:shadow-md font-medium"
+          >
+            <Plus size={15} />
+            安装 Skill
+          </button>
+        </>
+      }
+      searchBar={
+        <div className="flex items-center gap-3">
           <div className="relative flex-1 max-w-md">
             <Search
               size={14}
@@ -541,10 +530,8 @@ export function SkillManagerPage() {
             ))}
           </div>
         </div>
-      </div>
-
-      {/* Skill Grid */}
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      }
+    >
         {filter === 'market' ? (
           /* ── Marketplace (skills.sh) ── */
           <div>
@@ -671,14 +658,11 @@ export function SkillManagerPage() {
             ))}
           </div>
         )}
-      </div>
 
-      {/* Install Dialog */}
       {installDialogOpen && (
         <InstallDialog onClose={() => setInstallDialogOpen(false)} />
       )}
 
-      {/* Skill Detail Panel */}
       {showDetailPanel && configureSkillId && (
         <SkillDetailPanel
           skillId={configureSkillId}
@@ -689,6 +673,6 @@ export function SkillManagerPage() {
           }}
         />
       )}
-    </div>
+    </ManagerPageLayout>
   );
 }

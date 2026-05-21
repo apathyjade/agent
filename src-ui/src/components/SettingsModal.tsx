@@ -556,6 +556,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   );
 }
 
+
 function PromptForm() {
   const { createSystemPrompt } = useStore();
   const [name, setName] = useState('');

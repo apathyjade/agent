@@ -94,6 +94,8 @@ impl AgentLoop {
                 model: model_id.to_string(),
                 tools: if tool_definitions.is_empty() { None } else { Some(tool_definitions.clone()) },
                 stream: Some(false),
+                max_tokens: None,
+                temperature: None,
             };
 
             let response = Self::retry_with_backoff(&chat_request, 3, provider.clone()).await?;
@@ -283,6 +285,8 @@ impl AgentLoop {
                 model: model_id.to_string(),
                 tools: if tool_definitions.is_empty() { None } else { Some(tool_definitions.clone()) },
                 stream: Some(true),
+                max_tokens: None,
+                temperature: None,
             };
 
             let mut stream = provider.chat_stream(chat_request).await?;

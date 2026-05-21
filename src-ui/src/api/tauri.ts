@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord } from '../types';
 
 export async function createConversation(
   title: string,
@@ -196,6 +196,116 @@ export async function searchMarketSkills(
   return invoke('search_market_skills', { query, limit });
 }
 
+// ── Pipeline / Workflow Commands ──
+
+export async function listWorkflows(): Promise<WorkflowInfo[]> {
+  return invoke('list_workflows');
+}
+
+export async function runWorkflow(name: string): Promise<string> {
+  return invoke('run_workflow', { name });
+}
+
+export async function listWorkflowRuns(): Promise<WorkflowRunRecord[]> {
+  return invoke('list_workflow_runs');
+}
+
+export async function setWorkflowVar(key: string, value: string): Promise<void> {
+  return invoke('set_workflow_var', { key, value });
+}
+
+export async function deleteWorkflowVar(key: string): Promise<void> {
+  return invoke('delete_workflow_var', { key });
+}
+
+export async function listWorkflowVars(): Promise<Record<string, string>> {
+  return invoke('list_workflow_vars');
+}
+
+export async function setWorkflowSecret(key: string, value: string): Promise<void> {
+  return invoke('set_workflow_secret', { key, value });
+}
+
+export async function deleteWorkflowSecret(key: string): Promise<void> {
+  return invoke('delete_workflow_secret', { key });
+}
+
+export async function listWorkflowSecrets(): Promise<string[]> {
+  return invoke('list_workflow_secrets');
+}
+
+export async function generateWorkflow(description: string): Promise<string> {
+  return invoke('generate_workflow', { description });
+}
+
+export async function pauseWorkflowSchedule(name: string): Promise<void> {
+  return invoke('pause_workflow_schedule', { name });
+}
+
+export async function resumeWorkflowSchedule(name: string): Promise<void> {
+  return invoke('resume_workflow_schedule', { name });
+}
+
+export async function getWorkflowRunDetail(id: string): Promise<WorkflowRunRecord> {
+  return invoke('get_workflow_run_detail', { id });
+}
+
 export async function installMarketSkill(source: string): Promise<string> {
   return invoke('install_market_skill', { source });
+}
+
+// ── MCP Server Commands ──
+
+export async function listMcpConnections(): Promise<McpConnectionInfo[]> {
+  return invoke('list_mcp_connections');
+}
+
+export async function addMcpServer(name: string, command: string, args: string[]): Promise<McpConnectionInfo> {
+  return invoke('add_mcp_server', { name, command, args });
+}
+
+export async function removeMcpServer(id: string): Promise<void> {
+  return invoke('remove_mcp_server', { id });
+}
+
+export async function connectMcpServer(id: string): Promise<void> {
+  return invoke('connect_mcp_server', { id });
+}
+
+export async function disconnectMcpServer(id: string): Promise<void> {
+  return invoke('disconnect_mcp_server', { id });
+}
+
+export async function updateMcpToolConfig(
+  connectionId: string,
+  toolName: string,
+  enabled: boolean,
+  confirmation: string,
+): Promise<void> {
+  return invoke('update_mcp_tool_config', { connectionId, toolName, enabled, confirmation });
+}
+
+export async function getMcpConnectionStats(id: string): Promise<ConnectionStats> {
+  return invoke('get_mcp_connection_stats', { id });
+}
+
+export async function restartMcpServer(id: string): Promise<void> {
+  return invoke('restart_mcp_server', { id });
+}
+
+export async function getMcpServerLogs(id: string): Promise<string[]> {
+  return invoke('get_mcp_server_logs', { id });
+}
+
+export async function updateMcpStartupPolicy(
+  id: string,
+  options: {
+    launchOnStartup?: boolean;
+    launchOnDemand?: boolean;
+    priority?: number;
+    maxRetries?: number;
+    healthCheckIntervalMs?: number;
+  },
+): Promise<void> {
+  return invoke('update_mcp_startup_policy', { id, ...options });
 }

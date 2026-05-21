@@ -20,6 +20,7 @@ pub trait LLMProvider: Send + Sync {
 pub struct ProviderRegistry {
     openai_compatible: HashMap<String, Arc<OpenAIProvider>>,
     anthropic: HashMap<String, Arc<AnthropicProvider>>,
+    default_model_id: Option<String>,
 }
 
 impl ProviderRegistry {
@@ -54,9 +55,12 @@ impl ProviderRegistry {
             }
         }
 
+        let default_id = config.get_default_model().map(|m| m.id.clone());
+
         Self {
             openai_compatible,
             anthropic,
+            default_model_id: default_id,
         }
     }
 
@@ -64,6 +68,10 @@ impl ProviderRegistry {
         if model.api_key.is_empty() {
             model.api_key = keychain::resolve_api_key(&model.id, "");
         }
+    }
+
+    pub fn default_model_id(&self) -> &str {
+        self.default_model_id.as_deref().unwrap_or("")
     }
 
     pub fn get(&self, model_id: &str) -> Result<Arc<dyn LLMProvider>> {

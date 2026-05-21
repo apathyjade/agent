@@ -1,7 +1,10 @@
-﻿use rusqlite::{params, Connection, OptionalExtension};
+﻿use std::collections::HashMap;
 use std::path::PathBuf;
 
+use rusqlite::{params, Connection, OptionalExtension};
+
 use crate::db::models::{Conversation, Message, Setting, SkillRecord, SystemPrompt};
+use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
 pub struct Database {
@@ -87,6 +90,16 @@ impl Database {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                step_results TEXT,
+                error TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
             ",
         )?;
@@ -133,6 +146,20 @@ impl Database {
         if has_agent_sources == 0 {
             conn.execute_batch(
                 "ALTER TABLE skills ADD COLUMN agent_sources TEXT;",
+            )?;
+        }
+
+        // Migration v3: add trigger_type and step_progress to workflow_runs
+        let has_trigger_type = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='trigger_type'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_trigger_type == 0 {
+            conn.execute_batch(
+                "ALTER TABLE workflow_runs ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'manual';
+                 ALTER TABLE workflow_runs ADD COLUMN step_progress TEXT;",
             )?;
         }
 
@@ -377,6 +404,80 @@ impl Database {
         self.conn
             .execute("DELETE FROM skills WHERE source_type = ?1", params![source_type])?;
         Ok(())
+    }
+
+    // ── Workflow Runs ──
+
+    pub fn insert_workflow_run(&self, run: &WorkflowRunRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_name, status, step_results, step_progress, error, trigger_type, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![run.id, run.workflow_name, run.status, run.step_results, run.step_progress, run.error, run.trigger_type, run.started_at, run.finished_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_workflow_run_status(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+        step_results: &HashMap<String, serde_json::Value>,
+        step_progress: Option<&str>,
+    ) -> Result<()> {
+        let step_results_str = serde_json::to_string(step_results).unwrap_or_default();
+        let finished_at = if status == "running" {
+            None
+        } else {
+            Some(chrono::Utc::now().to_rfc3339())
+        };
+        self.conn.execute(
+            "UPDATE workflow_runs SET status = ?2, step_results = ?3, step_progress = ?4, error = ?5, finished_at = ?6 WHERE id = ?1",
+            params![id, status, step_results_str, step_progress, error, finished_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_workflow_runs(&self, limit: i64) -> Result<Vec<WorkflowRunRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workflow_name, status, step_results, step_progress, error, trigger_type, started_at, finished_at
+             FROM workflow_runs ORDER BY started_at DESC LIMIT ?1",
+        )?;
+        let runs = stmt.query_map(params![limit], |row| {
+            Ok(WorkflowRunRecord {
+                id: row.get(0)?,
+                workflow_name: row.get(1)?,
+                status: row.get(2)?,
+                step_results: row.get(3)?,
+                step_progress: row.get(4)?,
+                error: row.get(5)?,
+                trigger_type: row.get(6)?,
+                started_at: row.get(7)?,
+                finished_at: row.get(8)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(runs)
+    }
+
+    pub fn get_workflow_run(&self, id: &str) -> Result<Option<WorkflowRunRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workflow_name, status, step_results, step_progress, error, trigger_type, started_at, finished_at
+             FROM workflow_runs WHERE id = ?1",
+        )?;
+        let run = stmt.query_row(params![id], |row| {
+            Ok(WorkflowRunRecord {
+                id: row.get(0)?,
+                workflow_name: row.get(1)?,
+                status: row.get(2)?,
+                step_results: row.get(3)?,
+                step_progress: row.get(4)?,
+                error: row.get(5)?,
+                trigger_type: row.get(6)?,
+                started_at: row.get(7)?,
+                finished_at: row.get(8)?,
+            })
+        }).optional()?;
+        Ok(run)
     }
 
     pub fn skill_exists(&self, id: &str) -> Result<bool> {

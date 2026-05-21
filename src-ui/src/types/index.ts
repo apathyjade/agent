@@ -118,6 +118,95 @@ export interface MarketSkill {
   installs: number;
 }
 
+/** Key-value pair for workflow variables */
+export interface WorkflowVar {
+  key: string;
+  value: string;
+}
+
+/** A discovered workflow definition */
+export interface WorkflowInfo {
+  name: string;
+  description: string;
+  step_count: number;
+  file_path: string;
+  trigger: string;                 // "manual" | "cron: 0 9 * * *"
+  next_run_at?: string | null;
+  last_run_status?: string | null;
+  last_run_at?: string | null;
+}
+
+/** A workflow run record from DB */
+export interface WorkflowRunRecord {
+  id: string;
+  workflow_name: string;
+  status: string;
+  step_results?: string | null;
+  step_progress?: string | null;  // JSON string of StepProgress[]
+  error?: string | null;
+  trigger_type: string;            // NEW
+  started_at: string;
+  finished_at?: string | null;
+}
+
+/** Step execution progress for realtime timeline display */
+export interface StepProgress {
+  step_id: string;
+  status: string;
+  duration_ms?: number | null;
+  error?: string | null;
+  result_summary?: string | null;
+}
+
+/** Per-tool configuration from MCP server */
+export interface McpToolInfo {
+  name: string;
+  description: string;
+  enabled: boolean;
+  confirmation: string; // "auto_allow" | "confirm_once" | "deny"
+}
+
+/** Health and usage stats for an MCP connection */
+export interface ConnectionStats {
+  uptime_seconds: number;
+  total_calls: number;
+  error_count: number;
+  avg_latency_ms: number;
+  last_error?: string | null;
+}
+
+/** Connection status string from backend */
+export type McpConnectionStatus =
+  | 'disabled'
+  | 'waiting'
+  | 'starting'
+  | 'ready'
+  | 'degraded'
+  | 'stopping'
+  | 'stopped'
+  | 'error';
+
+/** A single stderr log entry from an MCP server */
+export interface McpLogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+}
+
+/** MCP server connection info returned from backend */
+export interface McpConnectionInfo {
+  id: string;
+  name: string;
+  /** Connection status: "ready" | "starting" | "error" | "stopped" | etc. */
+  status: McpConnectionStatus;
+  /** Human-readable status detail (e.g. error message) */
+  status_detail?: string | null;
+  tool_count: number;
+  tools: McpToolInfo[];
+  stats: ConnectionStats;
+  error?: string | null;
+}
+
 /** Result of a reconcile scan operation */
 export interface ReconcileResult {
   /** Skill IDs that were auto-added (found on disk, missing from DB) */

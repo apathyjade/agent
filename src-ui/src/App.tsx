@@ -6,6 +6,8 @@ import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { WelcomePage } from './components/WelcomePage';
 import { SkillManagerPage } from './components/SkillManagerPage';
+import { McpManagerPage } from './components/McpManagerPage';
+import { WorkflowManagerPage } from './components/WorkflowManagerPage';
 import { ToastContainer } from './components/Toast';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
@@ -77,6 +79,12 @@ function App() {
     if (currentView === 'skill-manager') {
       return <SkillManagerPage />;
     }
+    if (currentView === 'mcp-manager') {
+      return <McpManagerPage />;
+    }
+    if (currentView === 'workflows') {
+      return <WorkflowManagerPage />;
+    }
     return currentConversation ? <ChatArea /> : <WelcomePage />;
   };
 
@@ -101,7 +109,9 @@ function App() {
         )}
         <div className="flex-1" />
         <span className="text-[11px] text-gray-400 dark:text-gray-500">
-          {currentView === 'skill-manager' ? '技能管理' : ''}
+          {currentView === 'skill-manager' ? '技能管理' :
+           currentView === 'mcp-manager' ? 'MCP 连接' :
+           currentView === 'workflows' ? '工作流' : ''}
         </span>
         {/* Window controls */}
         <div data-window-control className="flex items-center h-full -mr-2">

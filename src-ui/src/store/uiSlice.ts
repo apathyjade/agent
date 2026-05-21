@@ -6,7 +6,7 @@ export interface Toast {
   message: string;
 }
 
-export type AppView = 'chat' | 'skill-manager';
+export type AppView = 'chat' | 'skill-manager' | 'mcp-manager' | 'workflows';
 
 export interface UISlice {
   loading: boolean;

@@ -1,7 +1,8 @@
 ﻿use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::error::{Result, AppError};
+use crate::error::{AppError, Result};
+use crate::mcp::config::McpServerConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -113,6 +114,12 @@ impl ModelConfig {
 pub struct AppConfig {
     pub models: Vec<ModelConfig>,
     pub enabled_tools: Vec<String>,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub workflow_vars: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub workflow_secrets: std::collections::HashMap<String, String>,
 }
 
 impl Default for AppConfig {
@@ -150,6 +157,9 @@ impl Default for AppConfig {
                 "web_search".to_string(),
                 "code_executor".to_string(),
             ],
+            mcp_servers: vec![],
+            workflow_vars: std::collections::HashMap::new(),
+            workflow_secrets: std::collections::HashMap::new(),
         }
     }
 }
