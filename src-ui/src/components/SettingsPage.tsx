@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings as SettingsIcon, Server, FolderOpen } from 'lucide-react';
 import { Row } from '@jelper/component';
+import { Select } from 'antd';
 import { useStore } from '../store';
 import { ManagerPageLayout } from './ManagerPageLayout';
 import { SkillDetailPanel } from './SkillDetailPanel';
@@ -153,18 +154,16 @@ export function SettingsPage() {
             <h3 className="text-sm font-medium text-purple-900 dark:text-purple-300">默认模型</h3>
           </div>
           <div className="flex items-center gap-3">
-            <select
-              value={defaultModel || ''}
-              onChange={(e) => { if (e.target.value) setDefaultModel(e.target.value); }}
-              className="flex-1 bg-white dark:bg-gray-700 border border-purple-200 dark:border-purple-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100"
-            >
-              <option value="">选择默认模型...</option>
-              {models.filter(m => m.enabled).map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.display_name} ({model.provider})
-                </option>
-              ))}
-            </select>
+            <Select
+              value={defaultModel || undefined}
+              onChange={(v) => { if (v) setDefaultModel(v); }}
+              className="flex-1"
+              placeholder="选择默认模型..."
+              options={models.filter(m => m.enabled).map(m => ({
+                value: m.id,
+                label: `${m.display_name} (${m.provider})`
+              }))}
+            />
             {defaultModel && (
               <span className="text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 px-2 py-1 rounded-full whitespace-nowrap">
                 当前: {models.find(m => m.id === defaultModel)?.display_name || defaultModel}

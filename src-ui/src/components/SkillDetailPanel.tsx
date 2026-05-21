@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { X, Trash2, Loader2 } from 'lucide-react';
+import { X, Loader2, Trash2 } from 'lucide-react';
+import { Select } from 'antd';
 import * as api from '../api/tauri';
 import type { SkillDetail } from '../types';
 
@@ -111,15 +112,13 @@ export function SkillDetailPanel({ skillId, onClose }: SkillDetailPanelProps) {
         return (
           <div key={key}>
             <label className="text-xs text-gray-500 mb-1 block capitalize">{prop.title || key}</label>
-            <select
+            <Select
               value={String(value)}
-              onChange={(e) => updateConfigField(key, e.target.value)}
-              className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              {prop.enum.map((opt: string) => (
-                <option key={opt} value={opt}>{opt}</option>
-              ))}
-            </select>
+              onChange={(v) => updateConfigField(key, v)}
+              className="w-full"
+              size="small"
+              options={prop.enum.map((opt: string) => ({ value: opt, label: opt }))}
+            />
             {prop.description && <p className="text-xs text-gray-400 mt-0.5">{prop.description}</p>}
           </div>
         );

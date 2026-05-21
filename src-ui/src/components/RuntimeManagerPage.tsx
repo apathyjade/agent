@@ -3,6 +3,7 @@ import {
   Server, Download, CheckCircle2, XCircle, Loader2,
   RefreshCw, Trash2, Star,
 } from 'lucide-react';
+import { Select } from 'antd';
 import { useStore } from '../store';
 import { ManagerPageLayout } from './ManagerPageLayout';
 import type { RuntimeType, RuntimeSource, InstalledVersion } from '../types';
@@ -67,22 +68,19 @@ function InstallDialog({
           <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5 block">
             选择版本
           </label>
-          <select
+          <Select
             value={selectedVersion}
-            onChange={(e) => setSelectedVersion(e.target.value)}
+            onChange={setSelectedVersion}
             disabled={isInstalling}
-            className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100"
-          >
-            <option value="latest">最新版本</option>
-            {availableVersionsLoading && (
-              <option disabled>加载中...</option>
-            )}
-            {availableVersions.map((v) => (
-              <option key={v.version} value={v.version}>
-                {v.display_name}
-              </option>
-            ))}
-          </select>
+            className="w-full"
+            options={[
+              { value: 'latest', label: '最新版本' },
+              ...(availableVersionsLoading
+                ? [{ value: '', label: '加载中...', disabled: true as boolean }]
+                : availableVersions.map(v => ({ value: v.version, label: v.display_name }))
+              )
+            ]}
+          />
         </div>
 
         {/* Install button */}

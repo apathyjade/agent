@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from 'react';
 import { Plus, Trash2, MessageSquare, Eraser } from 'lucide-react';
 import { Col, Row } from '@jelper/component';
+import { Select } from 'antd';
 import { useStore } from '../store';
 
 export function Sidebar() {
@@ -105,17 +106,16 @@ export function Sidebar() {
             {getAvailableModelCount() > 0 && (
               <div>
                 <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block px-1">选择模型</label>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100"
-                >
-                  {models.filter(m => m.enabled).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.display_name} ({model.provider}){model.is_default ? ' (默认)' : ''}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  value={selectedModel || undefined}
+                  onChange={(v) => v && setSelectedModel(v)}
+                  className="w-full"
+                  size="small"
+                  options={models.filter(m => m.enabled).map(m => ({
+                    value: m.id,
+                    label: `${m.display_name} (${m.provider})${m.is_default ? ' (默认)' : ''}`
+                  }))}
+                />
               </div>
             )}
             {getAvailableModelCount() === 0 && (
@@ -124,16 +124,21 @@ export function Sidebar() {
               </div>
             )}
             {systemPrompts.length > 0 && (
-              <select
-                value={selectedPrompt}
-                onChange={(e) => setSelectedPrompt(e.target.value)}
-                className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100"
-              >
-                <option value="">无系统提示词</option>
-                {systemPrompts.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}{p.is_default ? ' (默认)' : ''}</option>
-                ))}
-              </select>
+              <Select
+                value={selectedPrompt || undefined}
+                onChange={setSelectedPrompt}
+                className="w-full"
+                size="small"
+                placeholder="无系统提示词"
+                allowClear
+                options={[
+                  { value: '', label: '无系统提示词' },
+                  ...systemPrompts.map(p => ({
+                    value: p.id,
+                    label: `${p.name}${p.is_default ? ' (默认)' : ''}`
+                  }))
+                ]}
+              />
             )}
             <Row $gap={8}>
               <Row.Item $scale={1}>
