@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react';
+import { Row, Col } from '@jelper/component';
 import { useStore, type Toast as ToastType } from '../store';
 
 const iconMap = {
@@ -27,20 +28,21 @@ function ToastItem({ toast }: { toast: ToastType }) {
   const Icon = iconMap[toast.type];
 
   return (
-    <div
-      className={`flex items-start gap-3 px-4 py-3 rounded-lg border shadow-lg transition-all duration-300 ${
+    <Row
+      $align="flex-start"
+      $gap={12}
+      className={`px-4 py-3 rounded-lg border shadow-lg transition-all duration-300 ${
         colorMap[toast.type]
       } ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}`}
     >
-      <Icon size={18} className="flex-shrink-0 mt-0.5" />
-      <span className="text-sm flex-1">{toast.message}</span>
-      <button
-        onClick={() => removeToast(toast.id)}
-        className="flex-shrink-0 p-0.5 rounded hover:opacity-70 transition-opacity"
-      >
-        <X size={14} />
-      </button>
-    </div>
+      <Row.Item $fixed><Icon size={18} className="mt-0.5" /></Row.Item>
+      <Row.Item $scale={1}><span className="text-sm">{toast.message}</span></Row.Item>
+      <Row.Item $fixed>
+        <button onClick={() => removeToast(toast.id)} className="p-0.5 rounded hover:opacity-70 transition-opacity">
+          <X size={14} />
+        </button>
+      </Row.Item>
+    </Row>
   );
 }
 
@@ -50,12 +52,12 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+    <Col $gap={8} className="fixed top-4 right-4 z-50 max-w-sm w-full pointer-events-none">
       {toasts.map((toast) => (
         <div key={toast.id} className="pointer-events-auto">
           <ToastItem toast={toast} />
         </div>
       ))}
-    </div>
+    </Col>
   );
 }

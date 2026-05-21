@@ -1,5 +1,6 @@
 ﻿import { useState } from 'react';
 import { Sparkles, Search, Code, PenTool, Image, Globe } from 'lucide-react';
+import { Col, Row } from '@jelper/component';
 import { useStore } from '../store';
 
 export function WelcomePage() {
@@ -25,59 +26,65 @@ export function WelcomePage() {
   ];
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-purple-50/50 to-white dark:from-gray-800/50 dark:to-gray-900">
-      <div className="max-w-2xl w-full text-center">
-        <div className="mb-8">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-lg">
-            <Sparkles size={32} className="text-white" />
+    <Col $justify="center" $align="center" className="p-8 bg-gradient-to-b from-purple-50/50 to-white dark:from-gray-800/50 dark:to-gray-900">
+      <Col.Item $scale={1} $maxHeight="100%">
+        <div className="max-w-2xl w-full text-center">
+          <div className="mb-8">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-lg">
+              <Sparkles size={32} className="text-white" />
+            </div>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">你好，我是 Agent</h1>
+            <p className="text-gray-500 dark:text-gray-400">你的 AI 智能助手，随时为你提供帮助</p>
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">你好，我是 Agent</h1>
-          <p className="text-gray-500 dark:text-gray-400">你的 AI 智能助手，随时为你提供帮助</p>
-        </div>
 
-        <div className="relative mb-8">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && input.trim()) {
-                e.preventDefault();
-                handleQuickStart(input);
-              }
-            }}
-            placeholder="有什么可以帮你的？"
-            className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-6 py-4 pr-14 text-base resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm min-h-[60px] max-h-[200px] dark:text-gray-100 dark:placeholder-gray-400"
-            rows={1}
-          />
-          <button
-            onClick={() => input.trim() && handleQuickStart(input)}
-            disabled={!input.trim()}
-            className="absolute right-3 bottom-3 p-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-lg transition-all"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {features.map((feature) => (
+          <div className="relative mb-8">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && input.trim()) {
+                  e.preventDefault();
+                  handleQuickStart(input);
+                }
+              }}
+              placeholder="有什么可以帮你的？"
+              className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-6 py-4 pr-14 text-base resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent shadow-sm min-h-[60px] max-h-[200px] dark:text-gray-100 dark:placeholder-gray-400"
+              rows={1}
+            />
             <button
-              key={feature.title}
-              onClick={() => handleQuickStart(feature.desc)}
-              className="flex items-center gap-3 p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-purple-200 dark:hover:border-purple-700 hover:shadow-md transition-all text-left group"
+              onClick={() => input.trim() && handleQuickStart(input)}
+              disabled={!input.trim()}
+              className="absolute right-3 bottom-3 p-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-lg transition-all"
             >
-              <div className="text-gray-400 dark:text-gray-500 group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
-                {feature.icon}
-              </div>
-              <div>
-                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">{feature.title}</h3>
-                <p className="text-xs text-gray-500 dark:text-gray-400">{feature.desc}</p>
-              </div>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
             </button>
-          ))}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {features.map((feature) => (
+              <button
+                key={feature.title}
+                onClick={() => handleQuickStart(feature.desc)}
+                className="p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-purple-200 dark:hover:border-purple-700 hover:shadow-md transition-all text-left group"
+              >
+                <Row $align="center" $gap={12}>
+                  <Row.Item $fixed>
+                    <div className="text-gray-400 dark:text-gray-500 group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
+                      {feature.icon}
+                    </div>
+                  </Row.Item>
+                  <Row.Item $scale={1}>
+                    <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">{feature.title}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{feature.desc}</p>
+                  </Row.Item>
+                </Row>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
-    </div>
+      </Col.Item>
+    </Col>
   );
 }

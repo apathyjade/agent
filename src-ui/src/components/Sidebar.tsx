@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { Plus, Trash2, MessageSquare, Eraser } from 'lucide-react';
+import { Col, Row } from '@jelper/component';
 import { useStore } from '../store';
 
 export function Sidebar() {
@@ -80,8 +81,8 @@ export function Sidebar() {
   };
 
   return (
-    <>
-      <div className="h-full bg-white dark:bg-gray-800/70 border-r border-purple-100/50 dark:border-purple-900/30 flex flex-col transition-colors backdrop-blur-sm">
+    <Col className="h-full bg-white dark:bg-gray-800/70 border-r border-purple-100/50 dark:border-purple-900/30 transition-colors backdrop-blur-sm">
+      <Col.Item $fixed>
         <div className="p-3">
           <button
             onClick={() => setShowNewChat(true)}
@@ -134,25 +135,31 @@ export function Sidebar() {
                 ))}
               </select>
             )}
-            <div className="flex gap-2">
-              <button
-                onClick={handleCreate}
-                disabled={!newTitle.trim() || getAvailableModelCount() === 0 || loading}
-                className="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-all text-sm"
-              >
-                创建
-              </button>
-              <button
-                onClick={() => setShowNewChat(false)}
-                className="px-3 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded-lg transition-all text-sm"
-              >
-                取消
-              </button>
-            </div>
+            <Row $gap={8}>
+              <Row.Item $scale={1}>
+                <button
+                  onClick={handleCreate}
+                  disabled={!newTitle.trim() || getAvailableModelCount() === 0 || loading}
+                  className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-all text-sm"
+                >
+                  创建
+                </button>
+              </Row.Item>
+              <Row.Item $fixed>
+                <button
+                  onClick={() => setShowNewChat(false)}
+                  className="px-3 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded-lg transition-all text-sm"
+                >
+                  取消
+                </button>
+              </Row.Item>
+            </Row>
           </div>
         )}
+      </Col.Item>
 
-        <div className="flex-1 overflow-y-auto px-2">
+      <Col.Item $scale={1}>
+        <div className="overflow-y-auto h-full px-2">
           <div className="text-xs font-medium text-gray-400 dark:text-gray-500 px-3 py-2">最近对话</div>
           {conversations.map((conv) => (
             <div
@@ -209,8 +216,7 @@ export function Sidebar() {
             </div>
           ))}
         </div>
-
-      </div>
-    </>
+      </Col.Item>
+    </Col>
   );
 }
