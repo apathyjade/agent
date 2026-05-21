@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod conversation;
+pub mod environment;
 pub mod mcp;
 pub mod model;
 pub mod pipeline;
@@ -11,6 +12,7 @@ pub mod tool;
 pub mod window;
 
 pub use conversation::*;
+pub use environment::*;
 pub use mcp::*;
 pub use model::*;
 pub use pipeline::*;

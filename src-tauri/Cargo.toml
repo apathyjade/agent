@@ -28,6 +28,7 @@ env_logger = "0.11"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -43,3 +44,7 @@ urlencoding = "2.1"
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 rmcp = { version = "1", default-features = false, features = ["client", "transport-child-process"] }
 tokio-cron-scheduler = "0.15"
+zip = "2"
+tar = "0.4"
+flate2 = "1.0"
+

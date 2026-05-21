@@ -214,3 +214,58 @@ export interface ReconcileResult {
   /** Skill IDs that were auto-removed (DB record, but files missing) */
   removed: string[];
 }
+
+// ── Runtime Environment Types ──
+
+/** Supported runtime types */
+export type RuntimeType = 'node' | 'python' | 'docker' | 'uv' | 'go';
+
+/** Where a runtime is installed */
+export type RuntimeSource = 'system' | 'built_in' | 'none';
+
+/** A single installed version of a runtime */
+export interface InstalledVersion {
+  version: string;
+  path: string;
+  installed_at: string;
+  is_active: boolean;
+}
+
+/** Detailed info about a detected/installed runtime */
+export interface RuntimeInfo {
+  runtime_type: RuntimeType;
+  display_name: string;
+  source: RuntimeSource;
+  /** Currently active version string */
+  version: string | null;
+  /** All locally installed versions */
+  installed_versions: InstalledVersion[];
+  executable_path: string | null;
+  error: string | null;
+  available: boolean;
+}
+
+/** Progress of a runtime installation */
+export interface InstallProgress {
+  runtime_type: RuntimeType;
+  stage: string;
+  progress: number;
+  message: string;
+}
+
+/** A version available for download */
+export interface AvailableVersion {
+  version: string;
+  display_name: string;
+  url: string;
+}
+
+/** Runtime suggestion for a CLI command */
+export interface RuntimeSuggestion {
+  runtime_type: RuntimeType | null;
+  available: boolean;
+  version: string | null;
+  source: RuntimeSource | null;
+  display_name: string | null;
+  error?: string | null;
+}

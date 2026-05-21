@@ -11,4 +11,16 @@ export default defineConfig({
       ignored: ['**/dist/**'],
     },
   },
+  resolve: {
+    deduplicate: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: [
+      '@jelper/component',
+      'shallowequal',
+      'zustand',
+      'react',
+      'react-dom',
+    ],
+  },
 });

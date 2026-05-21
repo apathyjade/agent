@@ -120,6 +120,10 @@ pub struct AppConfig {
     pub workflow_vars: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub workflow_secrets: std::collections::HashMap<String, String>,
+    /// Custom install directory for built-in runtimes.
+    /// If None, defaults to <app_data_dir>/agent/runtimes/
+    #[serde(default)]
+    pub runtime_install_dir: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -160,6 +164,7 @@ impl Default for AppConfig {
             mcp_servers: vec![],
             workflow_vars: std::collections::HashMap::new(),
             workflow_secrets: std::collections::HashMap::new(),
+            runtime_install_dir: None,
         }
     }
 }

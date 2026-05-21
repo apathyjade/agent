@@ -1,8 +1,9 @@
 ﻿import { useState, useEffect } from 'react';
-import { X, Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings } from 'lucide-react';
+import { X, Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings, Server, FolderOpen } from 'lucide-react';
 import { useStore } from '../store';
 import { SkillDetailPanel } from './SkillDetailPanel';
 import { SkillInstallDialog } from './SkillInstallDialog';
+import { DirectoryPicker } from './DirectoryPicker';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -10,7 +11,7 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills' | 'runtime'>('providers');
   const {
     providers, fetchProviders, setupProvider, updateProviderConfig, removeProvider,
     skills, fetchSkills, toggleSkill,
@@ -36,12 +37,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [showSkillDetail, setShowSkillDetail] = useState(false);
   const [showSkillInstall, setShowSkillInstall] = useState(false);
 
+  // Runtime install directory
+  const { installDir, fetchInstallDir, setInstallDir } = useStore();
+  const [editingDir, setEditingDir] = useState(false);
+  const [dirValue, setDirValue] = useState('');
+
   useEffect(() => {
     if (isOpen) {
       fetchProviders();
       fetchSystemPrompts();
       fetchModels();
       fetchSkills();
+      fetchInstallDir();
     }
   }, [isOpen]);
 
@@ -135,6 +142,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     { id: 'providers' as const, icon: <Cpu size={16} />, label: '模型提供商' },
     { id: 'prompts' as const, icon: <FileText size={16} />, label: '提示词' },
     { id: 'skills' as const, icon: <BrainCircuit size={16} />, label: '技能' },
+    { id: 'runtime' as const, icon: <Server size={16} />, label: '运行环境' },
   ];
 
   return (
@@ -534,6 +542,59 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'runtime' && (
+            <div className="space-y-4">
+              <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                <div className="flex items-center gap-2 mb-3">
+                  <FolderOpen size={16} className="text-gray-400" />
+                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">运行时安装目录</h3>
+                </div>
+
+                {editingDir ? (
+                  <div className="space-y-2">
+                    <DirectoryPicker
+                      value={dirValue}
+                      onChange={setDirValue}
+                      placeholder="选择运行时安装目录..."
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          await setInstallDir(dirValue);
+                          setEditingDir(false);
+                        }}
+                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs transition-colors"
+                      >
+                        保存
+                      </button>
+                      <button
+                        onClick={() => setEditingDir(false)}
+                        className="px-3 py-1.5 bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-700 dark:text-gray-300 rounded-lg text-xs transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 text-xs font-mono text-gray-500 dark:text-gray-400 truncate">
+                      {installDir || '加载中...'}
+                    </span>
+                    <button
+                      onClick={() => { setDirValue(installDir); setEditingDir(true); }}
+                      className="text-xs text-purple-500 hover:text-purple-600 hover:underline"
+                    >
+                      修改
+                    </button>
+                  </div>
+                )}
+                <p className="text-[10px] text-gray-400 mt-2">
+                  所有内置安装的运行时将存储在此目录下，修改后需重新安装已有版本
+                </p>
               </div>
             </div>
           )}

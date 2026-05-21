@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::environment::RuntimeType;
+
 // ── Confirmation Mode ──
 
 /// Confirmation mode for a specific MCP tool.
@@ -188,6 +190,10 @@ pub struct McpServerConfig {
     /// Per-tool configuration (tool_name -> config)
     #[serde(default)]
     pub tool_configs: HashMap<String, ToolConfig>,
+    /// Runtime type hint (e.g. "node", "python", "docker", "uvx", "go").
+    /// If empty or "auto", inferred from the command.
+    #[serde(default)]
+    pub runtime: String,
 }
 
 fn is_false(b: &bool) -> bool { !b }
@@ -203,6 +209,16 @@ where
 }
 
 impl McpServerConfig {
+    /// Get the effective runtime type for this server.
+    /// If explicitly configured, use that; otherwise infer from the command.
+    pub fn effective_runtime(&self) -> Option<RuntimeType> {
+        if self.runtime.is_empty() || self.runtime == "auto" {
+            RuntimeType::infer_from_command(&self.command)
+        } else {
+            RuntimeType::from_str(&self.runtime)
+        }
+    }
+
     /// Check if this server should auto-connect (respects new startup policy + legacy auto_connect).
     pub fn should_auto_connect(&self) -> bool {
         // New-style startup policy takes precedence

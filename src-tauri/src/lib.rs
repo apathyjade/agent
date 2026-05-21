@@ -3,6 +3,7 @@ pub mod commands;
 pub mod commands_provider;
 pub mod config;
 pub mod db;
+pub mod environment;
 pub mod error;
 pub mod keychain;
 pub mod mcp;
@@ -21,6 +22,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_handle = app.handle();
             let state = AppState::new(app_handle)?;
@@ -45,7 +47,12 @@ pub fn run() {
                     }
                 }
 
-                // 2. Auto-connect MCP servers
+                // 2. Detect runtimes (cache for fast UI access)
+                {
+                    state.runtime_manager.detect_all().await;
+                }
+
+                // 3. Auto-connect MCP servers
                 {
                     let config = state.config.lock().await;
                     let mcp_configs = config.mcp_servers.clone();
@@ -101,6 +108,19 @@ pub fn run() {
             commands::update_mcp_tool_config,
             commands::update_mcp_startup_policy,
             commands::get_mcp_connection_stats,
+            commands::list_runtimes,
+            commands::get_cached_runtimes,
+            commands::validate_runtime,
+
+            commands::install_runtime,
+            commands::refresh_runtime,
+            commands::suggest_runtime_for_command,
+            commands::list_available_versions,
+            commands::list_installed_versions,
+            commands::switch_runtime_version,
+            commands::uninstall_runtime_version,
+            commands::get_runtime_install_dir,
+            commands::set_runtime_install_dir,
             commands::list_workflows,
             commands::run_workflow,
             commands::list_workflow_runs,

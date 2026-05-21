@@ -54,8 +54,8 @@ const AssistantMessage = memo(function AssistantMessage({ message }: MessageBubb
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
-                pre({ children }) {
-                  const child = children as React.ReactElement;
+                pre({ children }: { children?: React.ReactNode }) {
+                  const child = children as React.ReactElement<{ className?: string; children?: React.ReactNode }>;
                   if (child?.type === 'code' && child?.props?.className) {
                     const match = /language-(\w+)/.exec(String(child.props.className));
                     if (match) {

@@ -18,7 +18,19 @@ pub async fn add_mcp_server(
     name: String,
     command: String,
     args: Vec<String>,
+    runtime: Option<String>,
 ) -> Result<ConnectionInfo> {
+    // Validate runtime if provided
+    if let Some(ref rt_str) = runtime {
+        if !rt_str.is_empty() && rt_str != "auto" {
+            if let Some(rt) = crate::environment::RuntimeType::from_str(rt_str) {
+                if let Err(msg) = state.runtime_manager.validate_runtime(&rt).await {
+                    return Err(crate::error::AppError::InvalidInput(msg));
+                }
+            }
+        }
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
     let config = McpServerConfig {
         id: id.clone(),
@@ -29,6 +41,7 @@ pub async fn add_mcp_server(
         startup: StartupPolicy::default(),
         auto_connect: true,
         tool_configs: HashMap::new(),
+        runtime: runtime.unwrap_or_default(),
     };
 
     // Connect to the server

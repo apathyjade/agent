@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { McpConnectionInfo, ConnectionStats } from '../types';
+import type { McpConnectionInfo, ConnectionStats, RuntimeSuggestion } from '../types';
 import * as api from '../api/tauri';
 
 export interface McpSlice {
@@ -10,6 +10,9 @@ export interface McpSlice {
   newMcpName: string;
   newMcpCommand: string;
   newMcpArgs: string;
+  /** Runtime suggestion for the current MCP command (for add dialog) */
+  mcpRuntimeSuggestion: RuntimeSuggestion | null;
+  mcpRuntimeChecking: boolean;
 
   // Log viewer state
   logViewerServerId: string | null;
@@ -34,6 +37,8 @@ export interface McpSlice {
   setNewMcpArgs: (args: string) => void;
   setAddMcpDialogOpen: (open: boolean) => void;
   clearMcpError: () => void;
+  /** Check runtime availability for the current MCP command */
+  checkMcpCommandRuntime: (command: string) => Promise<void>;
 }
 
 export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, get) => ({
@@ -44,6 +49,8 @@ export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, ge
   newMcpName: '',
   newMcpCommand: 'npx',
   newMcpArgs: '-y @anthropic/mcp-server-filesystem',
+  mcpRuntimeSuggestion: null,
+  mcpRuntimeChecking: false,
 
   logViewerServerId: null,
   logViewerOpen: false,
@@ -70,7 +77,10 @@ export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, ge
         .split(' ')
         .map(a => a.trim())
         .filter(a => a.length > 0);
-      await api.addMcpServer(newMcpName.trim(), newMcpCommand.trim(), args);
+      // Infer runtime type from command
+      const rtSuggestion = await api.suggestRuntimeForCommand(newMcpCommand.trim());
+      const rt = rtSuggestion.runtime_type ?? undefined;
+      await api.addMcpServer(newMcpName.trim(), newMcpCommand.trim(), args, rt);
       await get().fetchMcpConnections();
       set({
         mcpLoading: false,
@@ -172,8 +182,38 @@ export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, ge
   },
 
   setNewMcpName: (name) => set({ newMcpName: name }),
-  setNewMcpCommand: (cmd) => set({ newMcpCommand: cmd }),
+  setNewMcpCommand: (cmd) => {
+    set({ newMcpCommand: cmd });
+    // Debounced runtime check could be added here, but for now trigger on command change
+    get().checkMcpCommandRuntime(cmd);
+  },
   setNewMcpArgs: (args) => set({ newMcpArgs: args }),
-  setAddMcpDialogOpen: (open) => set({ addMcpDialogOpen: open }),
+  setAddMcpDialogOpen: (open) => {
+    set({ addMcpDialogOpen: open });
+    if (!open) {
+      // Reset suggestion when dialog closes
+      set({ mcpRuntimeSuggestion: null });
+    } else {
+      // Check current command when opening
+      const { newMcpCommand } = get();
+      if (newMcpCommand.trim()) {
+        get().checkMcpCommandRuntime(newMcpCommand);
+      }
+    }
+  },
   clearMcpError: () => set({ mcpError: null }),
+
+  checkMcpCommandRuntime: async (command) => {
+    if (!command.trim()) {
+      set({ mcpRuntimeSuggestion: null, mcpRuntimeChecking: false });
+      return;
+    }
+    set({ mcpRuntimeChecking: true });
+    try {
+      const suggestion = await api.suggestRuntimeForCommand(command);
+      set({ mcpRuntimeSuggestion: suggestion, mcpRuntimeChecking: false });
+    } catch {
+      set({ mcpRuntimeSuggestion: null, mcpRuntimeChecking: false });
+    }
+  },
 });

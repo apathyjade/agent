@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, AvailableVersion, InstalledVersion } from '../types';
 
 export async function createConversation(
   title: string,
@@ -260,8 +260,8 @@ export async function listMcpConnections(): Promise<McpConnectionInfo[]> {
   return invoke('list_mcp_connections');
 }
 
-export async function addMcpServer(name: string, command: string, args: string[]): Promise<McpConnectionInfo> {
-  return invoke('add_mcp_server', { name, command, args });
+export async function addMcpServer(name: string, command: string, args: string[], runtime?: string): Promise<McpConnectionInfo> {
+  return invoke('add_mcp_server', { name, command, args, runtime: runtime ?? '' });
 }
 
 export async function removeMcpServer(id: string): Promise<void> {
@@ -308,4 +308,58 @@ export async function updateMcpStartupPolicy(
   },
 ): Promise<void> {
   return invoke('update_mcp_startup_policy', { id, ...options });
+}
+
+// ── Runtime Environment Commands ──
+
+export async function listRuntimes(): Promise<RuntimeInfo[]> {
+  return invoke('list_runtimes');
+}
+
+export async function getCachedRuntimes(): Promise<RuntimeInfo[]> {
+  return invoke('get_cached_runtimes');
+}
+
+export async function validateRuntime(runtimeType: string): Promise<string> {
+  return invoke('validate_runtime', { runtimeType });
+}
+
+export async function installRuntime(runtimeType: string, version?: string): Promise<RuntimeInfo> {
+  return invoke('install_runtime', { runtimeType, version: version ?? null });
+}
+
+export async function refreshRuntime(runtimeType: string): Promise<RuntimeInfo> {
+  return invoke('refresh_runtime', { runtimeType });
+}
+
+export async function suggestRuntimeForCommand(command: string): Promise<RuntimeSuggestion> {
+  return invoke('suggest_runtime_for_command', { command });
+}
+
+// ── Version Management ──
+
+export async function listAvailableVersions(runtimeType: string): Promise<AvailableVersion[]> {
+  return invoke('list_available_versions', { runtimeType });
+}
+
+export async function listInstalledVersions(runtimeType: string): Promise<InstalledVersion[]> {
+  return invoke('list_installed_versions', { runtimeType });
+}
+
+export async function switchRuntimeVersion(runtimeType: string, version: string): Promise<RuntimeInfo> {
+  return invoke('switch_runtime_version', { runtimeType, version });
+}
+
+export async function uninstallRuntimeVersion(runtimeType: string, version: string): Promise<RuntimeInfo> {
+  return invoke('uninstall_runtime_version', { runtimeType, version });
+}
+
+// ── Install Directory ──
+
+export async function getRuntimeInstallDir(): Promise<string> {
+  return invoke('get_runtime_install_dir');
+}
+
+export async function setRuntimeInstallDir(dir: string): Promise<string> {
+  return invoke('set_runtime_install_dir', { dir });
 }

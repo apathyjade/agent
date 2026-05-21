@@ -9,6 +9,7 @@ import { type ToolSlice, createToolSlice } from './toolSlice';
 import { type PromptSlice, createPromptSlice } from './promptSlice';
 import { type SkillSlice, createSkillSlice } from './skillSlice';
 import { type McpSlice, createMcpSlice } from './mcpSlice';
+import { type RuntimeSlice, createRuntimeSlice } from './runtimeSlice';
 import { type WorkflowSlice, createWorkflowSlice } from './workflowSlice';
 
 export type { Toast } from './uiSlice';
@@ -18,7 +19,7 @@ export interface StreamSlice {
   sendMessageStream: (content: string, toolsEnabled?: boolean) => Promise<void>;
 }
 
-export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & WorkflowSlice & StreamSlice;
+export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & RuntimeSlice & WorkflowSlice & StreamSlice;
 
 export const useStore = create<AppState>()((set, get, store) => ({
   ...createUISlice(set, get, store),
@@ -28,6 +29,7 @@ export const useStore = create<AppState>()((set, get, store) => ({
   ...createPromptSlice(set, get, store),
   ...createSkillSlice(set, get, store),
   ...createMcpSlice(set, get, store),
+  ...createRuntimeSlice(set, get, store),
   ...createWorkflowSlice(set, get, store),
 
   // sendMessageStream spans both conversation and UI state

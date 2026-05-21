@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   PlugZap, Plug, Unplug, Trash2, Plus, Loader2,
-  RefreshCw, Terminal, RotateCw, AlertTriangle, CheckCircle2,
-  XCircle, Clock, Pause, X, Package,
+  RefreshCw, Terminal, RotateCw, AlertTriangle,
+  XCircle, Clock, Pause, X, Package, CheckCircle2,
 } from 'lucide-react';
 import { useStore } from '../store';
 import { ManagerPageLayout } from './ManagerPageLayout';
@@ -112,6 +112,7 @@ export function McpManagerPage() {
     setNewMcpName, setNewMcpCommand, setNewMcpArgs, setAddMcpDialogOpen, clearMcpError,
     updateToolConfig, restartMcpServer,
     logViewerServerId, logViewerOpen, openLogViewer,
+    mcpRuntimeSuggestion, mcpRuntimeChecking, setCurrentView,
   } = useStore();
 
   const [expandedConnId, setExpandedConnId] = useState<string | null>(null);
@@ -381,6 +382,44 @@ export function McpManagerPage() {
                   <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
                   <span>{mcpError}</span>
                 </div>
+              )}
+
+              {/* Runtime hint */}
+              {newMcpCommand.trim() && (
+                <>
+                  {mcpRuntimeChecking ? (
+                    <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                      <Loader2 size={12} className="animate-spin" />
+                      检测运行时环境...
+                    </div>
+                  ) : mcpRuntimeSuggestion?.runtime_type ? (
+                    <div className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-lg ${
+                      mcpRuntimeSuggestion.available
+                        ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400'
+                        : 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400'
+                    }`}>
+                      {mcpRuntimeSuggestion.available ? (
+                        <CheckCircle2 size={12} />
+                      ) : (
+                        <AlertTriangle size={12} />
+                      )}
+                      <span>
+                        {mcpRuntimeSuggestion.display_name}
+                        {mcpRuntimeSuggestion.available
+                          ? ` ${mcpRuntimeSuggestion.version || ''} — 可用`
+                          : ' — 未安装'}
+                      </span>
+                      {!mcpRuntimeSuggestion.available && (
+                        <button
+                          onClick={() => setCurrentView('runtime-manager')}
+                          className="underline ml-1 hover:text-purple-600"
+                        >
+                          去安装
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </>
               )}
 
               <div className="flex gap-2 pt-2">

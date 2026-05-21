@@ -17,17 +17,19 @@
   background-color: #0f172a;
 }
 
-body {
+html, body {
   margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 /* Dark mode base overrides */
@@ -179,6 +181,14 @@ body {
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+/* Text truncation utility — apply to any text that might overflow its container */
+@layer utilities {
+  .text-break {
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 }
 

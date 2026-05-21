@@ -1,12 +1,15 @@
 ﻿import { useEffect, useRef } from 'react';
 import { Minus, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { Col, Row } from '@jelper/component';
 import { ModuleBar } from './components/ModuleBar';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { WelcomePage } from './components/WelcomePage';
 import { SkillManagerPage } from './components/SkillManagerPage';
 import { McpManagerPage } from './components/McpManagerPage';
+import { RuntimeManagerPage } from './components/RuntimeManagerPage';
+import { SettingsPage } from './components/SettingsPage';
 import { WorkflowManagerPage } from './components/WorkflowManagerPage';
 import { ToastContainer } from './components/Toast';
 import { useStore } from './store';
@@ -22,12 +25,18 @@ function App() {
   const currentView = useStore((state) => state.currentView);
   const sidebarOpen = useStore((state) => state.sidebarOpen);
 
-  const appWindow = getCurrentWindow();
+  let appWindow: ReturnType<typeof getCurrentWindow> | null = null;
+  try {
+    appWindow = getCurrentWindow();
+  } catch {
+    // Not running in Tauri (e.g. browser dev)
+  }
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, winX: 0, winY: 0 });
   const rafId = useRef(0);
 
   useEffect(() => {
+    if (!appWindow) return;
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging.current) return;
       cancelAnimationFrame(rafId.current);
@@ -51,13 +60,18 @@ function App() {
       document.removeEventListener('mouseup', handleMouseUp);
       cancelAnimationFrame(rafId.current);
     };
-  }, []);
+  }, [appWindow]);
 
   const handleTopbarMouseDown = async (e: React.MouseEvent) => {
+    if (!appWindow) return;
     if ((e.target as HTMLElement).closest('[data-window-control]')) return;
-    const pos = await appWindow.outerPosition();
-    dragStart.current = { x: e.screenX, y: e.screenY, winX: pos.x, winY: pos.y };
-    isDragging.current = true;
+    try {
+      const pos = await appWindow.outerPosition();
+      dragStart.current = { x: e.screenX, y: e.screenY, winX: pos.x, winY: pos.y };
+      isDragging.current = true;
+    } catch {
+      // Not in Tauri
+    }
   };
 
   useEffect(() => {
@@ -82,6 +96,12 @@ function App() {
     if (currentView === 'mcp-manager') {
       return <McpManagerPage />;
     }
+    if (currentView === 'runtime-manager') {
+      return <RuntimeManagerPage />;
+    }
+    if (currentView === 'settings') {
+      return <SettingsPage />;
+    }
     if (currentView === 'workflows') {
       return <WorkflowManagerPage />;
     }
@@ -89,73 +109,76 @@ function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-white dark:bg-gray-900 transition-colors">
+    <Col>
       {/* Top Bar — always visible, draggable for frameless window */}
-      <div
-        onMouseDown={handleTopbarMouseDown}
-        className="h-11 flex-shrink-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3 px-4 z-20 select-none"
-      >
-        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-500 flex items-center justify-center flex-shrink-0 shadow-sm">
-          <span className="text-white text-[9px] font-bold">A</span>
-        </div>
-        <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Agent</span>
-        {currentConversation && (
-          <>
-            <span className="text-gray-300 dark:text-gray-600">/</span>
-            <span className="text-sm text-gray-500 dark:text-gray-400 truncate max-w-[200px]">
-              {currentConversation.title}
-            </span>
-          </>
-        )}
-        <div className="flex-1" />
-        <span className="text-[11px] text-gray-400 dark:text-gray-500">
-          {currentView === 'skill-manager' ? '技能管理' :
-           currentView === 'mcp-manager' ? 'MCP 连接' :
-           currentView === 'workflows' ? '工作流' : ''}
-        </span>
-        {/* Window controls */}
-        <div data-window-control className="flex items-center h-full -mr-2">
-          <button
-            onClick={() => appWindow.minimize()}
-            className="w-11 h-full flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-            <Minus size={14} />
-          </button>
-          <button
-            onClick={() => appWindow.toggleMaximize()}
-            className="w-11 h-full flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-            <Square size={12} />
-          </button>
-          <button
-            onClick={() => appWindow.close()}
-            className="w-11 h-full flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-white hover:bg-red-500 transition-colors"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* Main Row */}
-      <div className="flex flex-1 min-h-0">
-        {/* Module Bar — always visible, far left */}
-        <ModuleBar />
-
-        {/* Contextual Sidebar — only for chat module */}
-        {currentView === 'chat' && sidebarOpen && (
-          <div className="w-64 flex-shrink-0">
-            <Sidebar />
+      <Col.Item $fixed>
+        <div
+          onMouseDown={handleTopbarMouseDown}
+          className="h-11 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3 px-4 select-none"
+        >
+          <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-500 flex items-center justify-center flex-shrink-0 shadow-sm">
+            <span className="text-white text-[9px] font-bold">A</span>
           </div>
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Agent</span>
+          {currentConversation && (
+            <>
+              <span className="text-gray-300 dark:text-gray-600">/</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400 truncate max-w-[200px]">
+                {currentConversation.title}
+              </span>
+            </>
+          )}
+          <div className="flex-1" />
+          <span className="text-[11px] text-gray-400 dark:text-gray-500">
+            {currentView === 'skill-manager' ? '技能管理' :
+             currentView === 'mcp-manager' ? 'MCP 连接' :
+             currentView === 'runtime-manager' ? '运行时管理' :
+             currentView === 'settings' ? '系统设置' :
+             currentView === 'workflows' ? '工作流' : ''}
+          </span>
+          {/* Window controls */}
+          <div data-window-control className="flex items-center h-full -mr-2">
+            <button
+              onClick={() => appWindow?.minimize()}
+              className="w-11 h-full flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            >
+              <Minus size={14} />
+            </button>
+            <button
+              onClick={() => appWindow?.toggleMaximize()}
+              className="w-11 h-full flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            >
+              <Square size={12} />
+            </button>
+            <button
+              onClick={() => appWindow?.close()}
+              className="w-11 h-full flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-white hover:bg-red-500 transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      </Col.Item>
+
+      {/* Main Row — Col.RowItem is both a Col item and a Row container (no extra <Row>) */}
+      <Col.RowItem $scale={1}>
+        <Row.Item $fixed>
+          <ModuleBar />
+        </Row.Item>
+
+        {currentView === 'chat' && sidebarOpen && (
+          <Row.Item $width={256} $fixed>
+            <Sidebar />
+          </Row.Item>
         )}
 
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col min-h-0">
+        <Row.Item $scale={1}>
           {renderMainContent()}
-        </div>
-      </div>
+        </Row.Item>
+      </Col.RowItem>
 
       <ToastContainer />
-    </div>
+    </Col>
   );
 }
 

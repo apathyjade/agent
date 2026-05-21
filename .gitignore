@@ -35,3 +35,5 @@ src-ui/playwright-report/
 
 # Log files
 *.log
+# Playwright CLI
+.playwright-cli/

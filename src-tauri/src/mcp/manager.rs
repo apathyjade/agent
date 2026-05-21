@@ -15,6 +15,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
+use crate::environment::RuntimeManager;
 use crate::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
 use crate::tools::r#trait::Tool;
@@ -97,6 +98,7 @@ struct ActiveConnection {
 pub struct McpServerManager {
     connections: Arc<Mutex<HashMap<String, ActiveConnection>>>,
     tools: Arc<Mutex<ToolRegistry>>,
+    runtime_manager: Option<Arc<RuntimeManager>>,
 }
 
 impl McpServerManager {
@@ -104,7 +106,14 @@ impl McpServerManager {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             tools,
+            runtime_manager: None,
         }
+    }
+
+    /// Set the runtime manager for pre-connect validation.
+    pub fn with_runtime_manager(mut self, rm: Arc<RuntimeManager>) -> Self {
+        self.runtime_manager = Some(rm);
+        self
     }
 
     // ── Public API ──
@@ -130,7 +139,25 @@ impl McpServerManager {
         let status = Arc::new(StdMutex::new(ConnectionStatus::Starting));
         let stderr_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(1000)));
 
-        // 1. Build the child process command
+        // 1b. Validate runtime before spawning
+        if let Some(rm) = &self.runtime_manager {
+            let inferred = crate::environment::RuntimeType::infer_from_command(&config.command);
+            if let Some(rt) = inferred {
+                if let Err(msg) = rm.validate_runtime(&rt).await {
+                    let err_msg = format!(
+                        "MCP server '{}' runtime validation failed: {}",
+                        config.name, msg
+                    );
+                    log::error!("{}", err_msg);
+                    {
+                        let mut s = status.lock().unwrap();
+                        *s = ConnectionStatus::Error(err_msg.clone());
+                    }
+                    return Err(AppError::Skill(err_msg));
+                }
+            }
+        }
+
         #[allow(unused_mut)]
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args);
