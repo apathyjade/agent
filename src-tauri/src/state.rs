@@ -5,7 +5,10 @@ use tokio::sync::Mutex;
 use crate::api::provider::ProviderRegistry;
 use crate::config::AppConfig;
 use crate::db::repository::Database;
+use crate::environment::alias::AliasManager;
+use crate::environment::resolver::VersionResolver;
 use crate::environment::RuntimeManager;
+use crate::environment::registry::RuntimeRegistry;
 use crate::mcp::McpServerManager;
 use crate::skills::SkillManager;
 use crate::tools::registry::ToolRegistry;
@@ -19,6 +22,9 @@ pub struct AppState {
     pub skills: Arc<Mutex<SkillManager>>,
     pub mcp: McpServerManager,
     pub runtime_manager: Arc<RuntimeManager>,
+    pub runtime_registry: Arc<RuntimeRegistry>,
+    pub version_resolver: Arc<VersionResolver>,
+    pub alias_manager: Arc<AliasManager>,
 }
 
 impl AppState {
@@ -41,7 +47,13 @@ impl AppState {
                 .join("agent")
                 .join("runtimes"),
         };
+        // Initialize HTTP client with proxy settings for runtime downloads
+        crate::environment::http_client::init_http_client(config.download_proxy.as_deref());
+
         let runtime_manager = Arc::new(RuntimeManager::new(runtime_dir));
+        let runtime_registry = Arc::new(RuntimeRegistry::new());
+        let version_resolver = Arc::new(VersionResolver::new(runtime_registry.clone()));
+        let alias_manager = Arc::new(AliasManager::new());
 
         let mcp = McpServerManager::new(tools_arc.clone())
             .with_runtime_manager(runtime_manager.clone());
@@ -55,6 +67,9 @@ impl AppState {
             skills: Arc::new(Mutex::new(skills)),
             mcp,
             runtime_manager,
+            runtime_registry,
+            version_resolver,
+            alias_manager,
         })
     }
 }

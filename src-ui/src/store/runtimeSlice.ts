@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { RuntimeInfo, RuntimeType, InstallProgress, AvailableVersion } from '../types';
+import type { RuntimeInfo, RuntimeType, RuntimeVersion, InstallProgress, BoundProject, ProjectScanResult, HealthCheckItem, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult } from '../types';
 import * as api from '../api/tauri';
 import { listen } from '@tauri-apps/api/event';
 
@@ -13,8 +13,11 @@ export interface RuntimeSlice {
   installingRuntime: RuntimeType | null;
 
   /** Available versions for the runtime being installed */
-  availableVersions: AvailableVersion[];
+  availableVersions: RuntimeVersion[];
   availableVersionsLoading: boolean;
+
+  /** Cached versions keyed by runtime_type */
+  versionCache: Record<string, RuntimeVersion[]>;
 
   /** Install directory path */
   installDir: string;
@@ -27,12 +30,41 @@ export interface RuntimeSlice {
 
   /** Version management */
   fetchAvailableVersions: (rt: RuntimeType) => Promise<void>;
+  refreshVersionCache: (rt: RuntimeType) => Promise<RuntimeVersion[]>;
   switchVersion: (rt: RuntimeType, version: string) => Promise<void>;
   uninstallVersion: (rt: RuntimeType, version: string) => Promise<void>;
 
   /** Install directory */
   fetchInstallDir: () => Promise<void>;
   setInstallDir: (dir: string) => Promise<void>;
+
+  // ── Project Binding ──
+
+  projectBindings: BoundProject[];
+  projectBindingLoading: boolean;
+
+  fetchProjectBindings: () => Promise<void>;
+  addProjectBinding: (path: string) => Promise<void>;
+  removeProjectBinding: (id: string) => Promise<void>;
+  syncProjectBinding: (id: string) => Promise<void>;
+  scanProjectBinding: (path: string) => Promise<ProjectScanResult | null>;
+
+  // ── Health & Updates ──
+
+  healthItems: HealthCheckItem[];
+  versionUpdates: VersionUpdate[];
+
+  fetchHealthStatus: () => Promise<void>;
+  checkUpdates: () => Promise<void>;
+
+  // ── PATH Conflicts & Batch Install ──
+
+  pathConflicts: PathConflict[];
+  batchInstalling: boolean;
+  batchInstallResults: BatchInstallResult[];
+
+  fetchPathConflicts: () => Promise<void>;
+  batchInstallAll: (installs: { runtimeType: string; version: string | null }[]) => Promise<void>;
 }
 
 export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice> = (set, _get) => ({
@@ -43,7 +75,15 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
   installingRuntime: null,
   availableVersions: [],
   availableVersionsLoading: false,
+  versionCache: {},
   installDir: '',
+  projectBindings: [],
+  projectBindingLoading: false,
+  healthItems: [],
+  versionUpdates: [],
+  pathConflicts: [],
+  batchInstalling: false,
+  batchInstallResults: [],
 
   fetchRuntimes: async () => {
     set({ runtimeLoading: true, runtimeError: null });
@@ -101,9 +141,29 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
     set({ availableVersionsLoading: true });
     try {
       const versions = await api.listAvailableVersions(rt);
-      set({ availableVersions: versions, availableVersionsLoading: false });
+      set((state) => ({
+        availableVersions: versions,
+        availableVersionsLoading: false,
+        versionCache: { ...state.versionCache, [rt]: versions },
+      }));
     } catch {
       set({ availableVersionsLoading: false });
+    }
+  },
+
+  refreshVersionCache: async (rt) => {
+    set({ availableVersionsLoading: true });
+    try {
+      const versions = await api.refreshVersionCache(rt);
+      set((state) => ({
+        availableVersions: versions,
+        availableVersionsLoading: false,
+        versionCache: { ...state.versionCache, [rt]: versions },
+      }));
+      return versions;
+    } catch (err) {
+      set({ availableVersionsLoading: false });
+      throw err;
     }
   },
 
@@ -154,6 +214,111 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
       set({ runtimes });
     } catch (err) {
       set({ runtimeError: String(err), runtimeLoading: false });
+    }
+  },
+
+  // ── Project Binding ──
+
+  fetchProjectBindings: async () => {
+    set({ projectBindingLoading: true });
+    try {
+      const projects = await api.listBoundProjects();
+      set({ projectBindings: projects, projectBindingLoading: false });
+    } catch {
+      set({ projectBindingLoading: false });
+    }
+  },
+
+  addProjectBinding: async (path) => {
+    try {
+      const project = await api.addBoundProject(path);
+      set((state) => ({
+        projectBindings: [...state.projectBindings, project],
+      }));
+    } catch (err) {
+      set({ runtimeError: String(err) });
+    }
+  },
+
+  removeProjectBinding: async (id) => {
+    try {
+      await api.removeBoundProject(id);
+      set((state) => ({
+        projectBindings: state.projectBindings.filter((p) => p.id !== id),
+      }));
+    } catch (err) {
+      set({ runtimeError: String(err) });
+    }
+  },
+
+  syncProjectBinding: async (id) => {
+    try {
+      await api.syncProject(id);
+      // Refresh runtimes after sync
+      const runtimes = await api.listRuntimes();
+      set({ runtimes });
+    } catch (err) {
+      set({ runtimeError: String(err) });
+    }
+  },
+
+  scanProjectBinding: async (path) => {
+    try {
+      const result = await api.scanProject(path);
+      return result;
+    } catch {
+      return null;
+    }
+  },
+
+  // ── Health & Updates ──
+
+  fetchHealthStatus: async () => {
+    try {
+      const updates = await api.checkRuntimeUpdates();
+      // Build health items from updates
+      const items: HealthCheckItem[] = [];
+      // For now, basic health info — will be enhanced
+      set({ versionUpdates: updates, healthItems: items });
+    } catch {
+      // ignore
+    }
+  },
+
+  checkUpdates: async () => {
+    try {
+      const updates = await api.checkRuntimeUpdates();
+      set({ versionUpdates: updates });
+    } catch {
+      // ignore
+    }
+  },
+
+  // ── PATH Conflicts & Batch Install ──
+
+  fetchPathConflicts: async () => {
+    try {
+      const conflicts = await api.detectPathConflicts();
+      set({ pathConflicts: conflicts });
+    } catch {
+      // ignore
+    }
+  },
+
+  batchInstallAll: async (installs) => {
+    set({ batchInstalling: true, batchInstallResults: [] });
+    try {
+      const items: BatchInstallItem[] = installs.map(i => ({
+        runtime_type: i.runtimeType,
+        version: i.version,
+      }));
+      const results = await api.batchInstallRuntimes(items);
+      set({ batchInstallResults: results, batchInstalling: false });
+      // Refresh runtimes after batch install
+      const runtimes = await api.listRuntimes();
+      set({ runtimes });
+    } catch (err) {
+      set({ batchInstalling: false, runtimeError: String(err) });
     }
   },
 });

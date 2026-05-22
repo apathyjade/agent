@@ -6,7 +6,7 @@
 
 use std::process::Stdio;
 
-use crate::environment::{RuntimeInfo, RuntimeSource, RuntimeType};
+use crate::environment::{FoundExecutable, PathConflict, RuntimeInfo, RuntimeSource, RuntimeType};
 
 pub struct RuntimeDetector;
 
@@ -106,6 +106,91 @@ impl RuntimeDetector {
             return None;
         }
 
+        Some(version)
+    }
+
+    // ── PATH Conflict Detection ──
+
+    /// Detect all PATH conflicts for a runtime type.
+    /// Returns all executables found on PATH for the given runtime's commands.
+    pub async fn detect_path_conflicts(&self, rt: &RuntimeType) -> Vec<PathConflict> {
+        let mut all_exes = Vec::new();
+        for cmd in rt.commands() {
+            let paths = self.resolve_all_paths(cmd).await;
+            for path in paths {
+                let version = self.get_version_for_exe(&path, rt).await;
+                all_exes.push(FoundExecutable {
+                    path,
+                    version,
+                    is_active: false,
+                });
+            }
+        }
+        if all_exes.is_empty() {
+            return vec![];
+        }
+        // Determine which one is "active" (the first one on PATH)
+        all_exes[0].is_active = true;
+        let conflict = all_exes.len() > 1;
+        vec![PathConflict {
+            runtime_type: rt.clone(),
+            executables: all_exes,
+            conflict,
+        }]
+    }
+
+    /// Resolve ALL paths for a command (not just the first).
+    async fn resolve_all_paths(&self, cmd: &str) -> Vec<String> {
+        let (which_cmd, which_args) = if cfg!(target_os = "windows") {
+            ("where", vec![cmd])
+        } else {
+            ("which", vec!["-a", cmd])
+        };
+        let output = tokio::process::Command::new(which_cmd)
+            .args(&which_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .ok();
+
+        match output {
+            Some(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Get version string for a specific executable path.
+    async fn get_version_for_exe(&self, exe_path: &str, rt: &RuntimeType) -> Option<String> {
+        let args = rt.version_args();
+        let output = tokio::process::Command::new(exe_path)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .ok()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !stderr.is_empty() && stderr.contains(|c: char| c.is_ascii_digit()) {
+                return Some(stderr);
+            }
+            return None;
+        }
+
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if version.is_empty() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !stderr.is_empty() { return Some(stderr); }
+            return None;
+        }
         Some(version)
     }
 }

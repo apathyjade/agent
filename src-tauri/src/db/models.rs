@@ -57,3 +57,28 @@ pub struct SkillRecord {
     pub installed_at: String,
     pub updated_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoundProjectModel {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub auto_sync: bool,
+    pub last_scan: Option<String>,
+    pub requirements: Option<String>,  // JSON string
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeVersionCache {
+    pub runtime_type: String,
+    pub version: String,
+    pub display_name: String,
+    pub url: String,
+    pub lts: Option<String>,
+    pub is_stable: bool,
+    pub release_date: Option<String>,
+    pub file_size: Option<i64>,
+    pub fetched_at: String,
+}

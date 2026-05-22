@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, AvailableVersion, InstalledVersion } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult } from '../types';
 
 export async function createConversation(
   title: string,
@@ -338,7 +338,7 @@ export async function suggestRuntimeForCommand(command: string): Promise<Runtime
 
 // ── Version Management ──
 
-export async function listAvailableVersions(runtimeType: string): Promise<AvailableVersion[]> {
+export async function listAvailableVersions(runtimeType: string): Promise<RuntimeVersion[]> {
   return invoke('list_available_versions', { runtimeType });
 }
 
@@ -362,4 +362,62 @@ export async function getRuntimeInstallDir(): Promise<string> {
 
 export async function setRuntimeInstallDir(dir: string): Promise<string> {
   return invoke('set_runtime_install_dir', { dir });
+}
+
+export async function refreshVersionCache(runtimeType: string): Promise<RuntimeVersion[]> {
+  return invoke('refresh_version_cache', { runtimeType });
+}
+
+// ── Project Binding Commands ──
+
+export async function scanProject(path: string): Promise<ProjectScanResult> {
+  return invoke('scan_project', { path });
+}
+
+export async function addBoundProject(path: string): Promise<BoundProject> {
+  return invoke('add_bound_project', { path });
+}
+
+export async function listBoundProjects(): Promise<BoundProject[]> {
+  return invoke('list_bound_projects');
+}
+
+export async function removeBoundProject(id: string): Promise<void> {
+  return invoke('remove_bound_project', { id });
+}
+
+export async function syncProject(id: string): Promise<SyncResult> {
+  return invoke('sync_project', { id });
+}
+
+// ── Alias & Version Commands ──
+
+export async function setRuntimeDefault(runtimeType: string, version: string): Promise<void> {
+  return invoke('set_runtime_default', { runtimeType, version });
+}
+
+export async function getRuntimeDefault(runtimeType: string): Promise<string | null> {
+  return invoke('get_runtime_default', { runtimeType });
+}
+
+export async function resolveVersion(runtimeType: string, versionSpec: string): Promise<string> {
+  return invoke('resolve_version', { runtimeType, versionSpec });
+}
+
+// ── Upgrade Check ──
+
+export async function checkRuntimeUpdates(): Promise<VersionUpdate[]> {
+  return invoke('check_runtime_updates');
+}
+
+// ── PATH Conflict Detection ──
+
+export async function detectPathConflicts(): Promise<PathConflict[]> {
+  return invoke('detect_path_conflicts');
+}
+
+// ── Batch Install ──
+
+export async function batchInstallRuntimes(installs: BatchInstallItem[]): Promise<BatchInstallResult[]> {
+  return invoke('batch_install_runtimes', { installs });
 }

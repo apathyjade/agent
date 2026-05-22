@@ -218,7 +218,7 @@ export interface ReconcileResult {
 // ── Runtime Environment Types ──
 
 /** Supported runtime types */
-export type RuntimeType = 'node' | 'python' | 'docker' | 'uv' | 'go';
+export type RuntimeType = 'node' | 'python' | 'docker' | 'uv' | 'go' | 'rust' | 'java' | 'deno';
 
 /** Where a runtime is installed */
 export type RuntimeSource = 'system' | 'built_in' | 'none';
@@ -268,4 +268,108 @@ export interface RuntimeSuggestion {
   source: RuntimeSource | null;
   display_name: string | null;
   error?: string | null;
+}
+
+/** Version lifecycle status */
+export type VersionLifecycle = 'latest' | 'lts' | 'active' | 'maintenance' | 'eol';
+
+/** A version available for download with lifecycle info */
+export interface RuntimeVersion {
+  runtime_type: RuntimeType;
+  version: string;
+  display_name: string;
+  url: string;
+  lts: string | null;
+  is_stable: boolean;
+  release_date: string | null;
+  file_size: number | null;
+}
+
+/** Upgrade suggestion */
+export interface VersionUpdate {
+  runtime_type: RuntimeType;
+  current_version: string;
+  latest_version: string;
+  reason: string;
+}
+
+/** A project bound to runtime management */
+export interface BoundProject {
+  id: string;
+  path: string;
+  name: string;
+  auto_sync: boolean;
+  last_scan: string | null;
+  requirements: ProjectRuntimeRequirement[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** A single runtime requirement for a project */
+export interface ProjectRuntimeRequirement {
+  runtime_type: RuntimeType;
+  version_spec: string;
+  source_file: string;
+  resolved_version: string | null;
+}
+
+/** Result of scanning a project directory */
+export interface ProjectScanResult {
+  project_path: string;
+  project_name: string;
+  requirements: ProjectRuntimeRequirement[];
+  errors: string[];
+}
+
+/** Result of syncing project runtime versions */
+export interface SyncResult {
+  project_id: string;
+  actions: SyncAction[];
+  success: boolean;
+  error: string | null;
+}
+
+/** A single sync action */
+export interface SyncAction {
+  runtime_type: RuntimeType;
+  action: string;
+  from_version: string | null;
+  to_version: string;
+  success: boolean;
+}
+
+/** Health check result item */
+export interface HealthCheckItem {
+  runtime_type: RuntimeType;
+  status: 'healthy' | 'warning' | 'error';
+  message: string;
+  detail: string | null;
+}
+
+/** A single executable found on PATH */
+export interface FoundExecutable {
+  path: string;
+  version: string | null;
+  is_active: boolean;
+}
+
+/** PATH conflict info for a runtime type */
+export interface PathConflict {
+  runtime_type: RuntimeType;
+  executables: FoundExecutable[];
+  conflict: boolean;
+}
+
+/** Batch install request item */
+export interface BatchInstallItem {
+  runtime_type: string;
+  version: string | null;
+}
+
+/** Batch install result */
+export interface BatchInstallResult {
+  runtime_type: string;
+  version: string;
+  success: boolean;
+  error: string | null;
 }

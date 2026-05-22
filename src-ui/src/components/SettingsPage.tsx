@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings as SettingsIcon, Server, FolderOpen } from 'lucide-react';
+import { Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings as SettingsIcon, Server, FolderOpen, Globe } from 'lucide-react';
 import { Row } from '@jelper/component';
 import { Select } from 'antd';
 import { useStore } from '../store';
+import * as api from '../api/tauri';
 import { ManagerPageLayout } from './ManagerPageLayout';
 import { SkillDetailPanel } from './SkillDetailPanel';
 import { SkillInstallDialog } from './SkillInstallDialog';
@@ -39,12 +40,40 @@ export function SettingsPage() {
   const [editingDir, setEditingDir] = useState(false);
   const [dirValue, setDirValue] = useState('');
 
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [savedProxyUrl, setSavedProxyUrl] = useState('');
+
+  const getSetting = async (key: string): Promise<string | null> => {
+    try {
+      const settings = await api.getSettings();
+      return settings[key] || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const saveProxyUrl = async () => {
+    try {
+      await api.updateSettings('download_proxy', proxyUrl);
+      setSavedProxyUrl(proxyUrl);
+    } catch {
+      // ignore
+    }
+  };
+
+  const loadProxySetting = async () => {
+    const val = await getSetting('download_proxy');
+    setProxyUrl(val || '');
+    setSavedProxyUrl(val || '');
+  };
+
   useEffect(() => {
     fetchProviders();
     fetchSystemPrompts();
     fetchModels();
     fetchSkills();
     fetchInstallDir();
+    loadProxySetting();
   }, []);
 
   const selected = providers.find(p => p.id === selectedProvider);
@@ -552,6 +581,33 @@ export function SettingsPage() {
           )}
           <p className="text-[10px] text-gray-400 mt-2">
             所有内置安装的运行时将存储在此目录下，修改后需重新安装已有版本
+          </p>
+        </div>
+
+        {/* Proxy configuration */}
+        <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-2 mb-3">
+            <Globe size={16} className="text-gray-400" />
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">网络代理</h3>
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="text"
+              value={proxyUrl}
+              onChange={(e) => setProxyUrl(e.target.value)}
+              placeholder="HTTP 代理地址 (可选)"
+              className="flex-1 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
+            <button
+              onClick={saveProxyUrl}
+              disabled={proxyUrl === savedProxyUrl}
+              className="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white rounded-lg text-sm transition-all"
+            >
+              保存
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1.5">
+            设置后，运行时下载将通过该代理进行。支持 http:// 和 https:// 协议。
           </p>
         </div>
       </div>

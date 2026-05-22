@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import {
-  Server, Download, CheckCircle2, XCircle, Loader2,
-  RefreshCw, Trash2, Star,
+  Server, CheckCircle2, Loader2,
+  RefreshCw, FolderOpen, Heart, AlertTriangle, X,
 } from 'lucide-react';
-import { Select } from 'antd';
 import { useStore } from '../store';
 import { ManagerPageLayout } from './ManagerPageLayout';
-import type { RuntimeType, RuntimeSource, InstalledVersion } from '../types';
+import { RuntimeCard } from './RuntimeCard';
+import { VersionSelector } from './VersionSelector';
+import type { RuntimeType } from '../types';
+import { ProjectBindingPanel } from './ProjectBindingPanel';
+import { HealthCenter } from './HealthCenter';
 
 // ── Runtime display config ──
 
@@ -16,23 +19,10 @@ const RUNTIME_LABELS: Record<RuntimeType, { icon: string; color: string }> = {
   docker: { icon: '🐳', color: 'text-sky-600' },
   uv:     { icon: '🦀', color: 'text-orange-600' },
   go:     { icon: '🔷', color: 'text-cyan-600' },
+  rust:   { icon: '🦀', color: 'text-orange-700' },
+  java:   { icon: '☕', color: 'text-red-600' },
+  deno:   { icon: '🦕', color: 'text-green-700' },
 };
-
-function formatSource(source: RuntimeSource): string {
-  switch (source) {
-    case 'system': return '系统安装';
-    case 'built_in': return '应用内置';
-    case 'none': return '未安装';
-  }
-}
-
-function getSourceBadgeStyle(source: RuntimeSource): string {
-  switch (source) {
-    case 'system': return 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400';
-    case 'built_in': return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400';
-    case 'none': return 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400';
-  }
-}
 
 // ── Install Dialog ──
 
@@ -43,69 +33,24 @@ function InstallDialog({
   rt: RuntimeType;
   onClose: () => void;
 }) {
-  const { installRuntime, installingRuntime, availableVersions, availableVersionsLoading, fetchAvailableVersions } = useStore();
-  const [selectedVersion, setSelectedVersion] = useState<string>('latest');
-
-  useEffect(() => {
-    fetchAvailableVersions(runtimeType);
-  }, [runtimeType, fetchAvailableVersions]);
+  const { installRuntime, installingRuntime } = useStore();
+  const [selectedVersion, setSelectedVersion] = useState<string>('');
 
   const handleInstall = () => {
-    installRuntime(runtimeType, selectedVersion === 'latest' ? undefined : selectedVersion);
+    installRuntime(runtimeType, selectedVersion || undefined);
   };
 
   const isInstalling = installingRuntime === runtimeType;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[420px] p-5">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">
-          安装 {RUNTIME_LABELS[runtimeType].icon} {runtimeType.toUpperCase()}
-        </h3>
-
-        {/* Version selector */}
-        <div className="mb-4">
-          <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5 block">
-            选择版本
-          </label>
-          <Select
-            value={selectedVersion}
-            onChange={setSelectedVersion}
-            disabled={isInstalling}
-            className="w-full"
-            options={[
-              { value: 'latest', label: '最新版本' },
-              ...(availableVersionsLoading
-                ? [{ value: '', label: '加载中...', disabled: true as boolean }]
-                : availableVersions.map(v => ({ value: v.version, label: v.display_name }))
-              )
-            ]}
-          />
-        </div>
-
-        {/* Install button */}
-        <div className="flex gap-2">
-          <button
-            onClick={handleInstall}
-            disabled={isInstalling}
-            className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm transition-all font-medium"
-          >
-            {isInstalling ? (
-              <><Loader2 size={14} className="animate-spin" /> 安装中...</>
-            ) : (
-              <><Download size={14} /> 开始安装</>
-            )}
-          </button>
-          <button
-            onClick={onClose}
-            disabled={isInstalling}
-            className="px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm transition-colors"
-          >
-            取消
-          </button>
-        </div>
-      </div>
-    </div>
+    <VersionSelector
+      runtimeType={runtimeType}
+      selectedVersion={selectedVersion}
+      onSelect={setSelectedVersion}
+      onInstall={handleInstall}
+      onClose={onClose}
+      isInstalling={isInstalling}
+    />
   );
 }
 
@@ -161,61 +106,6 @@ function InstallProgressModal() {
   );
 }
 
-// ── Version List ──
-
-function VersionList({
-  versions,
-  onSwitch,
-  onUninstall,
-}: {
-  versions: InstalledVersion[];
-  onSwitch: (version: string) => void;
-  onUninstall: (version: string) => void;
-}) {
-  if (versions.length === 0) {
-    return <p className="text-xs text-gray-400 py-2 text-center">暂无已安装版本</p>;
-  }
-
-  return (
-    <div className="space-y-1 mt-2">
-      {versions.map((v) => (
-        <div
-          key={v.version}
-          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs ${
-            v.is_active
-              ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700'
-              : 'bg-gray-100/50 dark:bg-gray-700/50'
-          }`}
-        >
-          <span className="flex-1 font-mono text-gray-700 dark:text-gray-300">
-            {v.version}
-          </span>
-          {v.is_active && (
-            <span className="text-[10px] text-purple-600 dark:text-purple-400 flex items-center gap-0.5">
-              <Star size={10} /> 当前
-            </span>
-          )}
-          {!v.is_active && (
-            <button
-              onClick={() => onSwitch(v.version)}
-              className="text-purple-500 hover:text-purple-600 hover:underline"
-            >
-              切换
-            </button>
-          )}
-          <button
-            onClick={() => onUninstall(v.version)}
-            className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-red-500 transition-colors"
-            title="卸载"
-          >
-            <Trash2 size={12} />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Main Page ──
 
 export function RuntimeManagerPage() {
@@ -223,15 +113,26 @@ export function RuntimeManagerPage() {
     runtimes, runtimeLoading, runtimeError,
     fetchRuntimes, clearRuntimeError,
     installingRuntime, switchVersion, uninstallVersion,
+    fetchAvailableVersions, versionCache,
+    pathConflicts, fetchPathConflicts, batchInstalling,
   } = useStore();
 
   const [installDialogRt, setInstallDialogRt] = useState<RuntimeType | null>(null);
   const [expandedRt, setExpandedRt] = useState<RuntimeType | null>(null);
-  const [activeTab, setActiveTab] = useState<'managed' | 'system'>('managed');
+  const [activeTab, setActiveTab] = useState<'versions' | 'projects' | 'system' | 'health'>('versions');
 
   useEffect(() => {
     fetchRuntimes();
-  }, [fetchRuntimes]);
+    fetchPathConflicts();
+  }, [fetchRuntimes, fetchPathConflicts]);
+
+  // Auto-dismiss error after 8 seconds
+  useEffect(() => {
+    if (runtimeError) {
+      const timer = setTimeout(() => clearRuntimeError(), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [runtimeError, clearRuntimeError]);
 
   return (
     <ManagerPageLayout
@@ -250,18 +151,29 @@ export function RuntimeManagerPage() {
       }
     >
       <div className="max-w-3xl mx-auto space-y-4">
-        {/* Tabs */}
+        {/* Tabs — 4 equal-width tabs */}
         <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
           <button
-            onClick={() => setActiveTab('managed')}
+            onClick={() => setActiveTab('versions')}
             className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'managed'
+              activeTab === 'versions'
                 ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
             }`}
           >
             <Server size={14} />
-            应用管理
+            版本管理
+          </button>
+          <button
+            onClick={() => setActiveTab('projects')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'projects'
+                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            <FolderOpen size={14} />
+            项目绑定
           </button>
           <button
             onClick={() => setActiveTab('system')}
@@ -272,149 +184,158 @@ export function RuntimeManagerPage() {
             }`}
           >
             <CheckCircle2 size={14} />
-            系统安装
+            系统检测
+          </button>
+          <button
+            onClick={() => setActiveTab('health')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'health'
+                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            <Heart size={14} />
+            健康中心
           </button>
         </div>
 
-        {/* Managed tab content */}
-        {activeTab === 'managed' && (() => {
-          const mgmtRuntimes = runtimes.filter(r => r.source !== 'system');
-          if (mgmtRuntimes.length === 0) {
+        {/* 版本管理 tab — show ALL runtimes */}
+        {activeTab === 'versions' && (() => {
+          if (runtimes.length === 0) {
             return (
               <div className="p-8 text-center text-gray-400 dark:text-gray-500">
                 <Server size={32} className="mx-auto mb-2 opacity-50" />
-                <p className="text-sm">暂无应用管理的运行时</p>
-                <p className="text-xs mt-1">点击「安装」按钮添加</p>
+                <p className="text-sm">暂无运行时</p>
+                <p className="text-xs mt-1">刷新以重新检测</p>
               </div>
             );
           }
           return (
             <div className="space-y-2">
-              {mgmtRuntimes.map((runtime) => {
-                const cfg = RUNTIME_LABELS[runtime.runtime_type];
-                const isInstalling = installingRuntime === runtime.runtime_type;
-                return (
-                  <div key={runtime.runtime_type} className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
-                    <div className="flex items-center gap-4">
-                      <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-600 flex items-center justify-center text-lg">
-                        {isInstalling ? (
-                          <Loader2 size={18} className="animate-spin text-purple-500" />
-                        ) : runtime.available ? (
-                          <CheckCircle2 size={18} className="text-green-500" />
-                        ) : (
-                          <XCircle size={18} className="text-red-400" />
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                            {cfg.icon} {runtime.display_name}
-                          </h4>
-                          {runtime.source !== 'none' && (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${getSourceBadgeStyle(runtime.source)}`}>
-                              {formatSource(runtime.source)}
-                            </span>
-                          )}
-                        </div>
-
-                        {runtime.available ? (
-                          <div className="flex items-center gap-3 mt-0.5">
-                            <span className="text-[11px] text-gray-500 dark:text-gray-400 font-mono">
-                              {runtime.version || '版本未知'}
-                            </span>
-                            {runtime.executable_path && (
-                              <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[300px]">
-                                {runtime.executable_path}
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="text-xs text-red-500 dark:text-red-400 mt-0.5">
-                            {runtime.error || '未安装'}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        {runtime.available && runtime.source === 'built_in' && (
-                          <button
-                            onClick={() => setExpandedRt(expandedRt === runtime.runtime_type ? null : runtime.runtime_type)}
-                            className="text-xs text-purple-500 hover:text-purple-600 px-1"
-                          >
-                            版本 ({runtime.installed_versions?.length || 0})
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setInstallDialogRt(runtime.runtime_type)}
-                          disabled={isInstalling}
-                          className="flex items-center gap-1 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white rounded-lg text-xs transition-all"
-                        >
-                          <Download size={12} />
-                          {isInstalling ? '安装中...' : '安装'}
-                        </button>
-                      </div>
-                    </div>
-
-                    {expandedRt === runtime.runtime_type && runtime.source === 'built_in' && (
-                      <VersionList
-                        versions={runtime.installed_versions || []}
-                        onSwitch={(v) => switchVersion(runtime.runtime_type, v)}
-                        onUninstall={(v) => uninstallVersion(runtime.runtime_type, v)}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()}
-
-        {/* System tab content (read-only) */}
-        {activeTab === 'system' && (() => {
-          const sysRuntimes = runtimes.filter(r => r.source === 'system' && r.available);
-          if (sysRuntimes.length === 0) {
-            return (
-              <div className="p-8 text-center text-gray-400 dark:text-gray-500">
-                <CheckCircle2 size={32} className="mx-auto mb-2 opacity-50" />
-                <p className="text-sm">未检测到系统安装的运行时</p>
-              </div>
-            );
-          }
-          return (
-            <div className="space-y-2">
-              {sysRuntimes.map((runtime) => (
-                <div key={runtime.runtime_type} className="p-3 bg-gray-50/50 dark:bg-gray-700/30 rounded-xl border border-gray-100 dark:border-gray-700/50">
-                  <div className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-sm">
-                      <CheckCircle2 size={15} className="text-blue-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
-                          {RUNTIME_LABELS[runtime.runtime_type].icon} {runtime.display_name}
-                        </span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
-                          系统安装
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-[11px] text-gray-500 dark:text-gray-400 font-mono">
-                          {runtime.version || '版本未知'}
-                        </span>
-                        {runtime.executable_path && (
-                          <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[280px]">
-                            {runtime.executable_path}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              {runtimes.map((runtime) => (
+                <RuntimeCard
+                  key={runtime.runtime_type}
+                  info={runtime}
+                  versions={versionCache[runtime.runtime_type] || []}
+                  isInstalling={installingRuntime === runtime.runtime_type}
+                  expanded={expandedRt === runtime.runtime_type}
+                  onToggleExpand={() => {
+                    const next = expandedRt === runtime.runtime_type ? null : runtime.runtime_type;
+                    setExpandedRt(next);
+                    if (next && !versionCache[runtime.runtime_type]) {
+                      fetchAvailableVersions(runtime.runtime_type);
+                    }
+                  }}
+                  onInstall={() => setInstallDialogRt(runtime.runtime_type)}
+                  onSwitch={(v) => switchVersion(runtime.runtime_type, v)}
+                  onUninstall={(v) => uninstallVersion(runtime.runtime_type, v)}
+                />
               ))}
             </div>
           );
         })()}
+
+        {/* 项目绑定 tab */}
+        {activeTab === 'projects' && <ProjectBindingPanel />}
+
+        {/* 系统检测 tab — PATH conflict detection + system runtimes */}
+        {activeTab === 'system' && (() => {
+          const sysRuntimes = runtimes.filter(r => r.source === 'system' && r.available);
+          const conflicts = pathConflicts.filter(c => c.conflict);
+
+          return (
+            <div className="space-y-4">
+              {/* PATH conflicts */}
+              {conflicts.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                    <AlertTriangle size={12} />
+                    PATH 冲突检测
+                  </h4>
+                  <div className="space-y-2">
+                    {conflicts.map((conflict) => (
+                      <div key={conflict.runtime_type} className="p-3 bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-700/50 rounded-xl">
+                        <div className="flex items-center gap-2 mb-2">
+                          <AlertTriangle size={14} className="text-yellow-600" />
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {RUNTIME_LABELS[conflict.runtime_type]?.icon || '⚙️'} {conflict.runtime_type.toUpperCase()}
+                          </span>
+                          <span className="text-xs text-yellow-600 dark:text-yellow-400">
+                            发现 {conflict.executables.length} 个版本
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          {conflict.executables.map((exe, idx) => (
+                            <div key={idx} className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs ${
+                              exe.is_active
+                                ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700'
+                                : 'bg-gray-50 dark:bg-gray-700/50'
+                            }`}>
+                              <span className={`w-2 h-2 rounded-full ${exe.is_active ? 'bg-purple-500' : 'bg-gray-400'}`} />
+                              <span className="flex-1 font-mono text-gray-700 dark:text-gray-300 truncate">{exe.path}</span>
+                              {exe.version && <span className="text-gray-500">{exe.version}</span>}
+                              {exe.is_active && <span className="text-[10px] text-purple-600 dark:text-purple-400">当前</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* System runtimes */}
+              <div>
+                <h4 className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                  <CheckCircle2 size={12} />
+                  系统 PATH 检测
+                  <span className="text-gray-400 font-normal normal-case ml-1">— 以下为系统 PATH 中检测到的运行时</span>
+                </h4>
+                {sysRuntimes.length === 0 ? (
+                  <div className="p-8 text-center text-gray-400 dark:text-gray-500">
+                    <CheckCircle2 size={32} className="mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">未检测到系统安装的运行时</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {sysRuntimes.map((runtime) => (
+                      <div key={runtime.runtime_type} className="p-3 bg-gray-50/50 dark:bg-gray-700/30 rounded-xl border border-gray-100 dark:border-gray-700/50">
+                        <div className="flex items-center gap-3">
+                          <div className="w-7 h-7 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-sm">
+                            <CheckCircle2 size={15} className="text-blue-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                                {RUNTIME_LABELS[runtime.runtime_type]?.icon || '⚙️'} {runtime.display_name}
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
+                                系统安装
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[11px] text-gray-500 dark:text-gray-400 font-mono">
+                                {runtime.version || '版本未知'}
+                              </span>
+                              {runtime.executable_path && (
+                                <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[280px]">
+                                  {runtime.executable_path}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* 健康中心 tab */}
+        {activeTab === 'health' && <HealthCenter />}
 
         {/* Empty state */}
         {!runtimeLoading && runtimes.length === 0 && (
@@ -433,11 +354,43 @@ export function RuntimeManagerPage() {
           </div>
         )}
 
-        {/* Error banner */}
+        {/* Batch installing indicator */}
+        {batchInstalling && (
+          <div className="flex items-center justify-center py-2 text-purple-600 dark:text-purple-400 text-xs gap-1.5">
+            <Loader2 size={12} className="animate-spin" />
+            正在批量安装...
+          </div>
+        )}
+
+        {/* Enhanced error banner with retry */}
         {runtimeError && (
-          <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-lg text-sm text-red-600 dark:text-red-400 flex items-center justify-between">
-            <span>{runtimeError}</span>
-            <button onClick={clearRuntimeError} className="underline text-xs ml-2">关闭</button>
+          <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl shadow-sm">
+            <div className="flex items-start gap-3">
+              <AlertTriangle size={16} className="text-red-500 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-red-800 dark:text-red-300 mb-0.5">
+                  操作失败
+                </p>
+                <p className="text-xs text-red-600 dark:text-red-400 break-words">
+                  {runtimeError}
+                </p>
+              </div>
+              <button
+                onClick={clearRuntimeError}
+                className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 text-red-400 hover:text-red-600 transition-colors flex-shrink-0"
+                title="关闭"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => clearRuntimeError()}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg transition-colors"
+              >
+                清除并重试
+              </button>
+            </div>
           </div>
         )}
       </div>

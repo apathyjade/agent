@@ -4,10 +4,19 @@
 // Supports: system detection, version management, configurable install dir.
 
 mod detector;
+pub mod http_client;
 mod installer;
+pub mod lifecycle;
 mod manifest;
+pub mod registry;
+pub mod sources;
+pub mod project;
+pub mod resolver;
+pub mod alias;
+pub mod cli;
+mod upgrade;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,9 +25,15 @@ use tokio::sync::Mutex;
 
 use crate::error::Result;
 
+pub use alias::AliasManager;
 pub use detector::RuntimeDetector;
 pub use installer::RuntimeInstaller;
+pub use lifecycle::VersionLifecycle;
 pub use manifest::{read_manifest, write_manifest, RuntimeManifest};
+pub use project::{BoundProject, ProjectDetector, ProjectRuntimeRequirement, ProjectScanResult, SyncAction, SyncResult};
+pub use registry::{CachedVersions, RuntimeRegistry, RuntimeVersion, VersionSource};
+pub use resolver::VersionResolver;
+pub use upgrade::{check_updates, VersionUpdate};
 
 // ── Runtime Types ──
 
@@ -31,6 +46,11 @@ pub enum RuntimeType {
     Docker,
     Uv,
     Go,
+    Rust,
+    Java,
+    Deno,
+    Bun,
+    Ruby,
 }
 
 impl RuntimeType {
@@ -41,6 +61,11 @@ impl RuntimeType {
             "docker" => Some(RuntimeType::Docker),
             "uv" | "uvx" => Some(RuntimeType::Uv),
             "go" | "golang" => Some(RuntimeType::Go),
+            "rust" | "rustc" | "cargo" => Some(RuntimeType::Rust),
+            "java" | "jdk" | "jre" => Some(RuntimeType::Java),
+            "deno" => Some(RuntimeType::Deno),
+            "bun" => Some(RuntimeType::Bun),
+            "ruby" | "irb" | "gem" | "bundler" => Some(RuntimeType::Ruby),
             _ => None,
         }
     }
@@ -52,6 +77,11 @@ impl RuntimeType {
             RuntimeType::Docker => "Docker",
             RuntimeType::Uv => "uv",
             RuntimeType::Go => "Go",
+            RuntimeType::Rust => "Rust",
+            RuntimeType::Java => "Java (JDK)",
+            RuntimeType::Deno => "Deno",
+            RuntimeType::Bun => "Bun",
+            RuntimeType::Ruby => "Ruby",
         }
     }
 
@@ -63,6 +93,11 @@ impl RuntimeType {
             RuntimeType::Docker => &["docker"],
             RuntimeType::Uv => &["uv", "uvx"],
             RuntimeType::Go => &["go"],
+            RuntimeType::Rust => &["rustc", "cargo"],
+            RuntimeType::Java => &["java", "javac"],
+            RuntimeType::Deno => &["deno"],
+            RuntimeType::Bun => &["bun"],
+            RuntimeType::Ruby => &["ruby", "irb"],
         }
     }
 
@@ -75,6 +110,7 @@ impl RuntimeType {
     pub fn version_args(&self) -> &'static [&'static str] {
         match self {
             RuntimeType::Go => &["version"],
+            RuntimeType::Java => &["-version"],
             _ => &["--version"],
         }
     }
@@ -92,13 +128,18 @@ impl RuntimeType {
             "docker" => Some(RuntimeType::Docker),
             "uv" | "uvx" => Some(RuntimeType::Uv),
             "go" | "golang" => Some(RuntimeType::Go),
+            "rustc" | "cargo" | "rustup" => Some(RuntimeType::Rust),
+            "java" | "javac" | "jdk" => Some(RuntimeType::Java),
+            "deno" => Some(RuntimeType::Deno),
+            "bun" => Some(RuntimeType::Bun),
+            "ruby" | "irb" | "gem" | "bundler" => Some(RuntimeType::Ruby),
             _ => None,
         }
     }
 
     /// All variants as a slice.
     pub fn all() -> &'static [RuntimeType] {
-        &[Node, Python, Docker, Uv, Go]
+        &[Node, Python, Docker, Uv, Go, Rust, Java, Deno, Bun, Ruby]
     }
 
     /// Directory name used for storing versions on disk.
@@ -109,6 +150,11 @@ impl RuntimeType {
             RuntimeType::Docker => "docker",
             RuntimeType::Uv => "uv",
             RuntimeType::Go => "go",
+            RuntimeType::Rust => "rust",
+            RuntimeType::Java => "java",
+            RuntimeType::Deno => "deno",
+            RuntimeType::Bun => "bun",
+            RuntimeType::Ruby => "ruby",
         }
     }
 }
@@ -154,6 +200,25 @@ pub struct RuntimeInfo {
     pub available: bool,
 }
 
+// ── PATH Conflict Detection ──
+
+/// A single executable found on PATH.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FoundExecutable {
+    pub path: String,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub is_active: bool,
+}
+
+/// PATH conflict info for a runtime type.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PathConflict {
+    pub runtime_type: RuntimeType,
+    pub executables: Vec<FoundExecutable>,
+    pub conflict: bool,
+}
+
 // ── Install Progress ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -183,6 +248,8 @@ pub struct RuntimeManager {
     detector: RuntimeDetector,
     installer: Arc<Mutex<RuntimeInstaller>>,
     cache: Arc<Mutex<HashMap<RuntimeType, RuntimeInfo>>>,
+    /// Tracks currently installing runtimes to prevent concurrent installations.
+    installing: Arc<Mutex<HashSet<RuntimeType>>>,
 }
 
 impl RuntimeManager {
@@ -193,6 +260,7 @@ impl RuntimeManager {
             detector: RuntimeDetector::new(),
             installer: Arc::new(Mutex::new(installer)),
             cache: Arc::new(Mutex::new(HashMap::new())),
+            installing: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -397,6 +465,22 @@ impl RuntimeManager {
         let install_dir = self.install_dir.lock().await.clone();
         let installer = self.installer.lock().await;
         installer.install(rt, version, install_dir, on_progress).await
+    }
+
+    /// Try to begin installing a runtime. Returns an error if already installing.
+    pub async fn try_begin_install(&self, rt: &RuntimeType) -> std::result::Result<(), String> {
+        let mut set = self.installing.lock().await;
+        if set.contains(rt) {
+            return Err(format!("{} 正在安装中", rt.display_name()));
+        }
+        set.insert(rt.clone());
+        Ok(())
+    }
+
+    /// Mark a runtime installation as finished (success or failure).
+    pub async fn end_install(&self, rt: &RuntimeType) {
+        let mut set = self.installing.lock().await;
+        set.remove(rt);
     }
 
     /// Get available versions for download.

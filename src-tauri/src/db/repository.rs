@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{Conversation, Message, Setting, SkillRecord, SystemPrompt};
+use crate::db::models::{BoundProjectModel, Conversation, Message, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -98,6 +98,31 @@ impl Database {
                 error TEXT,
                 started_at TEXT NOT NULL,
                 finished_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS runtime_version_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                runtime_type TEXT NOT NULL,
+                version TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                lts TEXT,
+                is_stable INTEGER NOT NULL DEFAULT 1,
+                release_date TEXT,
+                file_size INTEGER,
+                fetched_at TEXT NOT NULL,
+                UNIQUE(runtime_type, version)
+            );
+
+            CREATE TABLE IF NOT EXISTS bound_projects (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                auto_sync INTEGER NOT NULL DEFAULT 1,
+                last_scan TEXT,
+                requirements TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -478,6 +503,155 @@ impl Database {
             })
         }).optional()?;
         Ok(run)
+    }
+
+    // ── Runtime Version Cache ──
+
+    pub fn get_cached_versions(&self, rt: &str) -> Result<Vec<RuntimeVersionCache>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT runtime_type, version, display_name, url, lts, is_stable, release_date, file_size, fetched_at
+             FROM runtime_version_cache
+             WHERE runtime_type = ?1
+             ORDER BY version DESC",
+        )?;
+        let entries = stmt
+            .query_map(params![rt], |row| {
+                Ok(RuntimeVersionCache {
+                    runtime_type: row.get(0)?,
+                    version: row.get(1)?,
+                    display_name: row.get(2)?,
+                    url: row.get(3)?,
+                    lts: row.get(4)?,
+                    is_stable: row.get::<_, i32>(5)? != 0,
+                    release_date: row.get(6)?,
+                    file_size: row.get(7)?,
+                    fetched_at: row.get(8)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(entries)
+    }
+
+    pub fn upsert_version_cache(&self, entry: &RuntimeVersionCache) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO runtime_version_cache (runtime_type, version, display_name, url, lts, is_stable, release_date, file_size, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(runtime_type, version) DO UPDATE SET
+                display_name = excluded.display_name,
+                url = excluded.url,
+                lts = excluded.lts,
+                is_stable = excluded.is_stable,
+                release_date = excluded.release_date,
+                file_size = excluded.file_size,
+                fetched_at = excluded.fetched_at",
+            params![
+                entry.runtime_type,
+                entry.version,
+                entry.display_name,
+                entry.url,
+                entry.lts,
+                entry.is_stable as i32,
+                entry.release_date,
+                entry.file_size,
+                entry.fetched_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_version_cache(&self, rt: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM runtime_version_cache WHERE runtime_type = ?1", params![rt])?;
+        Ok(())
+    }
+
+    // ── Bound Projects ──
+
+    pub fn add_bound_project(&self, path: &str, name: &str) -> Result<BoundProjectModel> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO bound_projects (id, path, name, auto_sync, last_scan, requirements, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 1, NULL, NULL, ?4, ?5)",
+            params![id, path, name, now, now],
+        )?;
+        Ok(BoundProjectModel {
+            id,
+            path: path.to_string(),
+            name: name.to_string(),
+            auto_sync: true,
+            last_scan: None,
+            requirements: None,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn list_bound_projects(&self) -> Result<Vec<BoundProjectModel>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, name, auto_sync, last_scan, requirements, created_at, updated_at
+             FROM bound_projects ORDER BY updated_at DESC",
+        )?;
+        let projects = stmt
+            .query_map([], |row| {
+                Ok(BoundProjectModel {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    name: row.get(2)?,
+                    auto_sync: row.get::<_, i32>(3)? != 0,
+                    last_scan: row.get(4)?,
+                    requirements: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(projects)
+    }
+
+    pub fn remove_bound_project(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM bound_projects WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn get_bound_project(&self, id: &str) -> Result<Option<BoundProjectModel>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, name, auto_sync, last_scan, requirements, created_at, updated_at
+             FROM bound_projects WHERE id = ?1",
+        )?;
+        let project = stmt
+            .query_row(params![id], |row| {
+                Ok(BoundProjectModel {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    name: row.get(2)?,
+                    auto_sync: row.get::<_, i32>(3)? != 0,
+                    last_scan: row.get(4)?,
+                    requirements: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .optional()?;
+        Ok(project)
+    }
+
+    pub fn update_bound_project(&self, project: &BoundProjectModel) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE bound_projects SET path = ?2, name = ?3, auto_sync = ?4, last_scan = ?5, requirements = ?6, updated_at = ?7 WHERE id = ?1",
+            params![
+                project.id,
+                project.path,
+                project.name,
+                project.auto_sync as i32,
+                project.last_scan,
+                project.requirements,
+                now,
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn skill_exists(&self, id: &str) -> Result<bool> {

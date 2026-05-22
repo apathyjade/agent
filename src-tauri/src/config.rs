@@ -124,6 +124,10 @@ pub struct AppConfig {
     /// If None, defaults to <app_data_dir>/agent/runtimes/
     #[serde(default)]
     pub runtime_install_dir: Option<String>,
+    /// Optional HTTP proxy URL for downloading runtimes.
+    /// e.g. "http://127.0.0.1:7890"
+    #[serde(default)]
+    pub download_proxy: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -165,6 +169,7 @@ impl Default for AppConfig {
             workflow_vars: std::collections::HashMap::new(),
             workflow_secrets: std::collections::HashMap::new(),
             runtime_install_dir: None,
+            download_proxy: None,
         }
     }
 }
