@@ -37,21 +37,10 @@ if ($existing) {
   exit 0
 }
 
-# Create branch from master (from origin/master if reachable, else local)
+# Create branch from local master (after optional fetch to update)
 Write-Host "Creating branch '$branch' from master..." -ForegroundColor Cyan
 
 git fetch origin master 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-  git checkout -b $branch origin/master 2>$null | Out-Null
-  if ($LASTEXITCODE -eq 0) {
-    Write-Host "Switched to new branch: $branch (from origin/master)" -ForegroundColor Green
-    git log --oneline -3
-    exit 0
-  }
-}
-
-# Fallback: from local master
-Write-Host "Using local master to create branch..." -ForegroundColor Yellow
 git checkout master
 git checkout -b $branch
 
