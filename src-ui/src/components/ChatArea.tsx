@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
-import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle, ChevronDown, ArrowDown } from 'lucide-react';
+import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle, ArrowDown } from 'lucide-react';
+import { Select } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Row, Col } from '@jelper/component';
@@ -51,7 +52,6 @@ export function ChatArea() {
   const setError = useStore((s) => s.setError);
 
   const [input, setInput] = useState('');
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
   
@@ -100,16 +100,6 @@ export function ChatArea() {
     }
   }, [currentConversation, isStreaming]);
 
-  useEffect(() => {
-    if (!showModelPicker) return;
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.model-picker')) setShowModelPicker(false);
-    };
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, [showModelPicker]);
-
   const handleSend = useCallback(async () => {
     if (!input.trim() || loading || isStreaming) return;
     const content = input.trim();
@@ -138,41 +128,28 @@ export function ChatArea() {
       <Col.Item $fixed>
         <Row $justify="space-between" $align="center" className="px-6 py-3 border-b border-gray-100 dark:border-gray-700 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
           <Row $align="center" $gap={8}>
-            <div className="relative model-picker">
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowModelPicker(!showModelPicker); }}
-                className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
-              >
-                {models.find(m => m.id === currentConversation.model_id)?.display_name || currentConversation.model_id}
-                <ChevronDown size={12} />
-              </button>
-              {showModelPicker && (
-                <div className="absolute left-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-20 py-1 min-w-[200px] max-h-48 overflow-y-auto">
-                  {models.filter(m => m.enabled).map((model) => (
-                    <button
-                      key={model.id}
-                      onClick={async () => {
-                        await updateConversationModel(currentConversation.id, model.id);
-                        setShowModelPicker(false);
-                      }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors ${
-                        currentConversation.model_id === model.id
-                          ? 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 font-medium'
-                          : 'text-gray-700 dark:text-gray-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span>{model.display_name}</span>
-                        <span className="text-xs text-gray-400 dark:text-gray-500">{model.provider}</span>
-                      </div>
-                    </button>
-                  ))}
-                  {models.filter(m => m.enabled).length === 0 && (
-                    <div className="px-3 py-2 text-sm text-gray-400 dark:text-gray-500">没有可用模型</div>
-                  )}
+            <Select
+              value={currentConversation.model_id}
+              onChange={async (value) => {
+                await updateConversationModel(currentConversation.id, value);
+              }}
+              size="small"
+              variant="borderless"
+              popupMatchSelectWidth={false}
+              className="text-xs"
+              options={models.filter(m => m.enabled).map(m => ({
+                value: m.id,
+                label: m.display_name,
+                provider: m.provider,
+              }))}
+              optionRender={(option) => (
+                <div className="flex items-center justify-between gap-3">
+                  <span>{option.data.label}</span>
+                  <span className="text-xs text-gray-400 opacity-60">{option.data.provider}</span>
                 </div>
               )}
-            </div>
+              notFoundContent="没有可用模型"
+            />
           </Row>
           <Row $align="center" $gap={12}>
             {currentConversation.system_prompt && (

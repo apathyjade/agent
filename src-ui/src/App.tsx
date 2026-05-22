@@ -120,14 +120,6 @@ function App() {
             <span className="text-white text-[9px] font-bold">A</span>
           </div>
           <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Agent</span>
-          {currentConversation && (
-            <>
-              <span className="text-gray-300 dark:text-gray-600">/</span>
-              <span className="text-sm text-gray-500 dark:text-gray-400 truncate max-w-[200px]">
-                {currentConversation.title}
-              </span>
-            </>
-          )}
           <div className="flex-1" />
           <span className="text-[11px] text-gray-400 dark:text-gray-500">
             {currentView === 'skill-manager' ? '技能管理' :

@@ -17,7 +17,7 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       '@jelper/component',
-      'shallowequal',
+
       'zustand',
       'react',
       'react-dom',

@@ -1,4 +1,5 @@
 import { MessageSquare, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server } from 'lucide-react';
+import { Tooltip } from 'antd';
 import { Col } from '@jelper/component';
 import { useStore } from '../store';
 
@@ -55,54 +56,66 @@ export function ModuleBar() {
         {/* Module icons */}
         <Col.Item $scale={1}>
           <div className="flex flex-col items-center gap-1 py-3">
-            <button onClick={handleChatClick} className={btnClass(currentView === 'chat')} title="对话">
-              {activeIndicator(currentView === 'chat')}
-              <MessageSquare size={18} />
-            </button>
-            <button onClick={handleSkillsClick} className={btnClass(currentView === 'skill-manager')} title="技能管理">
-              {activeIndicator(currentView === 'skill-manager')}
-              <BrainCircuit size={18} />
-            </button>
-            <button onClick={handleMcpClick} className={btnClass(currentView === 'mcp-manager')} title="MCP 连接">
-              {activeIndicator(currentView === 'mcp-manager')}
-              <PlugZap size={18} />
-            </button>
-            <button onClick={handleRuntimeClick} className={btnClass(currentView === 'runtime-manager')} title="运行时管理">
-              {activeIndicator(currentView === 'runtime-manager')}
-              <Server size={18} />
-            </button>
-            <button onClick={handleWorkflowsClick} className={btnClass(currentView === 'workflows')} title="工作流">
-              {activeIndicator(currentView === 'workflows')}
-              <Workflow size={18} />
-            </button>
+            <Tooltip title="对话" placement="right">
+              <button onClick={handleChatClick} className={btnClass(currentView === 'chat')}>
+                {activeIndicator(currentView === 'chat')}
+                <MessageSquare size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="技能管理" placement="right">
+              <button onClick={handleSkillsClick} className={btnClass(currentView === 'skill-manager')}>
+                {activeIndicator(currentView === 'skill-manager')}
+                <BrainCircuit size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="MCP 连接" placement="right">
+              <button onClick={handleMcpClick} className={btnClass(currentView === 'mcp-manager')}>
+                {activeIndicator(currentView === 'mcp-manager')}
+                <PlugZap size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="运行时管理" placement="right">
+              <button onClick={handleRuntimeClick} className={btnClass(currentView === 'runtime-manager')}>
+                {activeIndicator(currentView === 'runtime-manager')}
+                <Server size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="工作流" placement="right">
+              <button onClick={handleWorkflowsClick} className={btnClass(currentView === 'workflows')}>
+                {activeIndicator(currentView === 'workflows')}
+                <Workflow size={18} />
+              </button>
+            </Tooltip>
           </div>
         </Col.Item>
 
         {/* Bottom: Theme + Settings */}
         <Col.Item $fixed>
           <div className="flex flex-col items-center gap-1 pb-3">
-            <button
-              onClick={toggleDarkMode}
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all"
-              title={darkMode ? '切换浅色模式' : '切换深色模式'}
-            >
-              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
+            <Tooltip title={darkMode ? '切换浅色模式' : '切换深色模式'} placement="right">
+              <button
+                onClick={toggleDarkMode}
+                className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all"
+              >
+                {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+            </Tooltip>
             <div className="w-5 h-px bg-gray-200 dark:bg-gray-700 my-0.5" />
-            <button
-              onClick={handleSettingsClick}
-              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all relative ${
-                currentView === 'settings'
-                  ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'
-                  : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-              }`}
-              title="设置"
-            >
-              {currentView === 'settings' && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[2.5px] h-5 bg-purple-500 rounded-r-full" />
-              )}
-              <Settings size={18} />
-            </button>
+            <Tooltip title="设置" placement="right">
+              <button
+                onClick={handleSettingsClick}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all relative ${
+                  currentView === 'settings'
+                    ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'
+                    : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                }`}
+              >
+                {currentView === 'settings' && (
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[2.5px] h-5 bg-purple-500 rounded-r-full" />
+                )}
+                <Settings size={18} />
+              </button>
+            </Tooltip>
           </div>
         </Col.Item>
       </Col>
