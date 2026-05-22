@@ -41,7 +41,7 @@ if ($existing) {
 Write-Host "Creating branch '$branch' from master..." -ForegroundColor Cyan
 
 git fetch origin master 2>$null | Out-Null
-git checkout master
+git checkout master 2>$null
 git checkout -b $branch
 
 Write-Host "Switched to new branch: $branch" -ForegroundColor Green
