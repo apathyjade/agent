@@ -42,12 +42,22 @@ if ($existing) {
 # Create branch from master
 Write-Host "Creating branch '$branch' from master..." -ForegroundColor Cyan
 
-git fetch origin master 2>$null
-git checkout -b $branch origin/master 2>$null
-if ($LASTEXITCODE -ne 0) {
-  git checkout master 2>$null
-  git checkout -b $branch
+# Try remote first, fallback to local master
+$null = git fetch origin master 2>&1
+$remoteOk = $?
+if ($remoteOk) {
+  git checkout -b $branch origin/master 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "Switched to new branch: $branch (from origin/master)" -ForegroundColor Green
+    git log --oneline -3
+    exit 0
+  }
 }
+
+# Fallback: from local master
+Write-Host "Using local master to create branch..." -ForegroundColor Yellow
+git checkout master
+git checkout -b $branch
 
 Write-Host "Switched to new branch: $branch" -ForegroundColor Green
 git log --oneline -3
