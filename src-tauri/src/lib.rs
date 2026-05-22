@@ -1,4 +1,5 @@
 ﻿pub mod api;
+pub mod agent;
 pub mod commands;
 pub mod commands_provider;
 pub mod config;
@@ -7,11 +8,11 @@ pub mod environment;
 pub mod error;
 pub mod keychain;
 pub mod mcp;
+pub mod memory;
 pub mod pipeline;
+pub mod skills;
 pub mod state;
 pub mod tools;
-pub mod agent;
-pub mod skills;
 
 use tauri::Manager;
 
@@ -28,10 +29,17 @@ pub fn run() {
             let state = AppState::new(app_handle)?;
             app.manage(state);
 
-            // Initialize skill system + MCP connections
+            // Initialize memory, skills, runtimes, MCP
             let app_handle_clone = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_handle_clone.state::<AppState>();
+
+                // 0. Seed built-in memories (no-op if already seeded)
+                {
+                    if let Err(e) = state.memory.seed_defaults().await {
+                        log::error!("Failed to seed memories: {}", e);
+                    }
+                }
 
                 // 1. Initialize skills
                 {
@@ -154,6 +162,12 @@ pub fn run() {
             commands::generate_workflow,
             commands::set_default_system_prompt,
             commands::get_default_system_prompt,
+            commands::create_memory,
+            commands::list_memories,
+            commands::get_memory,
+            commands::search_memories,
+            commands::update_memory,
+            commands::delete_memory,
             commands_provider::list_providers_cmd,
             commands_provider::setup_provider,
             commands_provider::update_provider_config,

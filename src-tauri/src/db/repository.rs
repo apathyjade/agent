@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{BoundProjectModel, Conversation, Message, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
+use crate::db::models::{BoundProjectModel, Conversation, MemoryRecord, Message, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -124,6 +124,24 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                memory_type TEXT NOT NULL DEFAULT 'fact',
+                scope TEXT NOT NULL DEFAULT 'global',
+                source TEXT NOT NULL DEFAULT 'manual',
+                relevance REAL NOT NULL DEFAULT 1.0,
+                tags TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_accessed_at TEXT NOT NULL,
+                access_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+            CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
+            CREATE INDEX IF NOT EXISTS idx_memories_relevance ON memories(relevance DESC);
 
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
             ",
@@ -657,5 +675,187 @@ impl Database {
     pub fn skill_exists(&self, id: &str) -> Result<bool> {
         let count: i32 = self.conn.query_row("SELECT COUNT(*) FROM skills WHERE id = ?1", params![id], |row| row.get(0))?;
         Ok(count > 0)
+    }
+
+    // ── Memories CRUD ──
+
+    pub fn insert_memory(&self, mem: &MemoryRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO memories (id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                mem.id, mem.content, mem.memory_type, mem.scope, mem.source,
+                mem.relevance, mem.tags, mem.created_at, mem.updated_at,
+                mem.last_accessed_at, mem.access_count,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_memory(&self, id: &str) -> Result<Option<MemoryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
+             FROM memories WHERE id = ?1",
+        )?;
+        let mem = stmt.query_row(params![id], |row| {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                memory_type: row.get(2)?,
+                scope: row.get(3)?,
+                source: row.get(4)?,
+                relevance: row.get(5)?,
+                tags: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                access_count: row.get(10)?,
+            })
+        }).optional()?;
+        Ok(mem)
+    }
+
+    pub fn list_memories(&self) -> Result<Vec<MemoryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
+             FROM memories ORDER BY relevance DESC, last_accessed_at DESC",
+        )?;
+        let memories = stmt.query_map([], |row| {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                memory_type: row.get(2)?,
+                scope: row.get(3)?,
+                source: row.get(4)?,
+                relevance: row.get(5)?,
+                tags: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                access_count: row.get(10)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(memories)
+    }
+
+    /// Search memories by query keywords in content and tags.
+    pub fn search_memories(&self, query: &str, memory_type: Option<&str>, scope: Option<&str>) -> Result<Vec<MemoryRecord>> {
+        let like = format!("%{}%", query);
+        let mut sql = String::from(
+            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
+             FROM memories WHERE (content LIKE ?1 OR tags LIKE ?1)"
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(like.clone())];
+
+        if let Some(_t) = memory_type {
+            sql.push_str(" AND memory_type = ?2");
+            param_values.push(Box::new(_t.to_string()));
+        }
+        if let Some(_s) = scope {
+            // Use ?3 or ?4 depending on count
+            let idx = param_values.len() + 1;
+            sql.push_str(&format!(" AND scope LIKE ?{}", idx));
+            param_values.push(Box::new(format!("{}%", _s)));
+        }
+
+        sql.push_str(" ORDER BY relevance DESC, last_accessed_at DESC");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let memories = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                memory_type: row.get(2)?,
+                scope: row.get(3)?,
+                source: row.get(4)?,
+                relevance: row.get(5)?,
+                tags: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                access_count: row.get(10)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(memories)
+    }
+
+    pub fn update_memory(&self, mem: &MemoryRecord) -> Result<()> {
+        self.conn.execute(
+            "UPDATE memories SET content = ?2, memory_type = ?3, scope = ?4, source = ?5, relevance = ?6, tags = ?7, updated_at = ?8
+             WHERE id = ?1",
+            params![
+                mem.id, mem.content, mem.memory_type, mem.scope, mem.source,
+                mem.relevance, mem.tags, mem.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_memory(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Record that a memory was accessed (bumps last_accessed_at and access_count).
+    pub fn touch_memory(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE memories SET last_accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve memories that are relevant to a given context string.
+    /// Simple keyword-based: searches memory content for words from the context.
+    pub fn retrieve_relevant(&self, context: &str, limit: i64) -> Result<Vec<MemoryRecord>> {
+        // Extract keywords from context (words longer than 2 chars)
+        let keywords: Vec<&str> = context
+            .split_whitespace()
+            .filter(|w| w.len() > 2)
+            .collect();
+
+        if keywords.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build a query that OR-matches any keyword in content or tags
+        let like_clauses: Vec<String> = keywords.iter().enumerate().map(|(i, _)| {
+            format!("(content LIKE ?{} OR tags LIKE ?{})", i + 1, i + 1)
+        }).collect();
+
+        let sql = format!(
+            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
+             FROM memories WHERE ({}) AND scope = 'global'
+             ORDER BY relevance DESC, access_count DESC, last_accessed_at DESC
+             LIMIT ?{}",
+            like_clauses.join(" OR "),
+            keywords.len() + 1,
+        );
+
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for kw in &keywords {
+            param_values.push(Box::new(format!("%{}%", kw)));
+        }
+        param_values.push(Box::new(limit));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let memories = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                memory_type: row.get(2)?,
+                scope: row.get(3)?,
+                source: row.get(4)?,
+                relevance: row.get(5)?,
+                tags: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                access_count: row.get(10)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(memories)
     }
 }

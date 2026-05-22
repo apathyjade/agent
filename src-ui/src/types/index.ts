@@ -383,6 +383,42 @@ export interface BatchInstallResult {
   error: string | null;
 }
 
+// ── Memory System Types ──
+
+/** A memory entry remembered by the agent */
+export interface MemoryInfo {
+  id: string;
+  content: string;
+  memory_type: 'fact' | 'preference' | 'project_context' | 'user_info' | 'conversation_summary';
+  scope: string;
+  source: string;
+  relevance: number;
+  tags: string[] | null;
+  created_at: string;
+  updated_at: string;
+  last_accessed_at: string;
+  access_count: number;
+}
+
+/** Parameters for creating a new memory */
+export interface CreateMemoryParams {
+  content: string;
+  memory_type?: string;
+  scope?: string;
+  source?: string;
+  relevance?: number;
+  tags?: string[] | null;
+}
+
+/** Parameters for updating a memory */
+export interface UpdateMemoryParams {
+  content?: string;
+  memory_type?: string;
+  scope?: string;
+  relevance?: number;
+  tags?: string[] | null;
+}
+
 /** A version manager tool for a runtime type */
 export interface VersionManager {
   id: string;

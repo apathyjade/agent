@@ -8,6 +8,7 @@ import { ChatArea } from './components/ChatArea';
 import { WelcomePage } from './components/WelcomePage';
 import { SkillManagerPage } from './components/SkillManagerPage';
 import { McpManagerPage } from './components/McpManagerPage';
+import { MemoryManagerPage } from './components/MemoryManagerPage';
 import { RuntimeManagerPage } from './components/RuntimeManagerPage';
 import { SettingsPage } from './components/SettingsPage';
 import { WorkflowManagerPage } from './components/WorkflowManagerPage';
@@ -96,6 +97,9 @@ function App() {
     if (currentView === 'mcp-manager') {
       return <McpManagerPage />;
     }
+    if (currentView === 'memory-manager') {
+      return <MemoryManagerPage />;
+    }
     if (currentView === 'runtime-manager') {
       return <RuntimeManagerPage />;
     }
@@ -124,6 +128,7 @@ function App() {
           <span className="text-[11px] text-gray-400 dark:text-gray-500">
             {currentView === 'skill-manager' ? '技能管理' :
              currentView === 'mcp-manager' ? 'MCP 连接' :
+             currentView === 'memory-manager' ? '记忆系统' :
              currentView === 'runtime-manager' ? '运行时管理' :
              currentView === 'settings' ? '系统设置' :
              currentView === 'workflows' ? '工作流' : ''}

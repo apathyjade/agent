@@ -144,6 +144,17 @@ pub async fn send_message(
         tool_call_id: None,
     });
 
+    // Inject relevant memories from the memory system
+    if let Ok(Some(memory_prompt)) = state.memory.build_context_prompt(&content, 5).await {
+        api_messages.push(Message {
+            id: None,
+            role: MessageRole::System,
+            content: memory_prompt,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
     api_messages.extend(messages.iter().map(|m| {
         let tool_calls: Option<Vec<ToolCall>> = m.tool_calls.as_ref()
             .and_then(|s| serde_json::from_str(s).ok());
@@ -237,6 +248,17 @@ pub async fn send_message_stream(
         tool_calls: None,
         tool_call_id: None,
     });
+
+    // Inject relevant memories from the memory system
+    if let Ok(Some(memory_prompt)) = state.memory.build_context_prompt(&content, 5).await {
+        api_messages.push(Message {
+            id: None,
+            role: MessageRole::System,
+            content: memory_prompt,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
 
     api_messages.extend(messages.iter().map(|m| {
         let tool_calls: Option<Vec<ToolCall>> = m.tool_calls.as_ref()

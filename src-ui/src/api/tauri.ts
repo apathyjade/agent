@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams } from '../types';
 
 export async function createConversation(
   title: string,
@@ -448,4 +448,34 @@ export async function installManagerTool(managerId: string, downloadUrl: string)
 
 export async function getRuntimesDiskUsage(): Promise<DiskUsageItem[]> {
   return invoke('get_runtime_disk_usage');
+}
+
+// ── Memory Commands ──
+
+export async function createMemory(params: CreateMemoryParams): Promise<MemoryInfo> {
+  return invoke('create_memory', { params });
+}
+
+export async function listMemories(): Promise<MemoryInfo[]> {
+  return invoke('list_memories');
+}
+
+export async function getMemory(id: string): Promise<MemoryInfo> {
+  return invoke('get_memory', { id });
+}
+
+export async function searchMemories(
+  query: string,
+  memoryType?: string,
+  scope?: string,
+): Promise<MemoryInfo[]> {
+  return invoke('search_memories', { query, memoryType: memoryType ?? null, scope: scope ?? null });
+}
+
+export async function updateMemory(id: string, params: UpdateMemoryParams): Promise<MemoryInfo> {
+  return invoke('update_memory', { id, params });
+}
+
+export async function deleteMemory(id: string): Promise<void> {
+  return invoke('delete_memory', { id });
 }

@@ -82,3 +82,25 @@ pub struct RuntimeVersionCache {
     pub file_size: Option<i64>,
     pub fetched_at: String,
 }
+
+/// A structured memory entry remembered by the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRecord {
+    pub id: String,
+    /// The memory content text
+    pub content: String,
+    /// Category: "fact", "preference", "project_context", "user_info", "conversation_summary"
+    pub memory_type: String,
+    /// Scope: "global" | "conversation:<id>" | "project:<id>"
+    pub scope: String,
+    /// Source: "manual" | "auto_extracted" | "conversation:<id>"
+    pub source: String,
+    /// Relevance score 0.0–1.0
+    pub relevance: f64,
+    /// Comma-separated tags for simple categorization
+    pub tags: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_accessed_at: String,
+    pub access_count: i32,
+}

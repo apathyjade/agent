@@ -1,4 +1,4 @@
-import { MessageSquare, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server } from 'lucide-react';
+import { MessageSquare, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen } from 'lucide-react';
 import { Tooltip } from 'antd';
 import { Col } from '@jelper/component';
 import { useStore } from '../store';
@@ -27,6 +27,11 @@ export function ModuleBar() {
 
   const handleRuntimeClick = () => {
     setCurrentView('runtime-manager');
+    setSidebarOpen(false);
+  };
+
+  const handleMemoryClick = () => {
+    setCurrentView('memory-manager');
     setSidebarOpen(false);
   };
 
@@ -72,6 +77,12 @@ export function ModuleBar() {
               <button onClick={handleMcpClick} className={btnClass(currentView === 'mcp-manager')}>
                 {activeIndicator(currentView === 'mcp-manager')}
                 <PlugZap size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="记忆系统" placement="right">
+              <button onClick={handleMemoryClick} className={btnClass(currentView === 'memory-manager')}>
+                {activeIndicator(currentView === 'memory-manager')}
+                <BookOpen size={18} />
               </button>
             </Tooltip>
             <Tooltip title="运行时管理" placement="right">
