@@ -58,40 +58,28 @@ if (!description) {
 
 // ── Check for changes ──────────────────────────────────────
 const status = run('git status --porcelain');
-if (!status.trim()) {
-  if (allowEmpty) {
-    log('Worktree clean, but --allow-empty set. Proceeding...', 'yellow');
-  } else {
-    log('✔ Worktree clean, nothing to checkpoint.', 'green');
-    process.exit(0);
-  }
+const hasChanges = status.trim().length > 0;
+const subject = `${type}: ${description}`;
+
+if (!hasChanges && !allowEmpty) {
+  log('✔ Worktree clean, nothing to checkpoint.', 'green');
+  process.exit(0);
 }
 
-// ── Stage everything ────────────────────────────────────────
-run('git add -A');
-log('✔ Staged all changes.', 'cyan');
-
 // ── Commit ──────────────────────────────────────────────────
-const subject = `${type}: ${description}`;
 try {
-  const hash = run(`git commit --no-verify -m "${subject.replace(/"/g, '\\"')}"`).trim();
-  log(`✔ Checkpoint committed`, 'green');
-  const shortHash = run('git rev-parse --short HEAD').trim();
-  log(`  ${shortHash} ${subject}`, 'gray');
-  run('git log --oneline -3');
-} catch (e) {
-  const out = e.stderr || e.message;
-  if (out.includes('nothing to commit') || out.includes('nothing added')) {
-    if (allowEmpty) {
-      run(`git commit --no-verify --allow-empty -m "${subject.replace(/"/g, '\\"')}"`);
-      const shortHash = run('git rev-parse --short HEAD').trim();
-      log(`✔ Empty checkpoint committed: ${shortHash}`, 'green');
-      log(`  ${shortHash} ${subject}`, 'gray');
-    } else {
-      log('✔ No changes to checkpoint.', 'green');
-    }
+  const safeSubject = subject.replace(/"/g, '\\"');
+  if (hasChanges) {
+    run('git add -A');
+    log('✔ Staged all changes.', 'cyan');
+    run(`git commit --no-verify -m "${safeSubject}"`);
   } else {
-    log(`✖ Commit failed: ${out}`, 'red');
-    process.exit(1);
+    run(`git commit --no-verify --allow-empty -m "${safeSubject}"`);
   }
+  const shortHash = run('git rev-parse --short HEAD').trim();
+  log(`✔ Checkpoint committed: ${shortHash}`, 'green');
+  log(`  ${shortHash} ${subject}`, 'gray');
+} catch (e) {
+  log(`✖ Commit failed: ${e.stderr || e.message}`, 'red');
+  process.exit(1);
 }
