@@ -14,15 +14,22 @@
  */
 
 import { execSync } from 'child_process';
+import { platform } from 'os';
 
-function run(cmd, opts = {}) {
-  return execSync(cmd, { encoding: 'utf8', stdio: opts.silent ? 'pipe' : 'pipe', ...opts });
+const NULL = platform() === 'win32' ? 'NUL' : '/dev/null';
+
+function run(cmd) {
+  return execSync(cmd, { encoding: 'utf8', stdio: 'pipe' });
+}
+
+function quiet(cmd) {
+  try { return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', windowsHide: true }); }
+  catch { return ''; }
 }
 
 function log(msg, color = '') {
   const colors = { green: '\x1B[32m', cyan: '\x1B[36m', yellow: '\x1B[33m', red: '\x1B[31m', gray: '\x1B[90m' };
-  const reset = '\x1B[0m';
-  console.log(`${colors[color] || ''}${msg}${reset}`);
+  console.log(`${colors[color] || ''}${msg}\x1B[0m`);
 }
 
 function error(msg) {
@@ -52,22 +59,19 @@ if (status.trim()) {
 }
 
 // ── Branch exists? Switch to it ────────────────────────────
-try {
-  run(`git rev-parse --verify "${branch}"`, { stdio: 'ignore' });
+if (quiet(`git rev-parse --verify "${branch}" 2>${NULL}`)) {
   run(`git checkout "${branch}"`);
   log(`✔ Switched to existing branch: ${branch}`, 'green');
-  run(`git log --oneline -3`);
+  quiet('git log --oneline -3');
   process.exit(0);
-} catch { /* branch doesn't exist, continue */ }
+}
 
 // ── Create from master ─────────────────────────────────────
 log(`Creating branch '${branch}' from master...`, 'cyan');
 
-// Try to fetch (best-effort)
-try { run('git fetch origin master 2>/dev/null', { stdio: 'pipe' }); } catch { /* offline */ }
-
-run('git checkout master 2>/dev/null');
+quiet(`git fetch origin master 2>${NULL}`);
+quiet(`git checkout master 2>${NULL}`);
 run(`git checkout -b "${branch}"`);
 
 log(`✔ Switched to new branch: ${branch}`, 'green');
-run('git log --oneline -3');
+quiet('git log --oneline -3');

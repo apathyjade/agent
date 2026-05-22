@@ -26,8 +26,7 @@ function run(cmd) {
 
 function log(msg, color = '') {
   const colors = { green: '\x1B[32m', cyan: '\x1B[36m', yellow: '\x1B[33m', red: '\x1B[31m', gray: '\x1B[90m' };
-  const reset = '\x1B[0m';
-  console.log(`${colors[color] || ''}${msg}${reset}`);
+  console.log(`${colors[color] || ''}${msg}\x1B[0m`);
 }
 
 // ── Parse args ──────────────────────────────────────────────
