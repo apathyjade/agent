@@ -151,6 +151,81 @@ siliconflow, ollama, lmstudio, custom
 
 ---
 
+---
+
+## AI 开发流程（Branch-Per-Session）
+
+采用 **branch-per-session** 工作流：每个 AI 开发会话在独立分支上工作，每次 AI 响应完成后通过 checkpoint 提交"暂存"变更，最终 squash-merge 到 `master`。
+
+### 流程总览
+
+```
+master ──┬── session-start ──┬── AI 修改文件 ──┬── checkpoint ──┬── AI 修改文件 ──┬── ... ──┬── session-finish
+         │                   │                  │                │                  │          │
+         └── ai/feature      └── 响应完成       └── git commit   └── 响应完成       └── ...    └── squash-merge → master
+```
+
+### 三个脚本
+
+| 脚本 | 何时执行 | 作用 |
+|------|----------|------|
+| `scripts/session-start.ps1` | 每次 AI 会话开始时 | 从 `master` 创建/切换到 `ai/<描述>` 分支 |
+| `scripts/checkpoint.ps1` | 每次 AI 完整响应后 | 自动 stage + commit 所有变更 |
+| `scripts/session-finish.ps1` | 会话结束准备合并时 | 显示变更统计、提交历史，建议 squash-merge |
+
+### 执行步骤
+
+#### 1️⃣ 开始会话
+
+```powershell
+.\scripts\session-start.ps1 -Description "add-model-sort"
+# → 创建并切换到分支 ai/add-model-sort
+```
+
+#### 2️⃣ AI 工作 → 每次完整响应后 → 暂存
+
+```powershell
+.\scripts\checkpoint.ps1 -Description "实现模型列表排序 API"
+# → git add -A && git commit -m "checkpoint: 实现模型列表排序 API"
+```
+
+支持的类型前缀：`checkpoint`（默认）、`wip`、`feat`、`fix`、`refactor`、`chore`、`docs`
+
+```powershell
+.\scripts\checkpoint.ps1 -Type feat -Description "添加排序后端的冒泡算法"
+```
+
+#### 3️⃣ 会话结束 → Review + 合并
+
+```powershell
+.\scripts\session-finish.ps1
+# 显示变更统计、提交历史、squash-merge 命令
+```
+
+确认无误后合并：
+
+```powershell
+git checkout master
+git merge --squash ai/add-model-sort
+git commit -m "feat: 添加模型排序功能"
+git branch -D ai/add-model-sort   # 可选删除分支
+```
+
+或直接一条命令完成（慎用，建议先 review）：
+
+```powershell
+.\scripts\session-finish.ps1 -Squash
+```
+
+### 为什么这么做
+
+- **每次 AI 响应都 checkpoint** → 每步可追溯、可回退
+- **独立分支** → 不影响 master，可并行多个会话
+- **Squash merge** → master 保持整洁的提交历史
+- **Conventional commit** → 最终提交符合项目规范
+
+---
+
 ## 常见陷阱
 
 - **CSP 限制**：`connect-src` 白名单在 `src-tauri/tauri.conf.json` 中——新增 provider 或 base URL 需同步添加
