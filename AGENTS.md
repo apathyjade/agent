@@ -151,8 +151,6 @@ siliconflow, ollama, lmstudio, custom
 
 ---
 
----
-
 ## AI 开发流程（Branch-Per-Session）
 
 采用 **branch-per-session** 工作流：每个 AI 开发会话在独立分支上工作，每次 AI 响应完成后通过 checkpoint 提交"暂存"变更，最终 squash-merge 到 `master`。
