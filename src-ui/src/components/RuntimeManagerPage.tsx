@@ -119,7 +119,7 @@ export function RuntimeManagerPage() {
 
   const [installDialogRt, setInstallDialogRt] = useState<RuntimeType | null>(null);
   const [expandedRt, setExpandedRt] = useState<RuntimeType | null>(null);
-  const [activeTab, setActiveTab] = useState<'versions' | 'projects' | 'system' | 'health'>('versions');
+  const [activeTab, setActiveTab] = useState('versions');
 
   useEffect(() => {
     fetchRuntimes();
@@ -149,55 +149,16 @@ export function RuntimeManagerPage() {
           刷新
         </button>
       }
+      tabs={[
+        { key: 'versions', label: '版本管理', icon: <Server size={13} /> },
+        { key: 'projects', label: '项目绑定', icon: <FolderOpen size={13} /> },
+        { key: 'system',   label: '系统检测', icon: <CheckCircle2 size={13} /> },
+        { key: 'health',   label: '健康中心', icon: <Heart size={13} /> },
+      ]}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
     >
       <div className="max-w-3xl mx-auto space-y-4">
-        {/* Tabs — 4 equal-width tabs */}
-        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
-          <button
-            onClick={() => setActiveTab('versions')}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'versions'
-                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <Server size={14} />
-            版本管理
-          </button>
-          <button
-            onClick={() => setActiveTab('projects')}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'projects'
-                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <FolderOpen size={14} />
-            项目绑定
-          </button>
-          <button
-            onClick={() => setActiveTab('system')}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'system'
-                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <CheckCircle2 size={14} />
-            系统检测
-          </button>
-          <button
-            onClick={() => setActiveTab('health')}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'health'
-                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <Heart size={14} />
-            健康中心
-          </button>
-        </div>
 
         {/* 版本管理 tab — show ALL runtimes */}
         {activeTab === 'versions' && (() => {
