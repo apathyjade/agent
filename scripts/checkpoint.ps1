@@ -33,8 +33,6 @@ param(
   [switch]$AllowEmpty
 )
 
-$ErrorActionPreference = 'Stop'
-
 # ── 检查是否有变更 ──────────────────────────────────────────────
 $status = git status --porcelain
 if ($status -eq '') {

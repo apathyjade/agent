@@ -19,8 +19,6 @@ param(
   [string]$Description
 )
 
-$ErrorActionPreference = 'Stop'
-
 # Check worktree is clean
 $status = git status --porcelain
 if ($status) {
@@ -39,17 +37,11 @@ if ($existing) {
   exit 0
 }
 
-# Create branch from master
+# Create branch from master (from origin/master if reachable, else local)
 Write-Host "Creating branch '$branch' from master..." -ForegroundColor Cyan
 
-# Try remote first (ErrorAction SilentlyContinue for git stderr messages)
-$origPref = $ErrorActionPreference
-$ErrorActionPreference = 'SilentlyContinue'
 git fetch origin master 2>$null | Out-Null
-$fetchOk = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $origPref
-
-if ($fetchOk) {
+if ($LASTEXITCODE -eq 0) {
   git checkout -b $branch origin/master 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) {
     Write-Host "Switched to new branch: $branch (from origin/master)" -ForegroundColor Green

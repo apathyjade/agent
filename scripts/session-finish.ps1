@@ -17,8 +17,6 @@ param(
   [switch]$Squash
 )
 
-$ErrorActionPreference = 'Stop'
-
 # Get current branch info
 $branch = git rev-parse --abbrev-ref HEAD
 if ($branch -eq 'master') {
