@@ -112,6 +112,59 @@ pub async fn uninstall_runtime_version(
     Ok(state.runtime_manager.detect(&rt).await)
 }
 
+/// Open a version's installation directory in the OS file manager.
+#[tauri::command]
+pub async fn open_version_directory(
+    state: State<'_, AppState>,
+    runtime_type: String,
+    version: String,
+) -> Result<String> {
+    let rt = parse_runtime_type(&runtime_type)?;
+    let install_dir = state.runtime_manager.get_install_dir().await;
+    let version_dir = install_dir.join(rt.dir_name()).join(&version);
+
+    if !version_dir.exists() {
+        return Err(crate::error::AppError::NotFound(format!(
+            "版本目录不存在: {}", version_dir.display()
+        )));
+    }
+
+    let path_str = version_dir.to_string_lossy().to_string();
+
+    #[cfg(target_os = "windows")]
+    {
+        // explorer /select,<path> opens the folder with the file selected
+        // But for a directory, just open it directly
+        std::process::Command::new("explorer")
+            .arg(&path_str)
+            .spawn()
+            .map_err(|e| crate::error::AppError::InvalidInput(
+                format!("打开目录失败: {}", e)
+            ))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path_str)
+            .spawn()
+            .map_err(|e| crate::error::AppError::InvalidInput(
+                format!("打开目录失败: {}", e)
+            ))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path_str)
+            .spawn()
+            .map_err(|e| crate::error::AppError::InvalidInput(
+                format!("打开目录失败: {}", e)
+            ))?;
+    }
+
+    log::info!("已打开版本目录: {}", path_str);
+    Ok(path_str)
+}
+
 /// Get or set the runtime install directory.
 /// If dir is provided, updates the path. Always returns the current path.
 #[tauri::command]

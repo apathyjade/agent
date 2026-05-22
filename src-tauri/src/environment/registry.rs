@@ -54,7 +54,7 @@ impl RuntimeRegistry {
     pub fn new() -> Self {
         let mut sources: HashMap<RuntimeType, Box<dyn VersionSource>> = HashMap::new();
 
-        sources.insert(RuntimeType::Node, Box::new(sources::node::NodeVersionSource));
+        sources.insert(RuntimeType::Node, Box::new(sources::node::NodeVersionSource::new()));
         sources.insert(RuntimeType::Python, Box::new(sources::python::PythonVersionSource));
         sources.insert(RuntimeType::Go, Box::new(sources::go::GoVersionSource));
         sources.insert(RuntimeType::Rust, Box::new(sources::rust::RustupVersionSource));

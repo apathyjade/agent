@@ -15,6 +15,8 @@ pub mod resolver;
 pub mod alias;
 pub mod cli;
 mod upgrade;
+pub mod node_integration;
+pub mod node_toolchain;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-import { Server, ChevronDown, CheckCircle2, Loader2, Download, Trash2, Star } from 'lucide-react';
+import { Server, ChevronDown, CheckCircle2, Loader2, Download, Trash2, Star, FolderOpen } from 'lucide-react';
 import { LifecycleBadge } from './LifecycleBadge';
 import type { RuntimeInfo, RuntimeVersion, VersionLifecycle } from '../types';
 
@@ -11,6 +11,7 @@ interface RuntimeCardProps {
   onInstall: () => void;
   onSwitch: (version: string) => void;
   onUninstall: (version: string) => void;
+  onOpenDir?: (version: string) => void;
 }
 
 const RUNTIME_EMOJI: Record<string, string> = {
@@ -25,7 +26,7 @@ function getLifecycleSimple(v: RuntimeVersion): VersionLifecycle {
 
 export function RuntimeCard({
   info, versions, isInstalling, expanded,
-  onToggleExpand, onInstall, onSwitch, onUninstall,
+  onToggleExpand, onInstall, onSwitch, onUninstall, onOpenDir,
 }: RuntimeCardProps) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -111,6 +112,11 @@ export function RuntimeCard({
                     {!v.is_active && (
                       <button onClick={() => onSwitch(v.version)} className="text-purple-500 hover:text-purple-600 hover:underline">
                         切换
+                      </button>
+                    )}
+                    {onOpenDir && (
+                      <button onClick={() => onOpenDir(v.version)} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-blue-500 transition-colors" title="打开所在目录">
+                        <FolderOpen size={12} />
                       </button>
                     )}
                     <button onClick={() => onUninstall(v.version)} className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-red-500 transition-colors" title="卸载">

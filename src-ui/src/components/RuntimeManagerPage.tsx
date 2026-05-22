@@ -3,6 +3,7 @@ import {
   Server, CheckCircle2, Loader2,
   RefreshCw, FolderOpen, Heart, AlertTriangle, X,
 } from 'lucide-react';
+import { openVersionDirectory } from '../api/tauri';
 import { useStore } from '../store';
 import { ManagerPageLayout } from './ManagerPageLayout';
 import { RuntimeCard } from './RuntimeCard';
@@ -118,8 +119,15 @@ export function RuntimeManagerPage() {
   } = useStore();
 
   const [installDialogRt, setInstallDialogRt] = useState<RuntimeType | null>(null);
-  const [expandedRt, setExpandedRt] = useState<RuntimeType | null>(null);
+  const [selectedRuntime, setSelectedRuntime] = useState<RuntimeType | null>(null);
   const [activeTab, setActiveTab] = useState('versions');
+
+  // Auto-select first runtime when runtimes load
+  useEffect(() => {
+    if (!selectedRuntime && runtimes.length > 0) {
+      setSelectedRuntime(runtimes[0].runtime_type);
+    }
+  }, [runtimes, selectedRuntime]);
 
   useEffect(() => {
     fetchRuntimes();
@@ -150,7 +158,7 @@ export function RuntimeManagerPage() {
         </button>
       }
       tabs={[
-        { key: 'versions', label: '版本管理', icon: <Server size={13} /> },
+        { key: 'versions', label: '运行时列表', icon: <Server size={13} /> },
         { key: 'projects', label: '项目绑定', icon: <FolderOpen size={13} /> },
         { key: 'system',   label: '系统检测', icon: <CheckCircle2 size={13} /> },
         { key: 'health',   label: '健康中心', icon: <Heart size={13} /> },
@@ -158,49 +166,94 @@ export function RuntimeManagerPage() {
       activeTab={activeTab}
       onTabChange={setActiveTab}
     >
-      <div className="max-w-3xl mx-auto space-y-4">
-
-        {/* 版本管理 tab — show ALL runtimes */}
+      <div className="h-full">
+        {/* 运行时列表 tab — 全高左右布局，独立滚动 */}
         {activeTab === 'versions' && (() => {
-          if (runtimes.length === 0) {
-            return (
-              <div className="p-8 text-center text-gray-400 dark:text-gray-500">
+        if (runtimes.length === 0) {
+          return (
+            <div className="p-8 text-center text-gray-400 dark:text-gray-500 h-full flex items-center justify-center">
+              <div>
                 <Server size={32} className="mx-auto mb-2 opacity-50" />
                 <p className="text-sm">暂无运行时</p>
                 <p className="text-xs mt-1">刷新以重新检测</p>
               </div>
-            );
-          }
-          return (
-            <div className="space-y-2">
-              {runtimes.map((runtime) => (
-                <RuntimeCard
-                  key={runtime.runtime_type}
-                  info={runtime}
-                  versions={versionCache[runtime.runtime_type] || []}
-                  isInstalling={installingRuntime === runtime.runtime_type}
-                  expanded={expandedRt === runtime.runtime_type}
-                  onToggleExpand={() => {
-                    const next = expandedRt === runtime.runtime_type ? null : runtime.runtime_type;
-                    setExpandedRt(next);
-                    if (next && !versionCache[runtime.runtime_type]) {
-                      fetchAvailableVersions(runtime.runtime_type);
-                    }
-                  }}
-                  onInstall={() => setInstallDialogRt(runtime.runtime_type)}
-                  onSwitch={(v) => switchVersion(runtime.runtime_type, v)}
-                  onUninstall={(v) => uninstallVersion(runtime.runtime_type, v)}
-                />
-              ))}
+            </div>
+          );
+        }
+
+        const current = selectedRuntime ?? runtimes[0]?.runtime_type ?? null;
+        const selectedInfo = runtimes.find(r => r.runtime_type === current);
+
+        return (
+          <div className="flex gap-0 h-full">
+            {/* 左侧运行时 tab 列表 */}
+            <div className="w-44 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 pr-2 space-y-0.5 overflow-y-auto">
+                {runtimes.map((runtime) => {
+                  const isSelected = runtime.runtime_type === current;
+                  const rtLabel = RUNTIME_LABELS[runtime.runtime_type];
+                  return (
+                    <button
+                      key={runtime.runtime_type}
+                      onClick={() => {
+                        setSelectedRuntime(runtime.runtime_type);
+                        if (!versionCache[runtime.runtime_type]) {
+                          fetchAvailableVersions(runtime.runtime_type);
+                        }
+                      }}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left text-xs transition-all ${
+                        isSelected
+                          ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 font-medium shadow-sm'
+                          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700/50'
+                      }`}
+                    >
+                      <span className="text-base leading-none">{rtLabel?.icon || '⚙️'}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate">{runtime.display_name}</div>
+                        <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                          {runtime.available && runtime.version
+                            ? `v${runtime.version}`
+                            : '未安装'}
+                        </div>
+                      </div>
+                      {runtime.available && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 右侧详情区域 — 独立滚动 */}
+              <div className="flex-1 pl-4 min-w-0 overflow-y-auto">
+                {selectedInfo ? (
+                  <RuntimeCard
+                    key={selectedInfo.runtime_type}
+                    info={selectedInfo}
+                    versions={versionCache[selectedInfo.runtime_type] || []}
+                    isInstalling={installingRuntime === selectedInfo.runtime_type}
+                    expanded={true}
+                    onToggleExpand={() => {}}
+                    onInstall={() => setInstallDialogRt(selectedInfo.runtime_type)}
+                    onSwitch={(v) => switchVersion(selectedInfo.runtime_type, v)}
+                    onUninstall={(v) => uninstallVersion(selectedInfo.runtime_type, v)}
+                    onOpenDir={(v) => openVersionDirectory(selectedInfo.runtime_type, v)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-64 text-gray-400 dark:text-gray-500">
+                    <p className="text-sm">请从左侧选择一个运行时</p>
+                  </div>
+                )}
+              </div>
             </div>
           );
         })()}
 
-        {/* 项目绑定 tab */}
-        {activeTab === 'projects' && <ProjectBindingPanel />}
+        {/* 非 versions tab 保持 max-width 约束 */}
+        {activeTab !== 'versions' && (
+          <div className="max-w-3xl mx-auto space-y-4">
+            {activeTab === 'projects' && <ProjectBindingPanel />}
 
-        {/* 系统检测 tab — PATH conflict detection + system runtimes */}
-        {activeTab === 'system' && (() => {
+            {activeTab === 'system' && (() => {
           const sysRuntimes = runtimes.filter(r => r.source === 'system' && r.available);
           const conflicts = pathConflicts.filter(c => c.conflict);
 
@@ -295,8 +348,9 @@ export function RuntimeManagerPage() {
           );
         })()}
 
-        {/* 健康中心 tab */}
-        {activeTab === 'health' && <HealthCenter />}
+            {activeTab === 'health' && <HealthCenter />}
+          </div>
+        )}
 
         {/* Empty state */}
         {!runtimeLoading && runtimes.length === 0 && (

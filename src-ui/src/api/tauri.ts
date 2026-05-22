@@ -360,6 +360,10 @@ export async function getRuntimeInstallDir(): Promise<string> {
   return invoke('get_runtime_install_dir');
 }
 
+export async function openVersionDirectory(runtimeType: string, version: string): Promise<string> {
+  return invoke('open_version_directory', { runtimeType, version });
+}
+
 export async function setRuntimeInstallDir(dir: string): Promise<string> {
   return invoke('set_runtime_install_dir', { dir });
 }

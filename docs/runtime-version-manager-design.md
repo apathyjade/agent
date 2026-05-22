@@ -1591,4 +1591,431 @@ async fn list_available_versions(rt: String) -> Result<Vec<RuntimeVersion>>;
 
 ---
 
-> 本文档与 PRD 一一对应，涵盖了方向四所有模块的 UI 细节和实现方案。建议按 Phase 1 → Phase 2 → Phase 3 的顺序逐步推进。需要我进一步展开某个具体模块的代码实现吗？
+## 模块八：Node.js 专项优化（新增）
+
+### 8.1 外部版本管理器集成策略
+
+#### 8.1.1 问题背景
+
+当前 `NodeVersionSource` 仅支持 Agent 自管 Node 版本（从 nodejs.org 直接下载二进制），这会导致：
+- 与用户已有的 fnm/nvm/volta 版本管理冲突
+- 磁盘空间浪费（重复下载同一版本）
+- 用户需要维护两套 Node 版本
+
+#### 8.1.2 三路集成策略
+
+```rust
+/// Node.js 版本发现策略
+pub enum NodeIntegrationStrategy {
+    /// 仅自管: 直接下载 nodejs.org 二进制到 Agent 目录
+    Standalone,
+    /// 仅包装外部管理器: 检测 fnm/volta/nvm 并通过 CLI 调用
+    WrapExisting,
+    /// 混合（默认）: 优先检测外部管理器，兜底自管
+    Hybrid {
+        prefer: Vec<ExternalManager>,  // ["fnm", "volta", "nvm"]
+    },
+}
+
+/// 支持的外部管理器
+pub enum ExternalManager {
+    Fnm,    // Fast Node Manager (Rust)
+    Volta,  // JS Toolchain Manager (Rust)
+    Nvm,    // Node Version Manager (Shell)
+    NvmWindows, // nvm-windows (Go)
+}
+```
+
+#### 8.1.3 检测 & 包装流程
+
+```
+NodeVersionSource.fetch_versions()
+  │
+  ├─ A) [Standalone] → 拉取 nodejs.org/dist/index.json (现有逻辑)
+  │
+  ├─ B) [WrapExisting]
+  │   ├─ 检测 fnm: `fnm list-remote` → 解析输出 // 最快，Rust 实现
+  │   ├─ 否则检测 volta: `volta list node --format plain`
+  │   ├─ 否则检测 nvm: `nvm ls-remote`  // 慢，shell 启动开销
+  │   └─ 否则 → fallback 到 Standalone
+  │
+  └─ C) [Hybrid] (默认)
+      ├─ 合并: 外部管理器版本 + 自管版本
+      ├─ 去重: 以外部管理器版本优先
+      └─ 标记来源: `version.source = "fnm" / "standalone"`
+```
+
+#### 8.1.4 优先级: fnm > volta > nvm
+
+| 外部管理器 | 检测方法 | 安装命令 | 切换命令 | 版本列表 |
+|-----------|---------|---------|---------|---------|
+| **fnm** | `where fnm` | `fnm install <ver>` | `fnm use <ver>` | `fnm list-remote` |
+| **volta** | `where volta` | `volta install node@<ver>` | 自动 (shim) | `volta list node` |
+| **nvm** | `$NVM_DIR/nvm.sh` | `nvm install <ver>` | `nvm use <ver>` | `nvm ls-remote` |
+| **nvm-windows** | `where nvm` | `nvm install <ver>` | `nvm use <ver>` | `nvm list available` |
+
+#### 8.1.5 NodeVersionSource 扩展
+
+```rust
+pub struct NodeVersionSource {
+    /// 集成策略
+    pub strategy: NodeIntegrationStrategy,
+    /// npm 兼容版本映射 (后续用于工具链管理)
+    pub npm_compat: HashMap<String, String>,
+    /// 下载镜像源
+    pub mirror: Option<NodeMirror>,
+}
+
+#[async_trait]
+impl VersionSource for NodeVersionSource {
+    async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
+        match &self.strategy {
+            NodeIntegrationStrategy::Standalone => {
+                self.fetch_from_nodejs_org().await
+            }
+            NodeIntegrationStrategy::WrapExisting => {
+                self.fetch_from_external_manager().await
+            }
+            NodeIntegrationStrategy::Hybrid { .. } => {
+                let mut versions = self.fetch_from_external_manager().await?;
+                // 补充自管版本（去重）
+                let standalone = self.fetch_from_nodejs_org().await?;
+                let existing: HashSet<String> = versions.iter().map(|v| v.version.clone()).collect();
+                for v in standalone {
+                    if !existing.contains(&v.version) {
+                        versions.push(v);
+                    }
+                }
+                Ok(versions)
+            }
+        }
+    }
+}
+```
+
+---
+
+### 8.2 包管理器版本管理 (npm/pnpm/yarn)
+
+#### 8.2.1 问题
+
+- Node.js 不同版本捆绑的 npm 版本不同（Node 18 → npm 9, Node 20 → npm 10, Node 22 → npm 10）
+- pnpm/yarn 与 Node.js 版本有兼容性约束
+- 当前无任何包管理器版本管理 — Volta 的核心差异化功能
+
+#### 8.2.2 架构
+
+```
+NodeToolchainManager
+  │
+  ├─ npm_version_compat.rs — Node.js ↔ npm 兼容矩阵
+  │   ├─ 官方捆绑表: { 18 -> 9.x, 20 -> 10.x, 22 -> 10.x }
+  │   └─ 推荐版本: 根据激活的 Node 版本来确定
+  │
+  ├─ pnpm_version_compat.rs — pnpm ↔ Node.js 兼容矩阵
+  │   └─ pnpm 9.x → Node >=18, pnpm 8.x → Node >=16
+  │
+  ├─ yarn_version_compat.rs — yarn ↔ Node.js 兼容矩阵
+  │   └─ yarn 4.x → Node >=18.12, yarn 3.x → Node >=12
+  │
+  └─ toolchain_installer.rs
+      ├─ corepack 集成: corepack enable → corepack install npm@<ver>
+      ├─ 手动安装: npm i -g pnpm@<ver>
+      └─ 版本验证: pnpm --version → 校验是否在期望范围内
+```
+
+#### 8.2.3 npm 版本兼容矩阵
+
+```rust
+/// Node.js 与 npm/pnpm/yarn 的版本兼容关系
+pub struct NodeToolchainMatrix {
+    /// Node 版本 → 兼容的 npm 版本范围
+    pub npm_compat: Vec<(SemverReq, SemverReq)>,
+    /// Node 版本 → 兼容的 pnpm 版本范围
+    pub pnpm_compat: Vec<(SemverReq, SemverReq)>,
+    /// Node 版本 → 兼容的 yarn 版本范围
+    pub yarn_compat: Vec<(SemverReq, SemverReq)>,
+}
+
+impl NodeToolchainMatrix {
+    /// npm 10.x (Node 20+), npm 9.x (Node 18), npm 8.x (Node 16)
+    pub fn builtin() -> Self {
+        Self {
+            npm_compat: vec![
+                (">=22.0.0".parse().unwrap(), ">=10.0.0 <11.0.0".parse().unwrap()),
+                (">=20.0.0 <22.0.0".parse().unwrap(), ">=10.0.0 <11.0.0".parse().unwrap()),
+                (">=18.0.0 <20.0.0".parse().unwrap(), ">=9.0.0 <10.0.0".parse().unwrap()),
+                (">=16.0.0 <18.0.0".parse().unwrap(), ">=8.0.0 <9.0.0".parse().unwrap()),
+            ],
+            pnpm_compat: vec![
+                (">=18.0.0".parse().unwrap(), ">=9.0.0".parse().unwrap()),
+                (">=16.0.0 <18.0.0".parse().unwrap(), ">=8.0.0 <9.0.0".parse().unwrap()),
+            ],
+            yarn_compat: vec![
+                (">=18.12.0".parse().unwrap(), ">=4.0.0".parse().unwrap()),
+                (">=12.0.0 <18.0.0".parse().unwrap(), ">=3.0.0 <4.0.0".parse().unwrap()),
+            ],
+        }
+    }
+
+    /// 对给定 Node 版本，推荐兼容的 npm/pnpm/yarn 版本
+    pub fn recommend(&self, node_ver: &str) -> ToolchainRecommendation {
+        // 解析 node_ver semver → 匹配各矩阵 → 返回推荐版本
+    }
+}
+```
+
+#### 8.2.4 .runtime-version 扩展（包管理器字段）
+
+```yaml
+version: 1
+runtimes:
+  node: "20.18.3"
+  npm: "10.8.2"       # 新增
+  pnpm: "9.15.4"      # 新增
+  yarn: "4.5.0"       # 新增
+
+# 可选: 包管理器策略
+package_manager:
+  default: "pnpm"      # 默认包管理器
+  prefer_corepack: true # 优先使用 corepack 管理
+```
+
+---
+
+### 8.3 下载源策略
+
+#### 8.3.1 支持的镜像源
+
+```rust
+/// Node.js 下载镜像源
+pub enum NodeMirror {
+    /// 官方源 (默认)
+    Official,
+    /// 淘宝 NPMMirror (中国大陆)
+    NpmMirror { base_url: String },
+    /// 华为云镜像
+    HuaweiMirror { base_url: String },
+    /// 自定义
+    Custom { index_url: String, download_url: String },
+}
+
+impl NodeMirror {
+    pub fn index_url(&self) -> &str {
+        match self {
+            NodeMirror::Official => "https://nodejs.org/dist/index.json",
+            NodeMirror::NpmMirror { .. } => "https://npmmirror.com/mirrors/node/index.json",
+            NodeMirror::HuaweiMirror { .. } => "https://mirrors.huaweicloud.com/nodejs/index.json",
+            NodeMirror::Custom { index_url, .. } => index_url,
+        }
+    }
+
+    pub fn download_url(&self, version: &str, platform: &str, ext: &str) -> String {
+        let base = match self {
+            NodeMirror::Official => "https://nodejs.org/dist",
+            NodeMirror::NpmMirror { base_url } => base_url,
+            NodeMirror::HuaweiMirror { base_url } => base_url,
+            NodeMirror::Custom { download_url, .. } => return std::format!(
+                "{}/v{}/node-v{}-{}.{}", download_url, version, version, platform, ext
+            ),
+        };
+        format!("{}/v{}/node-v{}-{}.{}", base, version, version, platform, ext)
+    }
+}
+```
+
+#### 8.3.2 SHASUMS256 签名校验
+
+```rust
+impl NodeVersionSource {
+    /// 下载并验证 Node.js 二进制
+    async fn download_and_verify(
+        &self,
+        version: &str,
+        platform: &str,
+        ext: &str,
+    ) -> Result<Vec<u8>> {
+        let download_url = self.mirror.as_ref()
+            .unwrap_or(&NodeMirror::Official)
+            .download_url(version, platform, ext);
+        
+        // 1. 下载二进制
+        let binary = self.download_file(&download_url).await?;
+        
+        // 2. 计算 SHA256
+        let actual_hash = sha256::digest(&binary);
+        
+        // 3. 拉取 SHASUMS256.txt
+        let shasums_url = self.mirror.as_ref()
+            .unwrap_or(&NodeMirror::Official)
+            .download_url(version, platform, ext)
+            .rsplit_once('/')
+            .map(|(base, _)| format!("{}/SHASUMS256.txt", base))
+            .unwrap_or_else(|| format!(
+                "https://nodejs.org/dist/v{}/SHASUMS256.txt", version
+            ));
+        
+        let shasums = self.download_file(&shasums_url).await?;
+        let shasums_str = String::from_utf8_lossy(&shasums);
+        
+        // 4. 验证 hash
+        let expected_hash = shasums_str.lines()
+            .find(|line| line.contains(&format!("node-v{}-{}.{}", version, platform, ext)))
+            .and_then(|line| line.split_whitespace().next())
+            .ok_or_else(|| AppError::InvalidInput("未找到 SHA256 校验和".into()))?;
+        
+        if actual_hash != expected_hash {
+            return Err(AppError::InvalidInput(
+                format!("SHA256 校验失败: 期望 {}，实际 {}", expected_hash, actual_hash)
+            ));
+        }
+        
+        Ok(binary)
+    }
+}
+```
+
+---
+
+### 8.4 Windows 专项优化
+
+#### 8.4.1 已知问题
+
+| 问题 | 影响 | 严重程度 |
+|------|------|---------|
+| symlink 需要管理员/开发者模式 | 非管理员用户安装失败 | 高 |
+| Windows Defender 误报 | 下载的 node.exe 被隔离 | 中 |
+| PATH 长度限制 (4096 字符) | 多版本 PATH 管理困难 | 中 |
+| cmd.exe 不支持非 ASCII PATH | 中文用户名导致问题 | 低 |
+| nvm-windows ≠ nvm | API 不兼容 | 高 |
+
+#### 8.4.2 降级策略
+
+```rust
+#[cfg(target_os = "windows")]
+pub struct WindowsNodeManager;
+
+#[cfg(target_os = "windows")]
+impl WindowsNodeManager {
+    /// 检查是否有 symlink 权限
+    pub fn can_create_symlink() -> bool {
+        let tmp_link = std::env::temp_dir().join("_agent_symlink_test");
+        let tmp_target = std::env::temp_dir().join("_agent_symlink_target");
+        let _ = std::fs::write(&tmp_target, b"test");
+        let result = std::os::windows::fs::symlink_file(&tmp_target, &tmp_link);
+        let _ = std::fs::remove_file(&tmp_link);
+        let _ = std::fs::remove_file(&tmp_target);
+        result.is_ok()
+    }
+
+    /// 选择最佳激活策略
+    pub fn activation_strategy() -> WindowsActivationStrategy {
+        if Self::can_create_symlink() {
+            WindowsActivationStrategy::Symlink
+        } else {
+            // 降级: 使用 junction (目录链接) + PATH 注入
+            WindowsActivationStrategy::PathJunction
+        }
+    }
+
+    /// 通过 PATH 注入激活版本 (无需管理员权限)
+    pub fn activate_via_path(version_dir: &Path, exe_name: &str) -> Result<String> {
+        // 创建 junction 到统一入口 (不需要管理员权限)
+        let junction_root = version_dir.parent().unwrap().join("_current");
+        // ... junction 逻辑
+        
+        // 返回应该被注入 PATH 的目录
+        Ok(version_dir.to_string_lossy().to_string())
+    }
+}
+
+pub enum WindowsActivationStrategy {
+    /// 符号链接 (需管理员/开发者模式)
+    Symlink,
+    /// Junction + PATH 注入 (推荐, 无需管理员)
+    PathJunction,
+    /// 临时 PATH 修改 (兜底, 仅当前进程生效)
+    ProcessPath,
+}
+```
+
+---
+
+### 8.5 Node.js 安全策略
+
+```rust
+/// Node.js 安全管理器
+pub struct NodeSecurityPolicy {
+    /// 只允许安装 LTS 版本（禁用 non-LTS）
+    pub lts_only: bool,
+    /// 允许的 major 版本白名单: [18, 20, 22]
+    pub allowed_majors: Option<Vec<u16>>,
+    /// 禁止安装的版本模式: ["16.x.x"]
+    pub blocked_versions: Vec<String>,
+    /// 是否验证 SHASUMS256.txt 签名
+    pub verify_checksum: bool,
+    /// 自动安装安全补丁
+    pub auto_security_patch: bool,
+    /// 版本降级
+    pub allow_downgrade: bool,
+}
+
+impl Default for NodeSecurityPolicy {
+    fn default() -> Self {
+        Self {
+            lts_only: true,           // 默认只允许 LTS
+            allowed_majors: Some(vec![18, 20, 22]),
+            blocked_versions: vec![],
+            verify_checksum: true,    // 默认校验
+            auto_security_patch: false,
+            allow_downgrade: true,
+        }
+    }
+}
+```
+
+---
+
+### 8.6 性能基准与 SLA
+
+| 指标 | 目标 | fnm 对比 | nvm 对比 |
+|------|------|---------|---------|
+| Shell 初始化延迟 | < 50ms | ~15ms | ~700ms |
+| 版本切换 | < 100ms | ~10ms | ~200ms |
+| 版本列表 (缓存) | < 50ms | — | — |
+| 版本列表 (远程) | < 3s | ~1s | ~5s |
+| 安装 (50Mbps) | < 30s | ~20s | ~30s |
+| 内存占用 | < 5MB | ~2MB | ~4MB |
+
+---
+
+### 8.7 差异化定位（与 fnm/volta/nvm 的关系）
+
+```
+Agent 的 Node 管理器 ≠ 另一个 fnm/volta/nvm
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+核心差异化:
+
+1. 多运行时统一管理
+   Node + Python + Go + Rust + Java + Deno + Bun
+   → fnm/volta 只管理 Node 生态
+
+2. AI/Agent 原生集成
+   对话中自动检测项目版本 → "升级这个项目到 Node 22"
+   → 其他工具无 AI 交互能力
+
+3. 版本策略集中管控 (企业级)
+   LTS only, 版本白名单, 自动安全更新
+   → nvm/fnm 无策略引擎
+
+4. 自管 + 外部管理器混合模式
+   不替换用户已有 fnm/volta, 兼容共存
+   → 降低迁移成本
+
+5. 工具链矩阵管理
+   node + npm + pnpm + yarn 版本兼容性一站式管理
+   → Volta 的包管理器管理 + 多运行时
+```
+
+---

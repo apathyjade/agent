@@ -120,6 +120,7 @@ pub fn run() {
             commands::list_installed_versions,
             commands::switch_runtime_version,
             commands::uninstall_runtime_version,
+            commands::open_version_directory,
             commands::get_runtime_install_dir,
             commands::set_runtime_install_dir,
             commands::scan_project,
