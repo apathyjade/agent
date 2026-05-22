@@ -5,20 +5,18 @@
 ## 流程总览
 
 ```
-master ──┬── start-session ──┬── AI 修改文件 ──┬── checkpoint ──┬── AI 修改文件 ──┬── ... ──┬── finish-session
-         │                   │                  │                │                  │          │
-         └── ai/feature      └── 响应完成       └── git commit   └── 响应完成       └── ...    └── squash-merge → master
+master ──┬── start-session ──┬── AI 修改文件 ──┬── checkpoint ──┬── ... ──┬── finish-session
+         │                   │                  │                │          │
+         └── ai/feature      └── 响应完成       └── git commit   └── ...    └── squash-merge → master
 ```
 
-## 三个 Node.js 脚本（跨平台）
+## 三个 Node.js 脚本
 
 | 脚本 | 何时执行 | 作用 |
 |------|----------|------|
 | `node scripts/start-session.mjs <描述>` | 每次 AI 会话开始时 | 从 `master` 创建/切换到 `ai/<描述>` 分支 |
 | `node scripts/checkpoint.mjs <描述>` | 每次 AI 完整响应后 | 自动 `git add -A` + `git commit` 暂存所有变更 |
 | `node scripts/finish-session.mjs` | 会话结束准备合并时 | 显示变更统计、提交历史，建议或执行 squash-merge |
-
-> 旧版 PowerShell 脚本（`.ps1`）已废弃，请使用 Node.js 版本。
 
 ## 执行步骤
 

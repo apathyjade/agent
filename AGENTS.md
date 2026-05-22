@@ -29,41 +29,37 @@ cd src-ui && npm run build    # 执行 tsc && vite build
 cd src-tauri && cargo tauri build
 ```
 
-### 前置依赖
-
-| 工具     | 版本    | 说明                 |
-| -------- | ------- | -------------------- |
-| Rust     | 1.77.2+ | edition 2021         |
-| Node.js  | 18+     | 用于 src-ui          |
-| npm      | —       | 随 Node 捆绑安装     |
+**前置依赖**：Rust 1.77.2+（edition 2021）、Node.js 18+
 
 ---
 
 ## 速查
 
-| 你需要的 | 命令或位置 |
-|----------|-----------|
-| 添加新工具 | `tools/` 下实现 `Tool` trait，在 `ToolRegistry::new()` 注册 |
-| 添加 IPC 命令 | `commands/` 下新建文件，在 `lib.rs` 注册 handler |
-| 添加新 provider | 在 `config.rs` 的 `ModelProvider` 添加枚举值，在 `api/provider.rs` 注册 |
-| 添加新运行时支持 | 在 `environment/registry.rs` 注册，实现对应的 detector + installer |
-| 添加记忆种子 | 在 `memory/seeds.rs` 的 `default_seed_memories()` 中添加 |
-| 修改 CSP 白名单 | 编辑 `src-tauri/tauri.conf.json` 的 `connect-src` |
+| 场景 | 命令或位置 |
+|------|-----------|
 | 构建检查 | `cd src-tauri && cargo check` |
 | 前端类型检查 | `cd src-ui && npx tsc --noEmit` |
+| 添加 IPC 命令 | `commands/` 下新建文件，在 `lib.rs` 注册 handler |
+| 添加工具 | `tools/` 下实现 `Tool` trait，`ToolRegistry::new()` 注册 |
+| 添加 provider | `config.rs` 的 `ModelProvider` 加枚举值，`api/provider.rs` 注册 |
+| 添加运行时 | `environment/registry.rs` 注册，实现 detector + installer |
+| 添加记忆种子 | `memory/seeds.rs` 的 `default_seed_memories()` 中添加 |
+| 修改 CSP 白名单 | 编辑 `src-tauri/tauri.conf.json` 的 `connect-src` |
 
 ---
 
-## 快速参考
+## 项目一览
 
-- **后端模块**: 17 个（agent, api, commands, config, db, environment, error, keychain, mcp, memory, pipeline, skills, state, tools...）
-- **前端组件**: 29 个（ChatArea, MemoryManagerPage, McpManagerPage, SkillManagerPage, RuntimeManagerPage, WorkflowManagerPage 等）
-- **IPC 命令**: 103 个已注册（涵盖对话、模型、工具、技能、MCP、记忆、工作流、运行时、provider 等）
-- **Provider**: 11 个（10 个 OpenAI 兼容 + 1 个 Anthropic）
-- **内置工具**: 5 个（calculator, file_system, web_search, code_executor, script_tool）
-- **运行时支持**: 8 种（Node, Python, Docker, uv, Go, Rust, Java, Deno）
-- **数据表**: 9 张（conversations, messages, settings, system_prompts, skills, workflow_runs, runtime_version_cache, bound_projects, memories）
-- **记忆系统**: 17 条内置种子记忆，关键词检索注入 Agent 上下文
+| 维度 | 数据 |
+|------|------|
+| 后端模块 | 17 个（agent, api, commands, config, db, environment, error, keychain, mcp, memory, pipeline, skills, state, tools...） |
+| IPC 命令 | ~100 个注册命令 |
+| Provider | 11 个（10 OpenAI 兼容 + 1 Anthropic） |
+| 内置工具 | 5 个（calculator, file_system, web_search, code_executor, script_tool） |
+| 运行时支持 | 8 种（Node, Python, Docker, uv, Go, Rust, Java, Deno） |
+| 数据表 | 9 张 |
+| 前端组件 | ~30 个 |
+| 内置记忆 | 17 条种子记忆，关键词检索注入 Agent 上下文 |
 
 ---
 
@@ -80,7 +76,7 @@ cd src-tauri && cargo tauri build
 
 ## 安全规则
 
-- 严禁硬编码 API Key，使用 `process.env`
+- 严禁硬编码 API Key，使用 `process.env` 或 keychain
 - 所有数据库操作使用参数化查询
 - 避免 `as any`、`@ts-ignore`、`@ts-expect-error`
 - 详细规范见 [docs/agents/traps.md](docs/agents/traps.md)
