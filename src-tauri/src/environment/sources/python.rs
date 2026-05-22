@@ -22,7 +22,7 @@ struct GitHubRelease {
 }
 
 /// Fallback known versions when GitHub API is unreachable.
-const FALLBACK_VERSIONS: &[&str] = &["3.13.0", "3.12.8", "3.11.11", "3.10.16"];
+const FALLBACK_VERSIONS: &[&str] = &["3.13.3", "3.12.10", "3.11.12", "3.10.20"];
 
 pub struct PythonVersionSource;
 
@@ -39,10 +39,7 @@ impl PythonVersionSource {
     }
 
     fn archive_ext(&self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        { "zip" }
-        #[cfg(not(target_os = "windows"))]
-        { "tar.gz" }
+        "tar.gz"
     }
 
     /// Build a download URL for a given Python version using python-build-standalone.
@@ -131,7 +128,7 @@ impl VersionSource for PythonVersionSource {
         }
 
         // Fallback: use known curated list with a default tag
-        let default_tag = "20250115";
+        let default_tag = "20260510";
         let pairs: Vec<(String, String)> = FALLBACK_VERSIONS
             .iter()
             .map(|v| (v.to_string(), default_tag.to_string()))

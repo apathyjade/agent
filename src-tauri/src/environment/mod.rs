@@ -15,6 +15,8 @@ pub mod resolver;
 pub mod alias;
 pub mod cli;
 mod upgrade;
+pub mod manager_detector;
+pub mod manager_executor;
 pub mod node_integration;
 pub mod node_toolchain;
 
@@ -53,6 +55,23 @@ pub enum RuntimeType {
     Deno,
     Bun,
     Ruby,
+}
+
+impl std::fmt::Display for RuntimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeType::Node => write!(f, "node"),
+            RuntimeType::Python => write!(f, "python"),
+            RuntimeType::Docker => write!(f, "docker"),
+            RuntimeType::Uv => write!(f, "uv"),
+            RuntimeType::Go => write!(f, "go"),
+            RuntimeType::Rust => write!(f, "rust"),
+            RuntimeType::Java => write!(f, "java"),
+            RuntimeType::Deno => write!(f, "deno"),
+            RuntimeType::Bun => write!(f, "bun"),
+            RuntimeType::Ruby => write!(f, "ruby"),
+        }
+    }
 }
 
 impl RuntimeType {
@@ -514,6 +533,62 @@ impl RuntimeManager {
         result.sort_by(|a, b| a.runtime_type.display_name().cmp(b.runtime_type.display_name()));
         result
     }
+
+    // ── Disk Usage ──
+
+    /// Get total disk usage for a specific runtime.
+    pub async fn get_disk_usage(&self, rt: &RuntimeType) -> u64 {
+        let install_dir = self.install_dir.lock().await.clone();
+        let rt_dir = install_dir.join(rt.dir_name());
+        if !rt_dir.exists() { return 0; }
+        let installed = self.list_installed_versions(rt).await;
+        let mut total = 0u64;
+        for v in &installed {
+            let ver_dir = rt_dir.join(&v.version);
+            if ver_dir.exists() { total += dir_size(&ver_dir); }
+        }
+        total
+    }
+
+    /// Get disk usage for all runtimes, sorted by size descending.
+    pub async fn get_all_disk_usage(&self) -> Vec<DiskUsageItem> {
+        let mut items = Vec::new();
+        for rt in RuntimeType::all() {
+            let size = self.get_disk_usage(rt).await;
+            let info = self.get_cached(rt).await.unwrap_or_else(|| RuntimeInfo {
+                runtime_type: rt.clone(), display_name: rt.display_name().to_string(),
+                source: RuntimeSource::None, version: None, installed_versions: vec![],
+                executable_path: None, error: None, available: false,
+            });
+            items.push(DiskUsageItem {
+                runtime_type: rt.clone(), display_name: rt.display_name().to_string(), size_bytes: size, installed_count: info.installed_versions.len(), active_version: info.version.clone(),
+            });
+        }
+        items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        items
+    }
+}
+
+/// Recursively compute total size of a directory.
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() { total += dir_size(&path); }
+            else if let Ok(meta) = entry.metadata() { total += meta.len(); }
+        }
+    }
+    total
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiskUsageItem {
+    pub runtime_type: RuntimeType,
+    pub display_name: String,
+    pub size_bytes: u64,
+    pub installed_count: usize,
+    pub active_version: Option<String>,
 }
 
 /// Find the executable path within a version directory.

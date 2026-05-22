@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager } from '../types';
 
 export async function createConversation(
   title: string,
@@ -424,4 +424,28 @@ export async function detectPathConflicts(): Promise<PathConflict[]> {
 
 export async function batchInstallRuntimes(installs: BatchInstallItem[]): Promise<BatchInstallResult[]> {
   return invoke('batch_install_runtimes', { installs });
+}
+
+// ── Version Manager Commands ──
+
+export async function getVersionManagers(runtimeType: string): Promise<VersionManager[]> {
+  return invoke('get_version_managers', { runtimeType });
+}
+
+export async function setActiveManager(runtimeType: string, managerId: string): Promise<void> {
+  return invoke('set_active_manager', { runtimeType, managerId });
+}
+
+export async function getActiveManager(runtimeType: string): Promise<string | null> {
+  return invoke('get_active_manager', { runtimeType });
+}
+
+export async function installManagerTool(managerId: string, downloadUrl: string): Promise<string> {
+  return invoke('install_manager_tool', { managerId, downloadUrl });
+}
+
+// ── Disk Usage ──
+
+export async function getRuntimesDiskUsage(): Promise<DiskUsageItem[]> {
+  return invoke('get_runtime_disk_usage');
 }

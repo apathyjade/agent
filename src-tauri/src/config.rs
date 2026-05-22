@@ -128,6 +128,10 @@ pub struct AppConfig {
     /// e.g. "http://127.0.0.1:7890"
     #[serde(default)]
     pub download_proxy: Option<String>,
+    /// Active version manager per runtime type.
+    /// Key = runtime_type string (e.g. "node"), Value = manager id (e.g. "fnm").
+    #[serde(default)]
+    pub active_managers: std::collections::HashMap<String, String>,
 }
 
 impl Default for AppConfig {
@@ -170,6 +174,7 @@ impl Default for AppConfig {
             workflow_secrets: std::collections::HashMap::new(),
             runtime_install_dir: None,
             download_proxy: None,
+            active_managers: std::collections::HashMap::new(),
         }
     }
 }

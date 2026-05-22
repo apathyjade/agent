@@ -3,10 +3,12 @@
 use tauri::{Emitter, State};
 
 use crate::environment::{
-    check_updates, BoundProject, InstallProgress, InstalledVersion, PathConflict, ProjectDetector,
-    ProjectRuntimeRequirement, ProjectScanResult, RuntimeDetector, RuntimeInfo, RuntimeType,
-    SyncAction, SyncResult, VersionUpdate,
+    check_updates, BoundProject, DiskUsageItem, InstallProgress, InstalledVersion, PathConflict,
+    ProjectDetector, ProjectRuntimeRequirement, ProjectScanResult, RuntimeDetector, RuntimeInfo,
+    RuntimeType, SyncAction, SyncResult, VersionUpdate,
 };
+use crate::environment::manager_detector::{self, VersionManager};
+use crate::environment::manager_executor;
 use crate::environment::registry::RuntimeVersion;
 use crate::error::Result;
 use crate::state::AppState;
@@ -33,7 +35,7 @@ pub async fn refresh_runtime(
     Ok(state.runtime_manager.detect(&rt).await)
 }
 
-/// Install a runtime (built-in). Supports optional version parameter.
+/// Install a runtime (built-in or via external manager if active).
 /// Emits `install_progress` events.
 #[tauri::command]
 pub async fn install_runtime(
@@ -43,6 +45,15 @@ pub async fn install_runtime(
     version: Option<String>,
 ) -> Result<RuntimeInfo> {
     let rt = parse_runtime_type(&runtime_type)?;
+
+    // Check if an external manager is active
+    if let Some(manager) = current_active_manager(&state, &rt).await {
+        if let Some(ver) = &version {
+            manager_executor::install_version(&manager, &rt, ver)
+                .map_err(|e| crate::error::AppError::InvalidInput(e))?;
+            return Ok(state.runtime_manager.detect(&rt).await);
+        }
+    }
 
     // Prevent concurrent installation of the same runtime
     state.runtime_manager.try_begin_install(&rt).await
@@ -96,6 +107,16 @@ pub async fn switch_runtime_version(
     version: String,
 ) -> Result<RuntimeInfo> {
     let rt = parse_runtime_type(&runtime_type)?;
+
+    // Check if an external manager is active
+    if let Some(manager) = current_active_manager(&state, &rt).await {
+        if manager != "built-in" {
+            manager_executor::switch_version(&manager, &rt, &version)
+                .map_err(|e| crate::error::AppError::InvalidInput(e))?;
+            return Ok(state.runtime_manager.detect(&rt).await);
+        }
+    }
+
     state.runtime_manager.switch_version(&rt, &version).await?;
     Ok(state.runtime_manager.detect(&rt).await)
 }
@@ -108,6 +129,16 @@ pub async fn uninstall_runtime_version(
     version: String,
 ) -> Result<RuntimeInfo> {
     let rt = parse_runtime_type(&runtime_type)?;
+
+    // Check if an external manager is active
+    if let Some(manager) = current_active_manager(&state, &rt).await {
+        if manager != "built-in" {
+            manager_executor::uninstall_version(&manager, &rt, &version)
+                .map_err(|e| crate::error::AppError::InvalidInput(e))?;
+            return Ok(state.runtime_manager.detect(&rt).await);
+        }
+    }
+
     state.runtime_manager.uninstall_version(&rt, &version).await?;
     Ok(state.runtime_manager.detect(&rt).await)
 }
@@ -200,6 +231,161 @@ pub async fn validate_runtime(
     match state.runtime_manager.validate_runtime(&rt).await {
         Ok(()) => Ok(format!("✅ {} 可用", rt.display_name())),
         Err(msg) => Ok(msg),
+    }
+}
+
+// ── Version Manager Commands ──
+
+/// Get all available version managers for a runtime type.
+#[tauri::command]
+pub async fn get_version_managers(
+    runtime_type: String,
+) -> Result<Vec<VersionManager>> {
+    let rt = parse_runtime_type(&runtime_type)?;
+    Ok(manager_detector::detect_managers(&rt))
+}
+
+/// Set the active manager for a runtime type (persisted to config).
+#[tauri::command]
+pub async fn set_active_manager(
+    state: State<'_, AppState>,
+    runtime_type: String,
+    manager_id: String,
+) -> Result<()> {
+    let rt = parse_runtime_type(&runtime_type)?;
+    let mut config = state.config.lock().await;
+    config.active_managers.insert(rt.to_string(), manager_id);
+    config.save()?;
+    Ok(())
+}
+
+/// Get the active manager for a runtime type.
+#[tauri::command]
+pub async fn get_active_manager(
+    state: State<'_, AppState>,
+    runtime_type: String,
+) -> Result<Option<String>> {
+    let rt = parse_runtime_type(&runtime_type)?;
+    let config = state.config.lock().await;
+    Ok(config.active_managers.get(&rt.to_string()).cloned())
+}
+
+/// Install a version manager tool by downloading it from the given URL.
+/// Returns a status message.
+#[tauri::command]
+pub async fn install_manager_tool(
+    manager_id: String,
+    download_url: String,
+) -> Result<String> {
+    let temp_dir = std::env::temp_dir().join(format!("manager_install_{}", manager_id));
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+    }
+    std::fs::create_dir_all(&temp_dir).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+
+    let url = download_url;
+    let default_filename = format!("{}.tar.gz", manager_id);
+    let filename = url.rsplit('/').next().unwrap_or(&default_filename);
+    let dest = temp_dir.join(filename);
+
+    // Download (async)
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| crate::error::AppError::InvalidInput(format!("下载失败: {}", e)))?;
+
+    let content = response
+        .bytes()
+        .await
+        .map_err(|e| crate::error::AppError::InvalidInput(format!("读取响应失败: {}", e)))?;
+
+    std::fs::write(&dest, &content).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+
+    // Try to extract — supports .tar.gz, .gz, .zip
+    let extension = filename.to_lowercase();
+    if extension.ends_with(".tar.gz") || extension.ends_with(".tgz") {
+        let file = std::fs::File::open(&dest).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+        archive.unpack(&temp_dir).map_err(|e| crate::error::AppError::InvalidInput(format!("解压失败: {}", e)))?;
+    } else if extension.ends_with(".zip") {
+        let file = std::fs::File::open(&dest).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| crate::error::AppError::InvalidInput(format!("解压 zip 失败: {}", e)))?;
+        archive.extract(&temp_dir).map_err(|e| crate::error::AppError::InvalidInput(format!("解压 zip 失败: {}", e)))?;
+    } else if extension.ends_with(".gz") {
+        let file = std::fs::File::open(&dest).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+        let mut decoder = flate2::read::GzDecoder::new(file);
+        let mut out = std::fs::File::create(temp_dir.join("output")).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+        std::io::copy(&mut decoder, &mut out).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+    }
+
+    // Find executable in extracted files
+    let mut installed_binary = None;
+    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if name == manager_id || name == manager_id.to_lowercase().as_str() {
+                    installed_binary = Some(path.to_string_lossy().to_string());
+                    break;
+                }
+            }
+            if path.is_dir() {
+                if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                    for sub in sub_entries.flatten() {
+                        let sub_path = sub.path();
+                        if sub_path.is_file() {
+                            let name = sub_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                            if name == manager_id || name == manager_id.to_lowercase().as_str() {
+                                installed_binary = Some(sub_path.to_string_lossy().to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if installed_binary.is_some() { break; }
+        }
+    }
+
+    match installed_binary {
+        Some(bin_path) => {
+            let install_dir = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("agent")
+                .join("bin");
+            std::fs::create_dir_all(&install_dir).map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+
+            let target_name = if cfg!(target_os = "windows") {
+                format!("{}.exe", manager_id)
+            } else {
+                manager_id.clone()
+            };
+            let target = install_dir.join(&target_name);
+
+            std::fs::copy(&bin_path, &target).map_err(|e| crate::error::AppError::InvalidInput(format!("复制可执行文件失败: {}", e)))?;
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            }
+
+            // Cleanup temp
+            let _ = std::fs::remove_dir_all(&temp_dir);
+
+            Ok(format!("{} 已安装到 {}", manager_id, target.display()))
+        }
+        None => {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            Err(crate::error::AppError::InvalidInput(format!(
+                "无法在下载文件中找到 {} 可执行文件", manager_id
+            )))
+        }
     }
 }
 
@@ -556,6 +742,20 @@ pub async fn batch_install_runtimes(
         }
     }
     Ok(results)
+}
+
+// ── Disk Usage ──
+
+/// Get disk usage for all runtimes.
+#[tauri::command]
+pub async fn get_runtime_disk_usage(state: State<'_, AppState>) -> Result<Vec<DiskUsageItem>> {
+    Ok(state.runtime_manager.get_all_disk_usage().await)
+}
+
+/// Get the active manager ID for a runtime type, or None if not configured.
+async fn current_active_manager(state: &State<'_, AppState>, rt: &RuntimeType) -> Option<String> {
+    let config = state.config.lock().await;
+    config.active_managers.get(&rt.to_string()).cloned()
 }
 
 fn parse_runtime_type(s: &str) -> Result<RuntimeType> {

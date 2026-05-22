@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Server, CheckCircle2, Loader2,
   RefreshCw, FolderOpen, Heart, AlertTriangle, X,
+  Search, ClipboardList,
 } from 'lucide-react';
 import { openVersionDirectory } from '../api/tauri';
 import { useStore } from '../store';
@@ -39,6 +40,7 @@ function InstallDialog({
 
   const handleInstall = () => {
     installRuntime(runtimeType, selectedVersion || undefined);
+    onClose();
   };
 
   const isInstalling = installingRuntime === runtimeType;
@@ -55,51 +57,56 @@ function InstallDialog({
   );
 }
 
-// ── Install Progress Modal ──
+// ── Install Progress Bar ──
 
-function InstallProgressModal() {
-  const { installProgress, installingRuntime, clearInstallProgress, fetchRuntimes } = useStore();
+function InstallProgressBar() {
+  const { installProgress, installingRuntime, batchInstalling, clearInstallProgress, fetchRuntimes } = useStore();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notifiedRef = useRef(false);
+  const [visible, setVisible] = useState(false);
 
-  if (!installingRuntime) return null;
+  useEffect(() => { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }, []);
+
+  useEffect(() => { if (installingRuntime || batchInstalling) setVisible(true); }, [installingRuntime, batchInstalling]);
+
+  const isDone = installProgress?.progress === 1.0;
+  useEffect(() => {
+    if (isDone && !batchInstalling) {
+      if (!notifiedRef.current && 'Notification' in window && Notification.permission === 'granted') {
+        notifiedRef.current = true;
+        new Notification('运行时安装完成', {
+          body: installProgress?.message || '安装完成',
+          icon: '/vite.svg',
+        });
+      }
+      timerRef.current = setTimeout(() => { setVisible(false); clearInstallProgress(); fetchRuntimes(); }, 2000);
+    }
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [isDone, batchInstalling]);
+
+  if (!visible || (!installingRuntime && !batchInstalling && !isDone)) return null;
 
   const pct = installProgress ? Math.round(installProgress.progress * 100) : 0;
-  const message = installProgress?.message || '准备安装...';
-  const isDone = installProgress?.progress === 1.0;
+  const message = installProgress?.message || (batchInstalling ? '批量安装中...' : '准备安装...');
+  const label = batchInstalling ? '批量安装' : (installingRuntime ?? '安装');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[400px] p-6">
-        <div className="text-center">
-          <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-purple-100 dark:bg-purple-900/40 flex items-center justify-center">
-            {isDone ? (
-              <CheckCircle2 size={24} className="text-green-600" />
-            ) : (
-              <Loader2 size={24} className="text-purple-600 animate-spin" />
-            )}
-          </div>
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">
-            {isDone ? '安装完成' : `安装中...`}
-          </h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">{message}</p>
-
+    <div className="fixed bottom-6 right-6 z-40 slide-in-from-right-4 w-[320px]">
+      <div className={`bg-white dark:bg-gray-800 rounded-xl shadow-lg border transition-all duration-300 overflow-hidden ${isDone ? 'border-green-200' : 'border-purple-200'}`}>
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+          {isDone ? <CheckCircle2 size={16} className="text-green-500" /> : <Loader2 size={16} className="animate-spin text-purple-500" />}
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate flex-1">{isDone ? `${label} 完成` : `${label} 中`}</span>
+          {isDone && <button onClick={() => { setVisible(false); clearInstallProgress(); }} className="text-gray-400 hover:text-gray-600"><X size={14} /></button>}
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{message}</p>
           {!isDone && (
-            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mb-2">
-              <div
-                className="bg-gradient-to-r from-purple-500 to-indigo-500 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${Math.max(pct, 2)}%` }}
-              />
+            <div className="mt-2 flex items-center gap-2">
+              <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                <div className="bg-gradient-to-r from-purple-500 to-indigo-500 h-full rounded-full transition-all duration-300" style={{width:`${Math.max(pct,2)}%`}} />
+              </div>
+              <span className="text-xs text-gray-400 w-10 text-right">{pct}%</span>
             </div>
-          )}
-
-          {isDone ? (
-            <button
-              onClick={() => { clearInstallProgress(); fetchRuntimes(); }}
-              className="mt-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm"
-            >
-              完成
-            </button>
-          ) : (
-            <p className="text-[10px] text-gray-400">{pct}%</p>
           )}
         </div>
       </div>
@@ -115,12 +122,75 @@ export function RuntimeManagerPage() {
     fetchRuntimes, clearRuntimeError,
     installingRuntime, switchVersion, uninstallVersion,
     fetchAvailableVersions, versionCache,
-    pathConflicts, fetchPathConflicts, batchInstalling,
+    pathConflicts, fetchPathConflicts,
+    installDir, fetchInstallDir,
+    managers, activeManagers, fetchAllManagers, setManager,
   } = useStore();
 
   const [installDialogRt, setInstallDialogRt] = useState<RuntimeType | null>(null);
   const [selectedRuntime, setSelectedRuntime] = useState<RuntimeType | null>(null);
   const [activeTab, setActiveTab] = useState('versions');
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Filtered lists
+  const q = searchQuery.toLowerCase();
+  const filteredRuntimes = q
+    ? runtimes.filter(r =>
+        r.display_name.toLowerCase().includes(q) ||
+        r.runtime_type.toLowerCase().includes(q) ||
+        (r.version && r.version.toLowerCase().includes(q))
+      )
+    : runtimes;
+  const filteredConflicts = q
+    ? pathConflicts.filter(c =>
+        c.runtime_type.toLowerCase().includes(q) ||
+        c.executables.some(exe => exe.path.toLowerCase().includes(q))
+      )
+    : pathConflicts;
+
+  // Generate diagnostic report
+  const generateReport = useCallback(async () => {
+    const lines: string[] = [];
+    lines.push('# Runtime Diagnostic Report');
+    lines.push(`- Generated: ${new Date().toLocaleString()}`);
+    lines.push(`- Install Dir: ${installDir || '(unknown)'}`);
+    lines.push('');
+    lines.push('## Installed Runtimes');
+    for (const r of runtimes) {
+      const status = r.available ? `v${r.version}` : '未安装';
+      lines.push(`- ${r.display_name} (${r.runtime_type}): ${status}`);
+      for (const iv of r.installed_versions) {
+        lines.push(`  - ${iv.version} @ ${iv.path}${iv.is_active ? ' [active]' : ''}`);
+      }
+    }
+    lines.push('');
+    lines.push('## PATH Conflicts');
+    for (const c of pathConflicts) {
+      if (c.conflict) {
+        lines.push(`- ${c.runtime_type}: ${c.executables.length} versions found`);
+        for (const exe of c.executables) {
+          lines.push(`  - ${exe.path}${exe.version ? ` (${exe.version})` : ''}${exe.is_active ? ' [active]' : ''}`);
+        }
+      }
+    }
+    if (pathConflicts.filter(c => c.conflict).length === 0) {
+      lines.push('(no conflicts)');
+    }
+    await navigator.clipboard.writeText(lines.join('\n'));
+  }, [runtimes, pathConflicts, installDir]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMeta = e.metaKey || e.ctrlKey;
+      if (isMeta && e.key === 'k') { e.preventDefault(); searchInputRef.current?.focus(); }
+      if (isMeta && e.key === 'r') { e.preventDefault(); fetchRuntimes(); fetchPathConflicts(); }
+      if (e.key === 'Escape' && searchQuery) { setSearchQuery(''); searchInputRef.current?.blur(); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [fetchRuntimes, fetchPathConflicts, searchQuery]);
 
   // Auto-select first runtime when runtimes load
   useEffect(() => {
@@ -132,7 +202,9 @@ export function RuntimeManagerPage() {
   useEffect(() => {
     fetchRuntimes();
     fetchPathConflicts();
-  }, [fetchRuntimes, fetchPathConflicts]);
+    fetchInstallDir();
+    fetchAllManagers();
+  }, [fetchRuntimes, fetchPathConflicts, fetchInstallDir, fetchAllManagers]);
 
   // Auto-dismiss error after 8 seconds
   useEffect(() => {
@@ -147,15 +219,37 @@ export function RuntimeManagerPage() {
       icon={<Server size={20} className="text-white" />}
       title="运行时管理"
       subtitle="本地运行环境管理 — 安装、版本切换、目录配置"
+      searchBar={
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索运行时、版本、项目... (⌘K)"
+            className="w-full pl-9 pr-3 py-2 bg-gray-100 dark:bg-gray-700 border border-gray-200 rounded-lg text-sm"
+          />
+        </div>
+      }
       headerActions={
-        <button
-          onClick={fetchRuntimes}
-          disabled={runtimeLoading}
-          className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm transition-all"
-        >
-          <RefreshCw size={14} className={runtimeLoading ? 'animate-spin' : ''} />
-          刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={generateReport}
+            className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm transition-all"
+            title="复制诊断报告"
+          >
+            <ClipboardList size={14} />
+          </button>
+          <button
+            onClick={fetchRuntimes}
+            disabled={runtimeLoading}
+            className="flex items-center gap-1.5 px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm transition-all"
+          >
+            <RefreshCw size={14} className={runtimeLoading ? 'animate-spin' : ''} />
+            刷新
+          </button>
+        </div>
       }
       tabs={[
         { key: 'versions', label: '运行时列表', icon: <Server size={13} /> },
@@ -169,26 +263,26 @@ export function RuntimeManagerPage() {
       <div className="h-full">
         {/* 运行时列表 tab — 全高左右布局，独立滚动 */}
         {activeTab === 'versions' && (() => {
-        if (runtimes.length === 0) {
+        if (filteredRuntimes.length === 0) {
           return (
             <div className="p-8 text-center text-gray-400 dark:text-gray-500 h-full flex items-center justify-center">
               <div>
                 <Server size={32} className="mx-auto mb-2 opacity-50" />
-                <p className="text-sm">暂无运行时</p>
-                <p className="text-xs mt-1">刷新以重新检测</p>
+                <p className="text-sm">{searchQuery ? '没有匹配的运行时' : '暂无运行时'}</p>
+                <p className="text-xs mt-1">{searchQuery ? '尝试其他搜索词' : '刷新以重新检测'}</p>
               </div>
             </div>
           );
         }
 
-        const current = selectedRuntime ?? runtimes[0]?.runtime_type ?? null;
-        const selectedInfo = runtimes.find(r => r.runtime_type === current);
+        const current = selectedRuntime ?? filteredRuntimes[0]?.runtime_type ?? null;
+        const selectedInfo = filteredRuntimes.find(r => r.runtime_type === current);
 
         return (
           <div className="flex gap-0 h-full">
             {/* 左侧运行时 tab 列表 */}
             <div className="w-44 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 pr-2 space-y-0.5 overflow-y-auto">
-                {runtimes.map((runtime) => {
+                {filteredRuntimes.map((runtime) => {
                   const isSelected = runtime.runtime_type === current;
                   const rtLabel = RUNTIME_LABELS[runtime.runtime_type];
                   return (
@@ -229,14 +323,14 @@ export function RuntimeManagerPage() {
                   <RuntimeCard
                     key={selectedInfo.runtime_type}
                     info={selectedInfo}
-                    versions={versionCache[selectedInfo.runtime_type] || []}
                     isInstalling={installingRuntime === selectedInfo.runtime_type}
-                    expanded={true}
-                    onToggleExpand={() => {}}
                     onInstall={() => setInstallDialogRt(selectedInfo.runtime_type)}
                     onSwitch={(v) => switchVersion(selectedInfo.runtime_type, v)}
                     onUninstall={(v) => uninstallVersion(selectedInfo.runtime_type, v)}
                     onOpenDir={(v) => openVersionDirectory(selectedInfo.runtime_type, v)}
+                    availableManagers={managers[selectedInfo.runtime_type]}
+                    activeManager={activeManagers[selectedInfo.runtime_type]}
+                    onSelectManager={(managerId) => setManager(selectedInfo.runtime_type, managerId)}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-64 text-gray-400 dark:text-gray-500">
@@ -254,18 +348,42 @@ export function RuntimeManagerPage() {
             {activeTab === 'projects' && <ProjectBindingPanel />}
 
             {activeTab === 'system' && (() => {
-          const sysRuntimes = runtimes.filter(r => r.source === 'system' && r.available);
-          const conflicts = pathConflicts.filter(c => c.conflict);
+          const sysRuntimes = filteredRuntimes.filter(r => r.source === 'system' && r.available);
+          const conflicts = filteredConflicts.filter(c => c.conflict);
+
+          const copyPath = (path: string) => {
+            navigator.clipboard.writeText(path);
+          };
+
+          const copyAllConflicts = () => {
+            const text = conflicts.map(c => {
+              const lines = [`${c.runtime_type.toUpperCase()} — ${c.executables.length} versions`];
+              for (const exe of c.executables) {
+                lines.push(`  ${exe.is_active ? '*' : ' '} ${exe.path}${exe.version ? ` (${exe.version})` : ''}`);
+              }
+              return lines.join('\n');
+            }).join('\n\n');
+            navigator.clipboard.writeText(text);
+          };
 
           return (
             <div className="space-y-4">
               {/* PATH conflicts */}
               {conflicts.length > 0 && (
                 <div>
-                  <h4 className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                    <AlertTriangle size={12} />
-                    PATH 冲突检测
-                  </h4>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-[10px] font-medium text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                      <AlertTriangle size={12} />
+                      PATH 冲突检测
+                    </h4>
+                    <button
+                      onClick={copyAllConflicts}
+                      className="flex items-center gap-1 text-[10px] px-2 py-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors"
+                    >
+                      <ClipboardList size={11} />
+                      复制诊断报告
+                    </button>
+                  </div>
                   <div className="space-y-2">
                     {conflicts.map((conflict) => (
                       <div key={conflict.runtime_type} className="p-3 bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-700/50 rounded-xl">
@@ -288,10 +406,23 @@ export function RuntimeManagerPage() {
                               <span className={`w-2 h-2 rounded-full ${exe.is_active ? 'bg-purple-500' : 'bg-gray-400'}`} />
                               <span className="flex-1 font-mono text-gray-700 dark:text-gray-300 truncate">{exe.path}</span>
                               {exe.version && <span className="text-gray-500">{exe.version}</span>}
-                              {exe.is_active && <span className="text-[10px] text-purple-600 dark:text-purple-400">当前</span>}
+                              {exe.is_active ? (
+                                <span className="text-[10px] text-purple-600 dark:text-purple-400 font-medium">当前</span>
+                              ) : (
+                                <button
+                                  onClick={() => copyPath(exe.path)}
+                                  className="text-[10px] px-1.5 py-0.5 bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-gray-600 dark:text-gray-300 rounded transition-colors"
+                                >
+                                  复制路径
+                                </button>
+                              )}
                             </div>
                           ))}
                         </div>
+                        <p className="text-[10px] text-yellow-600 dark:text-yellow-400 mt-2 flex items-center gap-1">
+                          <AlertTriangle size={10} />
+                          提示：PATH 中存在多个版本，建议统一版本或将非活跃版本从 PATH 中移除
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -361,50 +492,46 @@ export function RuntimeManagerPage() {
           </div>
         )}
 
-        {/* Loading */}
-        {runtimeLoading && (
-          <div className="flex items-center justify-center py-4 text-gray-400">
-            <Loader2 size={16} className="animate-spin mr-2" />
-            <span className="text-sm">处理中...</span>
-          </div>
-        )}
-
-        {/* Batch installing indicator */}
-        {batchInstalling && (
-          <div className="flex items-center justify-center py-2 text-purple-600 dark:text-purple-400 text-xs gap-1.5">
-            <Loader2 size={12} className="animate-spin" />
-            正在批量安装...
-          </div>
-        )}
-
-        {/* Enhanced error banner with retry */}
-        {runtimeError && (
-          <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl shadow-sm">
-            <div className="flex items-start gap-3">
-              <AlertTriangle size={16} className="text-red-500 mt-0.5 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-red-800 dark:text-red-300 mb-0.5">
-                  操作失败
-                </p>
-                <p className="text-xs text-red-600 dark:text-red-400 break-words">
-                  {runtimeError}
-                </p>
-              </div>
-              <button
-                onClick={clearRuntimeError}
-                className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 text-red-400 hover:text-red-600 transition-colors flex-shrink-0"
-                title="关闭"
-              >
-                <X size={14} />
-              </button>
+        {/* Skeleton loading */}
+        {runtimeLoading && !runtimeError && runtimes.length === 0 && (
+          <div className="flex gap-4 p-4 animate-pulse">
+            <div className="w-44 space-y-2">
+              {[1,2,3,4,5].map(i => (
+                <div key={i} className="flex items-center gap-2.5 px-3 py-2.5">
+                  <div className="w-5 h-5 rounded bg-gray-200 dark:bg-gray-700" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-16" />
+                    <div className="h-2 bg-gray-100 dark:bg-gray-700/50 rounded w-10" />
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={() => clearRuntimeError()}
-                className="flex items-center gap-1 text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg transition-colors"
-              >
-                清除并重试
-              </button>
+            <div className="flex-1 space-y-3 pl-4">
+              <div className="h-5 bg-gray-200 dark:bg-gray-700 rounded w-48" />
+              <div className="h-4 bg-gray-100 dark:bg-gray-700/50 rounded w-64" />
+              <div className="h-4 bg-gray-100 dark:bg-gray-700/50 rounded w-56" />
+              <div className="h-20 bg-gray-200 dark:bg-gray-700 rounded" />
+              <div className="h-4 bg-gray-100 dark:bg-gray-700/50 rounded w-60" />
+              <div className="h-4 bg-gray-100 dark:bg-gray-700/50 rounded w-44" />
+            </div>
+          </div>
+        )}
+
+        {/* Error toast at top-right */}
+        {runtimeError && (
+          <div className="fixed top-4 right-4 z-50 slide-in-from-right-4 max-w-xs">
+            <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl shadow-lg p-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle size={15} className="text-red-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-red-800 dark:text-red-300">操作失败</p>
+                  <p className="text-[11px] text-red-600 dark:text-red-400 mt-0.5 break-words">{runtimeError}</p>
+                  <div className="mt-2 flex gap-1.5">
+                    <button onClick={() => { clearRuntimeError(); fetchRuntimes(); }} className="text-[10px] px-2 py-1 bg-red-100 dark:bg-red-900/40 hover:bg-red-200 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 rounded-md transition-colors">重试</button>
+                    <button onClick={clearRuntimeError} className="text-[10px] px-2 py-1 text-red-400 hover:text-red-600 rounded-md transition-colors">关闭</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -418,8 +545,8 @@ export function RuntimeManagerPage() {
         />
       )}
 
-      {/* Install progress modal */}
-      <InstallProgressModal />
+      {/* Install progress bar */}
+      <InstallProgressBar />
     </ManagerPageLayout>
   );
 }

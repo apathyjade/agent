@@ -343,16 +343,16 @@ fn uv_versions() -> Vec<AvailableVersion> {
 }
 
 fn python_versions() -> Vec<AvailableVersion> {
-    let tag = "20250115";
-    let (arch_label, is_win) = if cfg!(target_os = "windows") {
-        ("x86_64-pc-windows-msvc", true)
+    let tag = "20260510";
+    let arch_label = if cfg!(target_os = "windows") {
+        "x86_64-pc-windows-msvc"
     } else if cfg!(target_os = "linux") {
-        ("x86_64-unknown-linux-gnu", false)
+        "x86_64-unknown-linux-gnu"
     } else {
-        ("aarch64-apple-darwin", false)
+        "aarch64-apple-darwin"
     };
-    let ext = if is_win { "zip" } else { "tar.gz" };
-    ["3.12.8", "3.11.11", "3.10.16"].iter().map(|v| {
+    let ext = "tar.gz";
+    ["3.10.20", "3.11.12", "3.12.10"].iter().map(|v| {
         let archive_name = format!("cpython-{}+{}-{}-install_only", v, tag, arch_label);
         let url = format!("https://github.com/astral-sh/python-build-standalone/releases/download/{}/{}.{}", tag, archive_name, ext);
         AvailableVersion {
@@ -546,16 +546,16 @@ fn uv_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 }
 
 fn python_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let tag = "20250115";
-    let is_win = cfg!(target_os = "windows");
-    let (arch_label, ext) = if is_win {
-        ("x86_64-pc-windows-msvc", "zip")
+    let tag = "20260510";
+    let arch_label = if cfg!(target_os = "windows") {
+        "x86_64-pc-windows-msvc"
     } else if cfg!(target_os = "linux") {
-        ("x86_64-unknown-linux-gnu", "tar.gz")
+        "x86_64-unknown-linux-gnu"
     } else {
-        ("aarch64-apple-darwin", "tar.gz")
+        "aarch64-apple-darwin"
     };
-    let v = if version == "latest" { "3.12.8" } else { version };
+    let ext = "tar.gz";
+    let v = if version == "latest" { "3.12.10" } else { version };
     let archive_name = format!("cpython-{}+{}-{}-install_only", v, tag, arch_label);
     Some(RuntimeDownloadInfo {
         url: format!("https://github.com/astral-sh/python-build-standalone/releases/download/{}/{}.{}", tag, archive_name, ext),

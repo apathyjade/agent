@@ -30,7 +30,7 @@ tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 dirs = "5"
 uuid = { version = "1", features = ["v4", "serde"] }

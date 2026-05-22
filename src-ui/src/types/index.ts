@@ -366,10 +366,33 @@ export interface BatchInstallItem {
   version: string | null;
 }
 
+/** Disk usage for a runtime */
+export interface DiskUsageItem {
+  runtime_type: RuntimeType;
+  display_name: string;
+  size_bytes: number;
+  installed_count: number;
+  active_version: string | null;
+}
+
 /** Batch install result */
 export interface BatchInstallResult {
   runtime_type: string;
   version: string;
   success: boolean;
   error: string | null;
+}
+
+/** A version manager tool for a runtime type */
+export interface VersionManager {
+  id: string;
+  display_name: string;
+  runtime_type: RuntimeType;
+  installed: boolean;
+  install_path?: string | null;
+  version?: string | null;
+  can_install: boolean;
+  install_guide?: string | null;
+  recommended: boolean;
+  install_url?: string | null;
 }

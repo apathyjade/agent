@@ -50,9 +50,9 @@ export function VersionSelector({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[480px] max-h-[600px] flex flex-col">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[560px] max-h-[650px] flex flex-col">
         {/* Header */}
-        <div className="p-5 pb-3 border-b border-gray-100 dark:border-gray-700">
+        <div className="p-6 pb-4 border-b border-gray-100 dark:border-gray-700">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
             选择版本
           </h3>
@@ -150,7 +150,7 @@ export function VersionSelector({
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between">
+        <div className="p-5 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between">
           <button
             onClick={() => fetchAvailableVersions(runtimeType)}
             className="flex items-center gap-1 text-xs text-gray-500 hover:text-purple-600 transition-colors"

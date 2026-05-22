@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { FolderOpen, Plus, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Folder, Loader2, X } from 'lucide-react';
+import { FolderOpen, Plus, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Folder, Loader2, X, Download } from 'lucide-react';
 import { useStore } from '../store';
-import type { ProjectScanResult } from '../types';
+import type { ProjectScanResult, RuntimeType } from '../types';
 
 const RUNTIME_EMOJI: Record<string, string> = {
   node: '⚡', python: '🐍', docker: '🐳', uv: '🦀', go: '🔷',
@@ -13,12 +13,28 @@ export function ProjectBindingPanel() {
     projectBindings, projectBindingLoading,
     fetchProjectBindings, addProjectBinding, removeProjectBinding,
     syncProjectBinding, scanProjectBinding, runtimes,
+    installRuntime, batchInstallAll, installingRuntime, batchInstalling,
   } = useStore();
   const [showAddForm, setShowAddForm] = useState(false);
   const [pathInput, setPathInput] = useState('');
   const [scanResult, setScanResult] = useState<ProjectScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [installingRt, setInstallingRt] = useState<string | null>(null);
+
+  const handleInstallMissing = (rt: string) => {
+    setInstallingRt(rt);
+    installRuntime(rt as RuntimeType).finally(() => setInstallingRt(null));
+  };
+
+  const handleInstallAllMissing = (projectId: string) => {
+    const project = projectBindings.find(p => p.id === projectId);
+    if (!project) return;
+    const missing = project.requirements
+      .filter(req => !runtimes.find(r => r.runtime_type === req.runtime_type)?.available)
+      .map(req => ({ runtimeType: req.runtime_type as RuntimeType, version: null }));
+    if (missing.length > 0) batchInstallAll(missing);
+  };
 
   useEffect(() => {
     fetchProjectBindings();
@@ -119,22 +135,45 @@ export function ProjectBindingPanel() {
 
               {project.requirements.length > 0 ? (
                 <div className="space-y-1">
-                  {project.requirements.map((req, idx) => {
-                    const status = getVersionStatus(req.runtime_type, req.version_spec);
-                    return (
-                      <div key={`${req.runtime_type}-${idx}`} className="flex items-center gap-3 px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 text-xs">
-                        <span>{RUNTIME_EMOJI[req.runtime_type] || '⚙️'}</span>
-                        <span className="text-gray-900 dark:text-gray-100 font-medium min-w-[60px]">{req.runtime_type.toUpperCase()}</span>
-                        <span className="text-gray-500 dark:text-gray-400">{req.version_spec}</span>
-                        <span className="text-gray-300 dark:text-gray-600">→</span>
-                        <span className={status.color}>{status.text}</span>
-                        <span className="ml-auto">{status.icon}</span>
-                      </div>
-                    );
-                  })}
+                    {project.requirements.map((req, idx) => {
+                      const status = getVersionStatus(req.runtime_type, req.version_spec);
+                      const isMissing = !runtimes.find(r => r.runtime_type === req.runtime_type)?.available;
+                      const isInstalling = installingRt === req.runtime_type || (installingRuntime === req.runtime_type as RuntimeType);
+                      return (
+                        <div key={`${req.runtime_type}-${idx}`} className="flex items-center gap-3 px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 text-xs">
+                          <span>{RUNTIME_EMOJI[req.runtime_type] || '⚙️'}</span>
+                          <span className="text-gray-900 dark:text-gray-100 font-medium min-w-[60px]">{req.runtime_type.toUpperCase()}</span>
+                          <span className="text-gray-500 dark:text-gray-400">{req.version_spec}</span>
+                          <span className="text-gray-300 dark:text-gray-600">→</span>
+                          <span className={status.color}>{status.text}</span>
+                          {isMissing ? (
+                            <button
+                              onClick={() => handleInstallMissing(req.runtime_type)}
+                              disabled={isInstalling}
+                              className="ml-auto flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white rounded text-xs transition-all"
+                            >
+                              {isInstalling ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
+                              安装
+                            </button>
+                          ) : (
+                            <span className="ml-auto">{status.icon}</span>
+                          )}
+                        </div>
+                      );
+                    })}
                 </div>
               ) : (
                 <p className="text-xs text-gray-400">未检测到运行时需求</p>
+              )}
+              {project.requirements.some(req => !runtimes.find(r => r.runtime_type === req.runtime_type)?.available) && (
+                <button
+                  onClick={() => handleInstallAllMissing(project.id)}
+                  disabled={batchInstalling}
+                  className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 border-2 border-dashed border-purple-400 hover:border-purple-500 text-purple-600 hover:text-purple-700 disabled:opacity-50 rounded-lg text-xs transition-all"
+                >
+                  {batchInstalling ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                  一键补齐本项目缺失运行时
+                </button>
               )}
             </div>
           ))}

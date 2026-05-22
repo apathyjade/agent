@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { RuntimeInfo, RuntimeType, RuntimeVersion, InstallProgress, BoundProject, ProjectScanResult, HealthCheckItem, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult } from '../types';
+import type { RuntimeInfo, RuntimeType, RuntimeVersion, InstallProgress, BoundProject, ProjectScanResult, HealthCheckItem, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, VersionManager, DiskUsageItem } from '../types';
 import * as api from '../api/tauri';
 import { listen } from '@tauri-apps/api/event';
 
@@ -65,6 +65,23 @@ export interface RuntimeSlice {
 
   fetchPathConflicts: () => Promise<void>;
   batchInstallAll: (installs: { runtimeType: string; version: string | null }[]) => Promise<void>;
+
+  // ── Version Manager Integration ──
+
+  managers: Record<string, VersionManager[]>;
+  activeManagers: Record<string, string>;
+  managersLoading: boolean;
+  fetchManagers: (rt: string) => Promise<void>;
+  fetchAllManagers: () => Promise<void>;
+  setManager: (rt: string, managerId: string) => Promise<void>;
+  installManagerTool: (managerId: string, downloadUrl: string) => Promise<string>;
+
+  // ── Disk Usage ──
+
+  diskUsage: DiskUsageItem[];
+  diskUsageLoading: boolean;
+
+  fetchDiskUsage: () => Promise<void>;
 }
 
 export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice> = (set, _get) => ({
@@ -84,6 +101,11 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
   pathConflicts: [],
   batchInstalling: false,
   batchInstallResults: [],
+  managers: {},
+  activeManagers: {},
+  managersLoading: false,
+  diskUsage: [],
+  diskUsageLoading: false,
 
   fetchRuntimes: async () => {
     set({ runtimeLoading: true, runtimeError: null });
@@ -319,6 +341,67 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
       set({ runtimes });
     } catch (err) {
       set({ batchInstalling: false, runtimeError: String(err) });
+    }
+  },
+
+  // ── Version Manager Integration ──
+
+  fetchManagers: async (rt) => {
+    set({ managersLoading: true });
+    try {
+      const managers = await api.getVersionManagers(rt);
+      set((state) => ({
+        managersLoading: false,
+        managers: { ...state.managers, [rt]: managers },
+      }));
+    } catch {
+      set({ managersLoading: false });
+    }
+  },
+
+  fetchAllManagers: async () => {
+    set({ managersLoading: true });
+    try {
+      const allRts = ['node', 'python', 'go', 'rust', 'java', 'docker', 'deno', 'bun', 'ruby', 'uv'];
+      const results: Record<string, VersionManager[]> = {};
+      for (const rt of allRts) {
+        results[rt] = await api.getVersionManagers(rt);
+      }
+      set({ managers: results, managersLoading: false });
+    } catch {
+      set({ managersLoading: false });
+    }
+  },
+
+  setManager: async (rt, managerId) => {
+    try {
+      await api.setActiveManager(rt, managerId);
+      set((state) => ({
+        activeManagers: { ...state.activeManagers, [rt]: managerId },
+      }));
+    } catch (err) {
+      set({ runtimeError: String(err) });
+    }
+  },
+
+  installManagerTool: async (managerId, downloadUrl) => {
+    try {
+      const result = await api.installManagerTool(managerId, downloadUrl);
+      return result;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // ── Disk Usage ──
+
+  fetchDiskUsage: async () => {
+    set({ diskUsageLoading: true });
+    try {
+      const usage = await api.getRuntimesDiskUsage();
+      set({ diskUsage: usage, diskUsageLoading: false });
+    } catch {
+      set({ diskUsageLoading: false });
     }
   },
 });
