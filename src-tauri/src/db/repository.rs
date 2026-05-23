@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{BoundProjectModel, Conversation, MemoryRecord, Message, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
+use crate::db::models::{BoundProjectModel, Conversation, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -143,9 +143,70 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
             CREATE INDEX IF NOT EXISTS idx_memories_relevance ON memories(relevance DESC);
 
+            CREATE TABLE IF NOT EXISTS personas (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                emoji TEXT NOT NULL DEFAULT '🧑‍💻',
+                description TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL,
+                temperature REAL NOT NULL DEFAULT 0.3,
+                response_style TEXT NOT NULL DEFAULT 'concise',
+                model_provider TEXT NOT NULL DEFAULT '',
+                model_name TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS persona_memories (
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                PRIMARY KEY (persona_id, memory_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS persona_projects (
+                persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                project_path TEXT NOT NULL,
+                auto_select INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (persona_id, project_path)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
             ",
         )?;
+
+        // FTS5 virtual table for full-text search on memories (content + tags)
+        // Uses external content model — indexes only, data lives in memories table.
+        // unicode61 tokenizer handles both English and CJK characters.
+        conn.execute_batch(
+            "
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                content, tags,
+                content='memories',
+                content_rowid='rowid',
+                tokenize='unicode61'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, content, tags)
+                VALUES (new.rowid, new.content, new.tags);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+                VALUES ('delete', old.rowid, old.content, old.tags);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+                VALUES ('delete', old.rowid, old.content, old.tags);
+                INSERT INTO memories_fts(rowid, content, tags)
+                VALUES (new.rowid, new.content, new.tags);
+            END;
+            ",
+        )?;
+
         Ok(())
     }
 
@@ -206,6 +267,21 @@ impl Database {
             )?;
         }
 
+        // Migration v4: rebuild FTS5 index if existing memories haven't been indexed yet.
+        // The FTS table was just created in init_tables (or already existed from a prior run).
+        // Check if the FTS index is empty while the memories table has rows.
+        let mem_count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .unwrap_or(0);
+        if mem_count > 0 {
+            let fts_count: i32 = conn
+                .query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get(0))
+                .unwrap_or(0);
+            if fts_count == 0 {
+                conn.execute_batch("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")?;
+            }
+        }
+
         Ok(())
     }
 
@@ -241,6 +317,7 @@ impl Database {
     pub fn delete_conversation(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("request_ctx:{}", id)])?;
         Ok(())
     }
 
@@ -738,45 +815,91 @@ impl Database {
         Ok(memories)
     }
 
-    /// Search memories by query keywords in content and tags.
+    /// Sanitize user input for safe use in FTS5 MATCH queries.
+    /// Removes FTS5 operator characters and reserved keywords to prevent syntax errors.
+    fn sanitize_fts_query(input: &str) -> String {
+        let cleaned: String = input
+            .chars()
+            .filter(|c| !matches!(c, '"' | '(' | ')' | '*' | '^' | '~' | ':' | '+' | '-'))
+            .collect();
+
+        let tokens: Vec<&str> = cleaned
+            .split_whitespace()
+            .filter(|t| {
+                if t.is_empty() {
+                    return false;
+                }
+                // Filter out FTS5 reserved keywords (case-insensitive)
+                !matches!(
+                    t.to_uppercase().as_str(),
+                    "AND" | "OR" | "NOT" | "NEAR"
+                )
+            })
+            .collect();
+
+        if tokens.is_empty() {
+            return String::new();
+        }
+
+        tokens.join(" AND ")
+    }
+
+    /// Search memories by FTS5 full-text match on content and tags.
     pub fn search_memories(&self, query: &str, memory_type: Option<&str>, scope: Option<&str>) -> Result<Vec<MemoryRecord>> {
-        let like = format!("%{}%", query);
+        let fts_query = Self::sanitize_fts_query(query);
+
+        if fts_query.is_empty() {
+            // Fallback: return all memories (no FTS filtering) with optional type/scope filters
+            let mut sql = String::from(
+                "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
+                 FROM memories WHERE 1=1"
+            );
+            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+            if let Some(t) = memory_type {
+                sql.push_str(" AND memory_type = ?1");
+                param_values.push(Box::new(t.to_string()));
+            }
+            if let Some(s) = scope {
+                let idx = if param_values.is_empty() { 1 } else { 2 };
+                sql.push_str(&format!(" AND scope LIKE ?{}", idx));
+                param_values.push(Box::new(format!("{}%", s)));
+            }
+
+            sql.push_str(" ORDER BY relevance DESC, last_accessed_at DESC");
+
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+            let memories = stmt.query_map(params_refs.as_slice(), Self::map_memory_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            return Ok(memories);
+        }
+
+        // FTS5 full-text search: content + tags columns are indexed
         let mut sql = String::from(
-            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
-             FROM memories WHERE (content LIKE ?1 OR tags LIKE ?1)"
+            "SELECT m.id, m.content, m.memory_type, m.scope, m.source, m.relevance, m.tags, m.created_at, m.updated_at, m.last_accessed_at, m.access_count
+             FROM memories m
+             JOIN memories_fts fts ON m.rowid = fts.rowid
+             WHERE memories_fts MATCH ?1"
         );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(like.clone())];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(fts_query)];
 
-        if let Some(_t) = memory_type {
-            sql.push_str(" AND memory_type = ?2");
-            param_values.push(Box::new(_t.to_string()));
+        if let Some(t) = memory_type {
+            sql.push_str(" AND m.memory_type = ?2");
+            param_values.push(Box::new(t.to_string()));
         }
-        if let Some(_s) = scope {
-            // Use ?3 or ?4 depending on count
+        if let Some(s) = scope {
             let idx = param_values.len() + 1;
-            sql.push_str(&format!(" AND scope LIKE ?{}", idx));
-            param_values.push(Box::new(format!("{}%", _s)));
+            sql.push_str(&format!(" AND m.scope LIKE ?{}", idx));
+            param_values.push(Box::new(format!("{}%", s)));
         }
 
-        sql.push_str(" ORDER BY relevance DESC, last_accessed_at DESC");
+        sql.push_str(" ORDER BY m.relevance DESC, m.last_accessed_at DESC");
 
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-        let memories = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok(MemoryRecord {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                memory_type: row.get(2)?,
-                scope: row.get(3)?,
-                source: row.get(4)?,
-                relevance: row.get(5)?,
-                tags: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                last_accessed_at: row.get(9)?,
-                access_count: row.get(10)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        let memories = stmt.query_map(params_refs.as_slice(), Self::map_memory_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(memories)
     }
 
@@ -806,56 +929,191 @@ impl Database {
         Ok(())
     }
 
-    /// Retrieve memories that are relevant to a given context string.
-    /// Simple keyword-based: searches memory content for words from the context.
+    /// Retrieve memories relevant to a context string using FTS5 full-text search.
+    /// The entire context is sanitized and passed as a single FTS5 MATCH query.
     pub fn retrieve_relevant(&self, context: &str, limit: i64) -> Result<Vec<MemoryRecord>> {
-        // Extract keywords from context (words longer than 2 chars)
-        let keywords: Vec<&str> = context
-            .split_whitespace()
-            .filter(|w| w.len() > 2)
-            .collect();
-
-        if keywords.is_empty() {
+        if context.trim().is_empty() {
             return Ok(vec![]);
         }
 
-        // Build a query that OR-matches any keyword in content or tags
-        let like_clauses: Vec<String> = keywords.iter().enumerate().map(|(i, _)| {
-            format!("(content LIKE ?{} OR tags LIKE ?{})", i + 1, i + 1)
-        }).collect();
+        let fts_query = Self::sanitize_fts_query(context);
+        if fts_query.is_empty() {
+            return Ok(vec![]);
+        }
 
         let sql = format!(
-            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
-             FROM memories WHERE ({}) AND scope = 'global'
-             ORDER BY relevance DESC, access_count DESC, last_accessed_at DESC
-             LIMIT ?{}",
-            like_clauses.join(" OR "),
-            keywords.len() + 1,
+            "SELECT m.id, m.content, m.memory_type, m.scope, m.source, m.relevance, m.tags, m.created_at, m.updated_at, m.last_accessed_at, m.access_count
+             FROM memories m
+             JOIN memories_fts fts ON m.rowid = fts.rowid
+             WHERE memories_fts MATCH ?1
+               AND m.scope = 'global'
+             ORDER BY m.relevance DESC, m.access_count DESC, m.last_accessed_at DESC
+             LIMIT ?2"
         );
 
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for kw in &keywords {
-            param_values.push(Box::new(format!("%{}%", kw)));
-        }
-        param_values.push(Box::new(limit));
-
         let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-        let memories = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok(MemoryRecord {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                memory_type: row.get(2)?,
-                scope: row.get(3)?,
-                source: row.get(4)?,
-                relevance: row.get(5)?,
-                tags: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                last_accessed_at: row.get(9)?,
-                access_count: row.get(10)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        let memories = stmt.query_map(params![fts_query, limit], Self::map_memory_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(memories)
+    }
+
+    /// Helper to map a SQL row to a MemoryRecord (shared by search/retrieve paths).
+    fn map_memory_row(row: &rusqlite::Row) -> rusqlite::Result<MemoryRecord> {
+        Ok(MemoryRecord {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            memory_type: row.get(2)?,
+            scope: row.get(3)?,
+            source: row.get(4)?,
+            relevance: row.get(5)?,
+            tags: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            last_accessed_at: row.get(9)?,
+            access_count: row.get(10)?,
+        })
+    }
+
+    fn map_persona_row(row: &rusqlite::Row) -> rusqlite::Result<PersonaRecord> {
+        Ok(PersonaRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            title: row.get(2)?,
+            emoji: row.get(3)?,
+            description: row.get(4)?,
+            system_prompt: row.get(5)?,
+            temperature: row.get(6)?,
+            response_style: row.get(7)?,
+            model_provider: row.get(8)?,
+            model_name: row.get(9)?,
+            is_default: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
+        })
+    }
+
+    // ── Persona CRUD ──
+
+    pub fn insert_persona(&self, p: &PersonaRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO personas (id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.created_at, p.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_personas(&self) -> Result<Vec<PersonaRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
+             FROM personas ORDER BY name ASC"
+        )?;
+        let personas = stmt.query_map([], Self::map_persona_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(personas)
+    }
+
+    pub fn get_persona(&self, id: &str) -> Result<Option<PersonaRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
+             FROM personas WHERE id = ?1"
+        )?;
+        let p = stmt.query_row(params![id], Self::map_persona_row).optional()?;
+        Ok(p)
+    }
+
+    pub fn get_persona_by_name(&self, name: &str) -> Result<Option<PersonaRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
+             FROM personas WHERE name = ?1"
+        )?;
+        let p = stmt.query_row(params![name], Self::map_persona_row).optional()?;
+        Ok(p)
+    }
+
+    pub fn get_default_persona(&self) -> Result<Option<PersonaRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
+             FROM personas WHERE is_default = 1 LIMIT 1"
+        )?;
+        let p = stmt.query_row([], Self::map_persona_row).optional()?;
+        Ok(p)
+    }
+
+    pub fn update_persona(&self, p: &PersonaRecord) -> Result<()> {
+        self.conn.execute(
+            "UPDATE personas SET name=?2, title=?3, emoji=?4, description=?5, system_prompt=?6, temperature=?7, response_style=?8, model_provider=?9, model_name=?10, is_default=?11, updated_at=?12
+             WHERE id=?1",
+            params![p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_persona(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM personas WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn clear_persona_default(&self) -> Result<()> {
+        self.conn.execute("UPDATE personas SET is_default = 0 WHERE is_default = 1", [])?;
+        Ok(())
+    }
+
+    // ── Persona-Memory relations ──
+
+    pub fn link_memory_to_persona(&self, persona_id: &str, memory_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO persona_memories (persona_id, memory_id) VALUES (?1, ?2)",
+            params![persona_id, memory_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn unlink_memory_from_persona(&self, persona_id: &str, memory_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM persona_memories WHERE persona_id = ?1 AND memory_id = ?2",
+            params![persona_id, memory_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_persona_memory_ids(&self, persona_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT memory_id FROM persona_memories WHERE persona_id = ?1"
+        )?;
+        let ids = stmt.query_map(params![persona_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    // ── Persona-Project bindings ──
+
+    pub fn bind_persona_to_project(&self, persona_id: &str, project_path: &str, auto_select: bool) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO persona_projects (persona_id, project_path, auto_select) VALUES (?1, ?2, ?3)",
+            params![persona_id, project_path, auto_select],
+        )?;
+        Ok(())
+    }
+
+    pub fn unbind_persona_from_project(&self, persona_id: &str, project_path: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM persona_projects WHERE persona_id = ?1 AND project_path = ?2",
+            params![persona_id, project_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_personas_for_project(&self, project_path: &str) -> Result<Vec<PersonaRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.created_at, p.updated_at
+             FROM personas p
+             JOIN persona_projects pp ON p.id = pp.persona_id
+             WHERE pp.project_path = ?1
+             ORDER BY pp.auto_select DESC, p.name ASC"
+        )?;
+        let personas = stmt.query_map(params![project_path], Self::map_persona_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(personas)
     }
 }

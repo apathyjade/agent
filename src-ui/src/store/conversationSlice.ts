@@ -14,6 +14,7 @@ export interface ConversationSlice {
   updateConversationTitle: (id: string, title: string) => Promise<void>;
   updateConversationModel: (id: string, modelId: string) => Promise<void>;
   clearConversation: () => Promise<void>;
+  newChat: () => void;
   sendMessage: (content: string) => Promise<void>;
 }
 
@@ -54,6 +55,11 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
       const conv = await api.getConversation(id);
       if (conv) {
         const messages = await api.getMessages(id);
+        // Load persisted request context for this conversation
+        const ctxJson = await api.getRequestContext(id);
+        if (ctxJson) {
+          try { (get() as any).setSessionMessages(JSON.parse(ctxJson)); } catch { /* ignore parse errors */ }
+        }
         set({ currentConversation: conv, messages, loading: false } as any);
       }
     } catch (err) {
@@ -117,6 +123,10 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
     } catch (err) {
       set({ error: String(err) } as any);
     }
+  },
+
+  newChat: () => {
+    set({ currentConversation: null, messages: [] });
   },
 
   sendMessage: async (content) => {

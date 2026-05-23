@@ -419,6 +419,59 @@ export interface UpdateMemoryParams {
   tags?: string[] | null;
 }
 
+// ── Persona System Types ──
+
+/** A virtual persona with its own identity, memories, and config */
+export interface PersonaInfo {
+  id: string;
+  name: string;
+  title: string;
+  emoji: string;
+  description: string;
+  system_prompt: string;
+  temperature: number;
+  response_style: string;
+  model_provider: string;
+  model_name: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Parameters for creating a new persona */
+export interface CreatePersonaParams {
+  name: string;
+  title?: string;
+  emoji?: string;
+  description?: string;
+  system_prompt: string;
+  temperature?: number;
+  response_style?: string;
+  model_provider?: string;
+  model_name?: string;
+  is_default?: boolean;
+}
+
+/** Parameters for updating a persona */
+export interface UpdatePersonaParams {
+  name?: string;
+  title?: string;
+  emoji?: string;
+  description?: string;
+  system_prompt?: string;
+  temperature?: number;
+  response_style?: string;
+  model_provider?: string;
+  model_name?: string;
+  is_default?: boolean;
+}
+
+/// Result of persona resolution
+export interface ResolveResult {
+  persona: PersonaInfo;
+  mode: 'manual' | 'auto' | 'default';
+}
+
 /** A version manager tool for a runtime type */
 export interface VersionManager {
   id: string;

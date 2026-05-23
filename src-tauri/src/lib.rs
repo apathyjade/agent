@@ -9,6 +9,7 @@ pub mod error;
 pub mod keychain;
 pub mod mcp;
 pub mod memory;
+pub mod persona;
 pub mod pipeline;
 pub mod skills;
 pub mod state;
@@ -34,10 +35,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle_clone.state::<AppState>();
 
-                // 0. Seed built-in memories (no-op if already seeded)
+                // 0. Seed built-in memories and personas (no-op if already seeded)
                 {
                     if let Err(e) = state.memory.seed_defaults().await {
                         log::error!("Failed to seed memories: {}", e);
+                    }
+                }
+                {
+                    if let Err(e) = state.persona.seed_defaults().await {
+                        log::error!("Failed to seed personas: {}", e);
                     }
                 }
 
@@ -83,6 +89,8 @@ pub fn run() {
             commands::send_message,
             commands::send_message_stream,
             commands::get_messages,
+            commands::save_request_context,
+            commands::get_request_context,
             commands::get_models,
             commands::add_model,
             commands::remove_model,
@@ -168,6 +176,17 @@ pub fn run() {
             commands::search_memories,
             commands::update_memory,
             commands::delete_memory,
+            commands::create_persona,
+            commands::list_personas,
+            commands::get_persona,
+            commands::update_persona,
+            commands::delete_persona,
+            commands::resolve_persona,
+            commands::link_memory_to_persona,
+            commands::unlink_memory_from_persona,
+            commands::get_persona_memories,
+            commands::bind_persona_project,
+            commands::unbind_persona_project,
             commands_provider::list_providers_cmd,
             commands_provider::setup_provider,
             commands_provider::update_provider_config,

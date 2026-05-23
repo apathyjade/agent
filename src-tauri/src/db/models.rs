@@ -1,5 +1,23 @@
 ﻿use serde::{Deserialize, Serialize};
 
+/// A virtual persona — a named identity with its own system prompt, memories, and tool config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonaRecord {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub emoji: String,
+    pub description: String,
+    pub system_prompt: String,
+    pub temperature: f64,
+    pub response_style: String,
+    pub model_provider: String,
+    pub model_name: String,
+    pub is_default: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,

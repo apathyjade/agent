@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams } from '../types';
+import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult } from '../types';
 
 export async function createConversation(
   title: string,
@@ -68,6 +68,10 @@ export async function sendMessageStream(
 
 export async function getMessages(conversationId: string): Promise<Message[]> {
   return invoke('get_messages', { conversationId });
+}
+
+export async function getRequestContext(conversationId: string): Promise<string | null> {
+  return invoke('get_request_context', { conversationId });
 }
 
 export async function listProviders(): Promise<ProviderStatus[]> {
@@ -448,6 +452,60 @@ export async function installManagerTool(managerId: string, downloadUrl: string)
 
 export async function getRuntimesDiskUsage(): Promise<DiskUsageItem[]> {
   return invoke('get_runtime_disk_usage');
+}
+
+// ── Persona Commands ──
+
+export async function createPersona(params: CreatePersonaParams): Promise<PersonaInfo> {
+  return invoke('create_persona', { params });
+}
+
+export async function listPersonas(): Promise<PersonaInfo[]> {
+  return invoke('list_personas');
+}
+
+export async function getPersona(id: string): Promise<PersonaInfo> {
+  return invoke('get_persona', { id });
+}
+
+export async function updatePersona(id: string, params: UpdatePersonaParams): Promise<PersonaInfo> {
+  return invoke('update_persona', { id, params });
+}
+
+export async function deletePersona(id: string): Promise<void> {
+  return invoke('delete_persona', { id });
+}
+
+export async function resolvePersona(
+  message: string,
+  projectPath?: string,
+  activePersonaId?: string,
+): Promise<ResolveResult> {
+  return invoke('resolve_persona', {
+    message,
+    projectPath: projectPath ?? null,
+    activePersonaId: activePersonaId ?? null,
+  });
+}
+
+export async function linkMemoryToPersona(personaId: string, memoryId: string): Promise<void> {
+  return invoke('link_memory_to_persona', { personaId, memoryId });
+}
+
+export async function unlinkMemoryFromPersona(personaId: string, memoryId: string): Promise<void> {
+  return invoke('unlink_memory_from_persona', { personaId, memoryId });
+}
+
+export async function getPersonaMemories(personaId: string): Promise<MemoryInfo[]> {
+  return invoke('get_persona_memories', { personaId });
+}
+
+export async function bindPersonaProject(personaId: string, projectPath: string, autoSelect?: boolean): Promise<void> {
+  return invoke('bind_persona_project', { personaId, projectPath, autoSelect: autoSelect ?? null });
+}
+
+export async function unbindPersonaProject(personaId: string, projectPath: string): Promise<void> {
+  return invoke('unbind_persona_project', { personaId, projectPath });
 }
 
 // ── Memory Commands ──

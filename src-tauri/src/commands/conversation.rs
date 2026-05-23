@@ -1,5 +1,5 @@
 use chrono::Utc;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::agent::r#loop::AgentLoop;
@@ -7,6 +7,7 @@ use crate::api::types::{Message, MessageRole, ToolCall};
 use crate::commands::{StreamChunk, ToolCallEvent};
 use crate::db::models::{Conversation as DbConversation, Message as DbMessage};
 use crate::error::{AppError, Result};
+use crate::persona::PersonaResolution;
 use crate::state::AppState;
 
 /// Default system prompt used when user hasn't configured one.
@@ -144,6 +145,31 @@ pub async fn send_message(
         tool_call_id: None,
     });
 
+    // Resolve and inject persona context
+    let project_dir = state.app_handle.path().resource_dir().ok()
+        .and_then(|p| p.parent().map(|pp| pp.to_string_lossy().to_string()));
+    let active_persona = state.persona.resolve(
+        &content,
+        project_dir.as_deref(),
+        None,
+    ).await;
+    if !matches!(active_persona, PersonaResolution::None) {
+        let persona = match &active_persona {
+            PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => p,
+            _ => unreachable!(),
+        };
+        api_messages.push(Message {
+            id: None,
+            role: MessageRole::System,
+            content: format!(
+                "Your current role: {} {}\n{}",
+                persona.emoji, persona.title, persona.system_prompt
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
     // Inject relevant memories from the memory system
     if let Ok(Some(memory_prompt)) = state.memory.build_context_prompt(&content, 5).await {
         api_messages.push(Message {
@@ -249,6 +275,31 @@ pub async fn send_message_stream(
         tool_call_id: None,
     });
 
+    // Resolve and inject persona context
+    let project_dir = state.app_handle.path().resource_dir().ok()
+        .and_then(|p| p.parent().map(|pp| pp.to_string_lossy().to_string()));
+    let active_persona = state.persona.resolve(
+        &content,
+        project_dir.as_deref(),
+        None,
+    ).await;
+    if !matches!(active_persona, PersonaResolution::None) {
+        let persona = match &active_persona {
+            PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => p,
+            _ => unreachable!(),
+        };
+        api_messages.push(Message {
+            id: None,
+            role: MessageRole::System,
+            content: format!(
+                "Your current role: {} {}\n{}",
+                persona.emoji, persona.title, persona.system_prompt
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
     // Inject relevant memories from the memory system
     if let Ok(Some(memory_prompt)) = state.memory.build_context_prompt(&content, 5).await {
         api_messages.push(Message {
@@ -277,6 +328,14 @@ pub async fn send_message_stream(
             tool_call_id: m.tool_call_id.clone(),
         }
     }));
+
+    // Emit debug event + persist to DB for session messages
+    let messages_json = serde_json::to_string(&api_messages).unwrap_or_default();
+    let _ = app_handle.emit("debug_messages", serde_json::to_value(&api_messages).unwrap_or_default());
+    {
+        let db = state.db.lock().await;
+        let _ = db.set_setting(&format!("request_ctx:{}", conversation_id), &messages_json);
+    }
 
     let context_window = state.config.lock().await
         .get_model(&conv.model_id)
@@ -373,4 +432,23 @@ pub async fn send_message_stream(
 pub async fn get_messages(state: State<'_, AppState>, conversation_id: String) -> Result<Vec<DbMessage>> {
     let db = state.db.lock().await;
     db.get_messages(&conversation_id)
+}
+
+#[tauri::command]
+pub async fn save_request_context(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    messages_json: String,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.set_setting(&format!("request_ctx:{}", conversation_id), &messages_json)
+}
+
+#[tauri::command]
+pub async fn get_request_context(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Option<String>> {
+    let db = state.db.lock().await;
+    db.get_setting(&format!("request_ctx:{}", conversation_id))
 }

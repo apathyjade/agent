@@ -10,6 +10,7 @@ import { type PromptSlice, createPromptSlice } from './promptSlice';
 import { type SkillSlice, createSkillSlice } from './skillSlice';
 import { type McpSlice, createMcpSlice } from './mcpSlice';
 import { type MemorySlice, createMemorySlice } from './memorySlice';
+import { type PersonaSlice, createPersonaSlice } from './personaSlice';
 import { type RuntimeSlice, createRuntimeSlice } from './runtimeSlice';
 import { type WorkflowSlice, createWorkflowSlice } from './workflowSlice';
 
@@ -20,7 +21,7 @@ export interface StreamSlice {
   sendMessageStream: (content: string, toolsEnabled?: boolean) => Promise<void>;
 }
 
-export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & RuntimeSlice & WorkflowSlice & StreamSlice;
+export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & StreamSlice;
 
 export const useStore = create<AppState>()((set, get, store) => ({
   ...createUISlice(set, get, store),
@@ -31,6 +32,7 @@ export const useStore = create<AppState>()((set, get, store) => ({
   ...createSkillSlice(set, get, store),
   ...createMcpSlice(set, get, store),
   ...createMemorySlice(set, get, store),
+  ...createPersonaSlice(set, get, store),
   ...createRuntimeSlice(set, get, store),
   ...createWorkflowSlice(set, get, store),
 

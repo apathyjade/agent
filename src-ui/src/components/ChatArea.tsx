@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
-import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle, ArrowDown } from 'lucide-react';
+import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle, ArrowDown, Code, X } from 'lucide-react';
 import { Select } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Row, Col } from '@jelper/component';
 import { useStore } from '../store';
 import { MessageBubble } from './MessageBubble';
+import { CodeBlock } from './CodeBlock';
 import type { Message } from '../types';
 
 const StreamingMessage = memo(function StreamingMessage({ content }: { content: string }) {
@@ -50,10 +51,13 @@ export function ChatArea() {
   const models = useStore((s) => s.models);
   const updateConversationModel = useStore((s) => s.updateConversationModel);
   const setError = useStore((s) => s.setError);
+  const lastSessionMessages = useStore((s) => s.lastSessionMessages);
+  const setSessionMessages = useStore((s) => s.setSessionMessages);
 
   const [input, setInput] = useState('');
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -93,6 +97,17 @@ export function ChatArea() {
       }
     };
   }, [messages.length, streamingContent, activeToolCalls.length, isNearBottom, scrollToBottom]);
+
+  // Listen for debug_messages event from backend
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<Array<Record<string, unknown>>>('debug_messages', (event) => {
+        setSessionMessages(event.payload);
+      }).then(fn => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     if (inputRef.current && !isStreaming) {
@@ -155,6 +170,19 @@ export function ChatArea() {
             {currentConversation.system_prompt && (
               <span className="px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs rounded-lg">提示词已加载</span>
             )}
+            {lastSessionMessages && (
+              <button
+                onClick={() => setShowDebugPanel(!showDebugPanel)}
+                className={`p-1.5 rounded-lg transition-all ${
+                  showDebugPanel
+                    ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400'
+                    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                }`}
+                title="查看本次请求的上下文"
+              >
+                <Code size={14} />
+              </button>
+            )}
             {isStreaming && (
               <Row $align="center" $gap={8} className="text-purple-600 text-sm">
                 <Loader2 size={14} className="animate-spin" />
@@ -164,6 +192,27 @@ export function ChatArea() {
           </Row>
         </Row>
       </Col.Item>
+
+      {showDebugPanel && lastSessionMessages && (
+        <Col.Item $fixed>
+          <div className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+            <div className="max-w-3xl mx-auto px-6 py-3">
+              <Row $justify="space-between" $align="center" className="mb-2">
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                  请求上下文 ({lastSessionMessages.length} 条消息)
+                </span>
+                <button
+                  onClick={() => setShowDebugPanel(false)}
+                  className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </Row>
+              <CodeBlock language="json" value={JSON.stringify(lastSessionMessages, null, 2)} />
+            </div>
+          </div>
+        </Col.Item>
+      )}
 
       <Col.Item $scale={1}>
         <div 
@@ -239,8 +288,8 @@ export function ChatArea() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="输入消息... (Shift+Enter 换行)"
-                className="w-full bg-transparent px-4 py-3 pr-14 resize-none focus:outline-none min-h-[56px] max-h-[200px] text-sm dark:text-gray-100 dark:placeholder-gray-400"
-                rows={1}
+                className="w-full bg-transparent px-4 py-3 pr-14 resize-none focus:outline-none min-h-[80px] max-h-[240px] text-sm dark:text-gray-100 dark:placeholder-gray-400"
+                rows={2}
                 disabled={isStreaming}
               />
               <button

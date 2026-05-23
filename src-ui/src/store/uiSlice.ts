@@ -6,7 +6,7 @@ export interface Toast {
   message: string;
 }
 
-export type AppView = 'chat' | 'skill-manager' | 'mcp-manager' | 'workflows' | 'runtime-manager' | 'memory-manager' | 'settings';
+export type AppView = 'chat' | 'skill-manager' | 'mcp-manager' | 'workflows' | 'runtime-manager' | 'memory-manager' | 'persona-manager' | 'settings';
 
 export interface UISlice {
   loading: boolean;
@@ -18,6 +18,7 @@ export interface UISlice {
   toasts: Toast[];
   currentView: AppView;
   sidebarOpen: boolean;
+  lastSessionMessages: Array<Record<string, unknown>> | null;
 
   setError: (error: string | null) => void;
   toggleDarkMode: () => void;
@@ -30,6 +31,7 @@ export interface UISlice {
   setLoading: (loading: boolean) => void;
   setCurrentView: (view: AppView) => void;
   setSidebarOpen: (open: boolean) => void;
+  setSessionMessages: (messages: Array<Record<string, unknown>> | null) => void;
 }
 
 export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) => ({
@@ -42,6 +44,7 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) 
   toasts: [],
   currentView: 'chat',
   sidebarOpen: true,
+  lastSessionMessages: null,
 
   setError: (error) => set({ error }),
 
@@ -91,4 +94,5 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) 
   setLoading: (loading) => set({ loading }),
   setCurrentView: (view) => set({ currentView: view }),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  setSessionMessages: (messages) => set({ lastSessionMessages: messages }),
 });

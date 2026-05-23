@@ -11,6 +11,7 @@ use crate::environment::RuntimeManager;
 use crate::environment::registry::RuntimeRegistry;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
+use crate::persona::PersonaManager;
 use crate::skills::SkillManager;
 use crate::tools::registry::ToolRegistry;
 
@@ -22,6 +23,7 @@ pub struct AppState {
     pub tools: Arc<Mutex<ToolRegistry>>,
     pub skills: Arc<Mutex<SkillManager>>,
     pub memory: MemoryManager,
+    pub persona: PersonaManager,
     pub mcp: McpServerManager,
     pub runtime_manager: Arc<RuntimeManager>,
     pub runtime_registry: Arc<RuntimeRegistry>,
@@ -41,6 +43,7 @@ impl AppState {
 
         let skills = SkillManager::new(db_arc.clone(), tools_arc.clone());
         let memory = MemoryManager::new(db_arc.clone());
+        let persona = PersonaManager::new(db_arc.clone());
 
         // Runtime manager: stores runtimes at configured path (or default)
         let runtime_dir = match &config.runtime_install_dir {
@@ -69,6 +72,7 @@ impl AppState {
             tools: tools_arc,
             skills: Arc::new(Mutex::new(skills)),
             memory,
+            persona,
             mcp,
             runtime_manager,
             runtime_registry,

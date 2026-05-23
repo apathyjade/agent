@@ -1,4 +1,4 @@
-import { MessageSquare, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen } from 'lucide-react';
+import { MessageSquare, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen, Users } from 'lucide-react';
 import { Tooltip } from 'antd';
 import { Col } from '@jelper/component';
 import { useStore } from '../store';
@@ -32,6 +32,11 @@ export function ModuleBar() {
 
   const handleMemoryClick = () => {
     setCurrentView('memory-manager');
+    setSidebarOpen(false);
+  };
+
+  const handlePersonaClick = () => {
+    setCurrentView('persona-manager');
     setSidebarOpen(false);
   };
 
@@ -83,6 +88,12 @@ export function ModuleBar() {
               <button onClick={handleMemoryClick} className={btnClass(currentView === 'memory-manager')}>
                 {activeIndicator(currentView === 'memory-manager')}
                 <BookOpen size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="虚拟人管理" placement="right">
+              <button onClick={handlePersonaClick} className={btnClass(currentView === 'persona-manager')}>
+                {activeIndicator(currentView === 'persona-manager')}
+                <Users size={18} />
               </button>
             </Tooltip>
             <Tooltip title="运行时管理" placement="right">
