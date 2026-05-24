@@ -107,6 +107,7 @@ pub async fn send_message(
     conversation_id: String,
     content: String,
     tools_enabled: Option<bool>,
+    active_persona_id: Option<String>,
 ) -> Result<DbMessage> {
     let db = state.db.lock().await;
 
@@ -151,7 +152,7 @@ pub async fn send_message(
     let active_persona = state.persona.resolve(
         &content,
         project_dir.as_deref(),
-        None,
+        active_persona_id.as_deref(),
     ).await;
     if !matches!(active_persona, PersonaResolution::None) {
         let persona = match &active_persona {
@@ -214,7 +215,7 @@ pub async fn send_message(
     if let Some(choice) = response.choices.first() {
         let assistant_msg = DbMessage {
             id: Uuid::new_v4().to_string(),
-            conversation_id,
+            conversation_id: conversation_id.clone(),
             role: "assistant".to_string(),
             content: choice.message.content.clone(),
             tool_calls: None,
@@ -237,6 +238,7 @@ pub async fn send_message_stream(
     conversation_id: String,
     content: String,
     tools_enabled: Option<bool>,
+    active_persona_id: Option<String>,
 ) -> Result<String> {
     let db = state.db.lock().await;
 
@@ -281,7 +283,7 @@ pub async fn send_message_stream(
     let active_persona = state.persona.resolve(
         &content,
         project_dir.as_deref(),
-        None,
+        active_persona_id.as_deref(),
     ).await;
     if !matches!(active_persona, PersonaResolution::None) {
         let persona = match &active_persona {

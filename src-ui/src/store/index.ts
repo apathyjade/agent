@@ -1,5 +1,5 @@
 ﻿import { create } from 'zustand';
-import type { StreamChunk, Message } from '../types';
+import type { StreamChunk, Message, PersonaInfo } from '../types';
 import * as api from '../api/tauri';
 
 import { type UISlice, createUISlice } from './uiSlice';
@@ -18,10 +18,14 @@ export type { Toast } from './uiSlice';
 
 // Cross-slice method for streaming (spans messages + UI state)
 export interface StreamSlice {
-  sendMessageStream: (content: string, toolsEnabled?: boolean) => Promise<void>;
+  sendMessageStream: (content: string, toolsEnabled?: boolean, activePersonaId?: string) => Promise<void>;
 }
 
-export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & StreamSlice;
+export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & StreamSlice & {
+  activePersonaId: string | null;
+  activePersonaInfo: PersonaInfo | null;
+  setActivePersona: (info: PersonaInfo | null) => void;
+};
 
 export const useStore = create<AppState>()((set, get, store) => ({
   ...createUISlice(set, get, store),
@@ -36,8 +40,17 @@ export const useStore = create<AppState>()((set, get, store) => ({
   ...createRuntimeSlice(set, get, store),
   ...createWorkflowSlice(set, get, store),
 
+  activePersonaId: null,
+  activePersonaInfo: null,
+  setActivePersona: (info: PersonaInfo | null) => {
+    set({
+      activePersonaId: info?.id ?? null,
+      activePersonaInfo: info,
+    });
+  },
+
   // sendMessageStream spans both conversation and UI state
-  sendMessageStream: async (content: string, toolsEnabled?: boolean) => {
+  sendMessageStream: async (content: string, toolsEnabled?: boolean, activePersonaId?: string) => {
     const { currentConversation } = get();
     if (!currentConversation) return;
 
@@ -88,7 +101,8 @@ export const useStore = create<AppState>()((set, get, store) => ({
             }));
           }
         },
-        toolsEnabled
+        toolsEnabled,
+        activePersonaId,
       );
     } catch (err) {
       set({ error: String(err), loading: false, isStreaming: false });

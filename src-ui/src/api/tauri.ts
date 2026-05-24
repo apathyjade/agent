@@ -49,6 +49,7 @@ export async function sendMessageStream(
   content: string,
   onChunk: (chunk: StreamChunk) => void,
   toolsEnabled?: boolean,
+  activePersonaId?: string,
 ): Promise<string> {
   const unlisten = await listen<StreamChunk>('stream_chunk', (event) => {
     onChunk(event.payload);
@@ -59,6 +60,7 @@ export async function sendMessageStream(
       conversationId,
       content,
       toolsEnabled,
+      activePersonaId: activePersonaId ?? null,
     });
     return result;
   } finally {

@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Send, Loader2, Sparkles, Wrench, CheckCircle, XCircle, ArrowDown, Code, X } from 'lucide-react';
-import { Select } from 'antd';
+import { Select, Dropdown } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Row, Col } from '@jelper/component';
 import { useStore } from '../store';
 import { MessageBubble } from './MessageBubble';
 import { CodeBlock } from './CodeBlock';
-import type { Message } from '../types';
+import type { Message, PersonaInfo } from '../types';
 
 const StreamingMessage = memo(function StreamingMessage({ content }: { content: string }) {
   return (
@@ -58,6 +58,15 @@ export function ChatArea() {
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
+  
+  // @mention persona selection
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const personas = useStore((s) => s.personas);
+  const fetchPersonas = useStore((s) => s.fetchPersonas);
+  const activePersonaInfo = useStore((s) => s.activePersonaInfo);
+  const activePersonaId = useStore((s) => s.activePersonaId);
+  const setActivePersona = useStore((s) => s.setActivePersona);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -115,14 +124,22 @@ export function ChatArea() {
     }
   }, [currentConversation, isStreaming]);
 
+  // Pre-fetch personas on mount so @mention dropdown is ready
+  useEffect(() => {
+    if (personas.length === 0) {
+      fetchPersonas();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSend = useCallback(async () => {
     if (!input.trim() || loading || isStreaming) return;
     const content = input.trim();
     setInput('');
+    setMentionOpen(false);
     setIsNearBottom(true);
     setShowScrollButton(false);
-    await sendMessageStream(content);
-  }, [input, loading, isStreaming, sendMessageStream]);
+    await sendMessageStream(content, undefined, activePersonaId ?? undefined);
+  }, [input, loading, isStreaming, sendMessageStream, activePersonaId]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -135,6 +152,41 @@ export function ChatArea() {
     setError(null);
     handleSend();
   }, [setError, handleSend]);
+
+  // ── @mention handling ──
+  
+  const filteredPersonas = personas.filter(p =>
+    !mentionQuery || p.name.toLowerCase().includes(mentionQuery.toLowerCase())
+  );
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setInput(value);
+
+    const atIndex = value.lastIndexOf('@');
+    if (atIndex >= 0) {
+      const query = value.slice(atIndex + 1);
+      if (!query.includes(' ') && !query.includes('\n')) {
+        setMentionQuery(query);
+        setMentionOpen(true);
+        if (personas.length === 0) {
+          fetchPersonas();
+        }
+        return;
+      }
+    }
+    setMentionOpen(false);
+  }, [personas.length, fetchPersonas]);
+
+  const handleSelectPersona = useCallback((persona: PersonaInfo) => {
+    const atIndex = input.lastIndexOf('@');
+    if (atIndex >= 0) {
+      setInput(input.slice(0, atIndex));
+    }
+    setActivePersona(persona);
+    setMentionOpen(false);
+    inputRef.current?.focus();
+  }, [input, setActivePersona]);
 
   if (!currentConversation) return null;
 
@@ -281,13 +333,59 @@ export function ChatArea() {
       <Col.Item $fixed>
         <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 transition-colors">
           <div className="max-w-3xl mx-auto">
-            <div className="relative bg-gray-50 dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 focus-within:border-purple-400 dark:focus-within:border-purple-500 focus-within:ring-2 focus-within:ring-purple-100 dark:focus-within:ring-purple-900/50 transition-all">
+            {/* Active persona badge */}
+            {activePersonaInfo && (
+              <div className="mb-2 flex items-center gap-2 px-2">
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">当前虚拟人：</span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-800 text-sm">
+                  <span>{activePersonaInfo.emoji}</span>
+                  <span className="font-medium text-purple-700 dark:text-purple-300">{activePersonaInfo.name}</span>
+                  <span className="text-xs text-purple-500 dark:text-purple-400">{activePersonaInfo.title}</span>
+                  <button
+                    onClick={() => setActivePersona(null)}
+                    className="ml-1 p-0.5 rounded hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors"
+                    title="取消选择"
+                  >
+                    <X size={12} className="text-purple-400" />
+                  </button>
+                </span>
+              </div>
+            )}
+
+            <Dropdown
+              open={mentionOpen && filteredPersonas.length > 0}
+              menu={{
+                items: filteredPersonas.map((p) => ({
+                  key: p.id,
+                  label: (
+                    <div className="flex items-center gap-3 py-0.5">
+                      <span className="text-lg">{p.emoji}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm">{p.name}</span>
+                          {p.is_default && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 leading-normal">默认</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-400 truncate">{p.title}</div>
+                      </div>
+                    </div>
+                  ),
+                  onClick: () => handleSelectPersona(p),
+                })),
+                style: { maxHeight: 240, overflowY: 'auto' },
+              }}
+              placement="topLeft"
+              trigger={[]}
+            >
+              <div className="relative bg-gray-50 dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 focus-within:border-purple-400 dark:focus-within:border-purple-500 focus-within:ring-2 focus-within:ring-purple-100 dark:focus-within:ring-purple-900/50 transition-all">
+
               <textarea
                 ref={inputRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder="输入消息... (Shift+Enter 换行)"
+                placeholder="输入消息... (@ 唤起虚拟人, Shift+Enter 换行)"
                 className="w-full bg-transparent px-4 py-3 pr-14 resize-none focus:outline-none min-h-[80px] max-h-[240px] text-sm dark:text-gray-100 dark:placeholder-gray-400"
                 rows={2}
                 disabled={isStreaming}
@@ -300,6 +398,7 @@ export function ChatArea() {
                 {isStreaming ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
               </button>
             </div>
+            </Dropdown>
             <p className="text-xs text-gray-400 dark:text-gray-500 mt-2 text-center">AI 可能会产生不准确的信息，请验证重要信息</p>
           </div>
         </div>

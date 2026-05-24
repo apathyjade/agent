@@ -292,9 +292,9 @@ impl PersonaManager {
             if let Some(idx) = msg.find(sep) {
                 let candidate = &msg[..idx].trim();
                 if !candidate.is_empty() && candidate.len() <= 30 {
-                    if candidate.chars().next().map_or(false, |c| c.is_uppercase()) {
-                        return Some(candidate.to_string());
-                    }
+                if candidate.chars().next().map_or(false, |c| c.is_uppercase() || !c.is_ascii()) {
+                    return Some(candidate.to_string());
+                }
                 }
             }
         }
@@ -357,6 +357,26 @@ impl PersonaManager {
         // 1. Manual from message prefix
         if let Some(name) = Self::extract_persona_from_message(message) {
             if let Ok(Some(p)) = self.get_by_name(&name).await {
+                return PersonaResolution::Manual(p);
+            }
+        }
+
+        // 1b. Prefix matching for names without separators (e.g. CJK "张三介绍一下...")
+        //     Match the LONGEST persona name at the start of the message.
+        let trimmed = message.trim();
+        if let Ok(personas) = self.list().await {
+            let mut best: Option<PersonaInfo> = None;
+            for p in &personas {
+                let pname = p.name.trim();
+                if !pname.is_empty() && trimmed.starts_with(pname) {
+                    match &best {
+                        Some(current) if pname.len() > current.name.len() => best = Some(p.clone()),
+                        None => best = Some(p.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(p) = best {
                 return PersonaResolution::Manual(p);
             }
         }
