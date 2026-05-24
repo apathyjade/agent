@@ -168,7 +168,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
         availableVersionsLoading: false,
         versionCache: { ...state.versionCache, [rt]: versions },
       }));
-    } catch {
+    } catch (err) {
+      console.error('runtimeSlice error:', err);
       set({ availableVersionsLoading: false });
     }
   },
@@ -221,8 +222,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
     try {
       const dir = await api.getRuntimeInstallDir();
       set({ installDir: dir });
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error(err);
     }
   },
 
@@ -246,7 +247,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
     try {
       const projects = await api.listBoundProjects();
       set({ projectBindings: projects, projectBindingLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('runtimeSlice error:', err);
       set({ projectBindingLoading: false });
     }
   },
@@ -288,7 +290,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
     try {
       const result = await api.scanProject(path);
       return result;
-    } catch {
+    } catch (err) {
+      console.error(err);
       return null;
     }
   },
@@ -302,8 +305,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
       const items: HealthCheckItem[] = [];
       // For now, basic health info — will be enhanced
       set({ versionUpdates: updates, healthItems: items });
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error(err);
     }
   },
 
@@ -322,8 +325,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
     try {
       const conflicts = await api.detectPathConflicts();
       set({ pathConflicts: conflicts });
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error(err);
     }
   },
 
@@ -354,7 +357,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
         managersLoading: false,
         managers: { ...state.managers, [rt]: managers },
       }));
-    } catch {
+    } catch (err) {
+      console.error('runtimeSlice error:', err);
       set({ managersLoading: false });
     }
   },
@@ -368,7 +372,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
         results[rt] = await api.getVersionManagers(rt);
       }
       set({ managers: results, managersLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('runtimeSlice error:', err);
       set({ managersLoading: false });
     }
   },
@@ -400,7 +405,8 @@ export const createRuntimeSlice: StateCreator<RuntimeSlice, [], [], RuntimeSlice
     try {
       const usage = await api.getRuntimesDiskUsage();
       set({ diskUsage: usage, diskUsageLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('runtimeSlice error:', err);
       set({ diskUsageLoading: false });
     }
   },

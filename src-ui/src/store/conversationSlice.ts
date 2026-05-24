@@ -18,23 +18,23 @@ export interface ConversationSlice {
   sendMessage: (content: string) => Promise<void>;
 }
 
-export const createConversationSlice: StateCreator<ConversationSlice, [], [], ConversationSlice> = (set, get) => ({
+export const createConversationSlice: StateCreator<any, [], [], ConversationSlice> = (set, get) => ({
   conversations: [],
   currentConversation: null,
   messages: [],
 
   fetchConversations: async () => {
-    (get() as any).setLoading(true);
+    get().setLoading(true);
     try {
       const conversations = await api.listConversations();
-      set({ conversations, loading: false } as any);
+      set({ conversations, loading: false });
     } catch (err) {
-      set({ error: String(err), loading: false } as any);
+      set({ error: String(err), loading: false });
     }
   },
 
   createConversation: async (title, modelId, systemPrompt) => {
-    (get() as any).setLoading(true);
+    get().setLoading(true);
     try {
       const conv = await api.createConversation(title, modelId, systemPrompt);
       set((state: any) => ({
@@ -45,12 +45,12 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
         error: null,
       }));
     } catch (err) {
-      set({ error: String(err), loading: false } as any);
+      set({ error: String(err), loading: false });
     }
   },
 
   selectConversation: async (id) => {
-    (get() as any).setLoading(true);
+    get().setLoading(true);
     try {
       const conv = await api.getConversation(id);
       if (conv) {
@@ -58,17 +58,17 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
         // Load persisted request context for this conversation
         const ctxJson = await api.getRequestContext(id);
         if (ctxJson) {
-          try { (get() as any).setSessionMessages(JSON.parse(ctxJson)); } catch { /* ignore parse errors */ }
+          try { get().setSessionMessages(JSON.parse(ctxJson)); } catch (err) { console.error('Failed to parse session messages:', err); }
         }
-        set({ currentConversation: conv, messages, loading: false } as any);
+        set({ currentConversation: conv, messages, loading: false });
       }
     } catch (err) {
-      set({ error: String(err), loading: false } as any);
+      set({ error: String(err), loading: false });
     }
   },
 
   deleteConversation: async (id) => {
-    (get() as any).setLoading(true);
+    get().setLoading(true);
     try {
       await api.deleteConversation(id);
       set((state: any) => ({
@@ -78,7 +78,7 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
         loading: false,
       }));
     } catch (err) {
-      set({ error: String(err), loading: false } as any);
+      set({ error: String(err), loading: false });
     }
   },
 
@@ -94,7 +94,7 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
           : state.currentConversation,
       }));
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -110,7 +110,7 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
           : state.currentConversation,
       }));
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -121,7 +121,7 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
       await api.clearConversation(currentConversation.id);
       set({ messages: [] });
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -154,7 +154,7 @@ export const createConversationSlice: StateCreator<ConversationSlice, [], [], Co
         loading: false,
       }));
     } catch (err) {
-      set({ error: String(err), loading: false } as any);
+      set({ error: String(err), loading: false });
     }
   },
 });

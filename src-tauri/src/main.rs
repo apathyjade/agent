@@ -7,7 +7,10 @@ fn main() {
 
     match &cli.command {
         Some(AgentCommand::Runtime { action }) => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
+                eprintln!("Failed to create async runtime: {}", e);
+                std::process::exit(1);
+            });
             let app = rt.block_on(RuntimeCli::new()).unwrap_or_else(|e| {
                 eprintln!("初始化失败: {}", e);
                 std::process::exit(1);

@@ -11,7 +11,7 @@ export interface PromptSlice {
   setDefaultSystemPrompt: (id: string) => Promise<void>;
 }
 
-export const createPromptSlice: StateCreator<PromptSlice, [], [], PromptSlice> = (set) => ({
+export const createPromptSlice: StateCreator<any, [], [], PromptSlice> = (set) => ({
   systemPrompts: [],
 
   fetchSystemPrompts: async () => {
@@ -19,7 +19,7 @@ export const createPromptSlice: StateCreator<PromptSlice, [], [], PromptSlice> =
       const prompts = await api.listSystemPrompts();
       set({ systemPrompts: prompts });
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -30,7 +30,7 @@ export const createPromptSlice: StateCreator<PromptSlice, [], [], PromptSlice> =
         systemPrompts: [prompt, ...state.systemPrompts],
       }));
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -38,10 +38,10 @@ export const createPromptSlice: StateCreator<PromptSlice, [], [], PromptSlice> =
     try {
       await api.deleteSystemPrompt(id);
       set((state: any) => ({
-        systemPrompts: state.systemPrompts.filter((p: SystemPrompt) => p.id !== id),
+        systemPrompts: state.systemPrompts.filter((p: any) => p.id !== id),
       }));
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -49,13 +49,13 @@ export const createPromptSlice: StateCreator<PromptSlice, [], [], PromptSlice> =
     try {
       await api.setDefaultSystemPrompt(id);
       set((state: any) => ({
-        systemPrompts: state.systemPrompts.map((p: SystemPrompt) => ({
+        systemPrompts: state.systemPrompts.map((p: any) => ({
           ...p,
           is_default: p.id === id,
         })),
       }));
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 });

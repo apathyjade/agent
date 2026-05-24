@@ -95,13 +95,13 @@ export const createWorkflowSlice: StateCreator<WorkflowSlice, [], [], WorkflowSl
     try {
       const vars = await api.listWorkflowVars();
       set({ workflowVars: vars });
-    } catch { /* silent */ }
+    } catch (err) { console.error('workflowSlice error:', err); }
   },
   fetchWorkflowSecretKeys: async () => {
     try {
       const keys = await api.listWorkflowSecrets();
       set({ workflowSecretKeys: keys });
-    } catch { /* silent */ }
+    } catch (err) { console.error('workflowSlice error:', err); }
   },
   setWorkflowVar: async (key, value) => {
     await api.setWorkflowVar(key, value);

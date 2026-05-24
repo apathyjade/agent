@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tauri::State;
 
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, McpServerConfig, StartupPolicy, ToolConfig};
 use crate::mcp::manager::{ConnectionInfo, ConnectionStats};
 use crate::state::AppState;
@@ -56,7 +56,8 @@ pub async fn add_mcp_server(
 
     // Return connection info
     let infos = state.mcp.list_connections().await;
-    Ok(infos.into_iter().find(|c| c.id == id).unwrap())
+    infos.into_iter().find(|c| c.id == id)
+        .ok_or_else(|| AppError::NotFound(format!("MCP connection '{}' not found after connect", id)))
 }
 
 #[tauri::command]

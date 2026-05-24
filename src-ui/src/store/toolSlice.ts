@@ -9,7 +9,7 @@ export interface ToolSlice {
   toggleTool: (name: string, enabled: boolean) => Promise<void>;
 }
 
-export const createToolSlice: StateCreator<ToolSlice, [], [], ToolSlice> = (set) => ({
+export const createToolSlice: StateCreator<any, [], [], ToolSlice> = (set) => ({
   tools: [],
 
   fetchTools: async () => {
@@ -17,7 +17,7 @@ export const createToolSlice: StateCreator<ToolSlice, [], [], ToolSlice> = (set)
       const tools = await api.listTools();
       set({ tools });
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 
@@ -25,12 +25,12 @@ export const createToolSlice: StateCreator<ToolSlice, [], [], ToolSlice> = (set)
     try {
       await api.toggleTool(name, enabled);
       set((state: any) => ({
-        tools: state.tools.map((t: ToolInfo) =>
+        tools: state.tools.map((t: any) =>
           t.name === name ? { ...t, enabled } : t
         ),
       }));
     } catch (err) {
-      set({ error: String(err) } as any);
+      set({ error: String(err) });
     }
   },
 });

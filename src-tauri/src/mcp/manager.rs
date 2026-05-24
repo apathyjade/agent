@@ -150,7 +150,7 @@ impl McpServerManager {
                     );
                     log::error!("{}", err_msg);
                     {
-                        let mut s = status.lock().unwrap();
+                        let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                         *s = ConnectionStatus::Error(err_msg.clone());
                     }
                     return Err(AppError::Skill(err_msg));
@@ -219,7 +219,7 @@ impl McpServerManager {
                             let trimmed = line.trim_end().to_string();
                             if !trimmed.is_empty() {
                                 log::warn!("[MCP stderr: {}] {}", name_for_stderr, trimmed);
-                                let mut buffer = buf.lock().unwrap();
+                                let mut buffer = buf.lock().unwrap_or_else(|e| e.into_inner());
                                 if buffer.len() >= 1000 {
                                     buffer.pop_front();
                                 }
@@ -238,7 +238,7 @@ impl McpServerManager {
             .await
             .map_err(|e| {
                 {
-                    let mut s = status.lock().unwrap();
+                    let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                     *s = ConnectionStatus::Error(format!("MCP handshake failed: {}", e));
                 }
                 AppError::Skill(format!(
@@ -253,7 +253,7 @@ impl McpServerManager {
             .await
             .map_err(|e| {
                 {
-                    let mut s = status.lock().unwrap();
+                    let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                     *s = ConnectionStatus::Error(format!("Failed to list tools: {}", e));
                 }
                 AppError::Skill(format!(
@@ -345,7 +345,7 @@ impl McpServerManager {
 
         // 8. Set status to Ready
         {
-            let mut s = status.lock().unwrap();
+            let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
             *s = ConnectionStatus::Ready;
         }
 
@@ -377,13 +377,13 @@ impl McpServerManager {
                 if let Some(conn) = guard.get_mut(&conn_id) {
                     let is_closed = conn.running.is_closed();
                     let current_status = {
-                        let s = conn.status.lock().unwrap();
+                        let s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
                         s.clone()
                     };
                     if is_closed {
                         if current_status.is_active() {
                             // Connection dropped unexpectedly
-                            let mut s = conn.status.lock().unwrap();
+                            let mut s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
                             let error_msg = "Connection closed unexpectedly (process may have crashed)".to_string();
                             {
                                 if let Ok(mut last) = conn.last_error.lock() {
@@ -401,7 +401,7 @@ impl McpServerManager {
                     } else {
                         // Connection is alive — if it was degraded, restore to Ready
                         if matches!(current_status, ConnectionStatus::Degraded) {
-                            let mut s = conn.status.lock().unwrap();
+                            let mut s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
                             *s = ConnectionStatus::Ready;
                             log::info!("MCP health: '{}' restored to Ready", name);
                         }
@@ -436,7 +436,7 @@ impl McpServerManager {
         if let Some(conn) = guard.remove(id) {
             // Mark as stopping
             {
-                let mut s = conn.status.lock().unwrap();
+                let mut s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
                 *s = ConnectionStatus::Stopping;
             }
 
@@ -472,7 +472,7 @@ impl McpServerManager {
             .map(|(id, conn)| {
                 let stats = Self::compute_stats(conn);
                 let (status_str, detail) = {
-                    let s = conn.status.lock().unwrap();
+                    let s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
                     (s.as_str().to_string(), s.error_message().map(|e| e.to_string()))
                 };
                 ConnectionInfo {
@@ -510,7 +510,7 @@ impl McpServerManager {
         guard
             .get(id)
             .map(|conn| {
-                let buffer = conn.stderr_buffer.lock().unwrap();
+                let buffer = conn.stderr_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 buffer.iter().cloned().collect()
             })
             .unwrap_or_default()
@@ -520,7 +520,7 @@ impl McpServerManager {
     pub async fn get_connection_status(&self, id: &str) -> Option<(String, Option<String>)> {
         let guard = self.connections.lock().await;
         guard.get(id).map(|conn| {
-            let s = conn.status.lock().unwrap();
+            let s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
             (s.as_str().to_string(), s.error_message().map(|e| e.to_string()))
         })
     }
@@ -591,7 +591,7 @@ impl McpServerManager {
         priorities.sort_unstable();
 
         for (i, pri) in priorities.iter().enumerate() {
-            let cfgs = groups.remove(pri).unwrap();
+            let cfgs = groups.remove(pri).unwrap_or_default();
             log::info!(
                 "MCP auto-connect: starting priority group {} ({} server(s))",
                 pri,

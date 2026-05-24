@@ -111,7 +111,7 @@ impl RuntimeInstaller {
             ];
             for p in &candidates {
                 if p.exists() {
-                    let _ = make_executable(p.to_str().unwrap());
+                    let _ = make_executable(p.to_str().unwrap_or(""));
                 }
             }
         }

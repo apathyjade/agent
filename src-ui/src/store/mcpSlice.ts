@@ -148,7 +148,8 @@ export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, ge
   fetchConnectionStats: async (id) => {
     try {
       return await api.getMcpConnectionStats(id);
-    } catch {
+    } catch (err) {
+      console.error('mcpSlice error:', err);
       return null;
     }
   },
@@ -158,7 +159,8 @@ export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, ge
     try {
       const entries = await api.getMcpServerLogs(id);
       set({ logEntries: entries, logLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('mcpSlice error:', err);
       set({ logLoading: false });
     }
   },
@@ -212,7 +214,8 @@ export const createMcpSlice: StateCreator<McpSlice, [], [], McpSlice> = (set, ge
     try {
       const suggestion = await api.suggestRuntimeForCommand(command);
       set({ mcpRuntimeSuggestion: suggestion, mcpRuntimeChecking: false });
-    } catch {
+    } catch (err) {
+      console.error('mcpSlice error:', err);
       set({ mcpRuntimeSuggestion: null, mcpRuntimeChecking: false });
     }
   },
