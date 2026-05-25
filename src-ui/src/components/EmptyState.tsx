@@ -1,14 +1,16 @@
 import { MessageSquare, Inbox } from 'lucide-react';
 
-interface EmptyStateProps {
-  type: 'conversations' | 'messages' | 'search';
+interface EmptyStateConfig {
+  icon: typeof MessageSquare;
+  title: string;
+  description: string;
 }
 
-const config = {
-  conversations: {
+const configs: Record<string, EmptyStateConfig> = {
+  sessions: {
     icon: Inbox,
-    title: '暂无对话',
-    description: '点击"新对话"按钮开始第一个对话',
+    title: '暂无会话',
+    description: '开始一段新的对话',
   },
   messages: {
     icon: MessageSquare,
@@ -22,8 +24,8 @@ const config = {
   },
 };
 
-export function EmptyState({ type }: EmptyStateProps) {
-  const { icon: Icon, title, description } = config[type];
+export function EmptyState({ type }: { type: string }) {
+  const { icon: Icon, title, description } = configs[type] ?? configs.sessions;
 
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-6">

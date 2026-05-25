@@ -3,7 +3,7 @@ import type { StreamChunk, Message, PersonaInfo } from '../types';
 import * as api from '../api/tauri';
 
 import { type UISlice, createUISlice } from './uiSlice';
-import { type ConversationSlice, createConversationSlice } from './conversationSlice';
+import { type SessionSlice, createSessionSlice } from './sessionSlice';
 import { type ModelSlice, createModelSlice } from './modelSlice';
 import { type ToolSlice, createToolSlice } from './toolSlice';
 import { type PromptSlice, createPromptSlice } from './promptSlice';
@@ -21,7 +21,7 @@ export interface StreamSlice {
   sendMessageStream: (content: string, toolsEnabled?: boolean, activePersonaId?: string) => Promise<void>;
 }
 
-export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & StreamSlice & {
+export type AppState = UISlice & SessionSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & StreamSlice & {
   activePersonaId: string | null;
   activePersonaInfo: PersonaInfo | null;
   setActivePersona: (info: PersonaInfo | null) => void;
@@ -29,7 +29,7 @@ export type AppState = UISlice & ConversationSlice & ModelSlice & ToolSlice & Pr
 
 export const useStore = create<AppState>()((set, get, store) => ({
   ...createUISlice(set, get, store),
-  ...createConversationSlice(set, get, store),
+  ...createSessionSlice(set, get, store),
   ...createModelSlice(set, get, store),
   ...createToolSlice(set, get, store),
   ...createPromptSlice(set, get, store),
@@ -51,12 +51,12 @@ export const useStore = create<AppState>()((set, get, store) => ({
 
   // sendMessageStream spans both conversation and UI state
   sendMessageStream: async (content: string, toolsEnabled?: boolean, activePersonaId?: string) => {
-    const { currentConversation } = get();
-    if (!currentConversation) return;
+    const { currentSession } = get();
+    if (!currentSession) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
-      conversation_id: currentConversation.id,
+      session_id: currentSession.id,
       role: 'user',
       content,
       created_at: new Date().toISOString(),
@@ -73,7 +73,7 @@ export const useStore = create<AppState>()((set, get, store) => ({
 
     try {
       await api.sendMessageStream(
-        currentConversation.id,
+        currentSession.id,
         content,
         (chunk: StreamChunk) => {
           if (chunk.content) {
@@ -88,7 +88,7 @@ export const useStore = create<AppState>()((set, get, store) => ({
             const s = get();
             const assistantMsg: Message = {
               id: Date.now().toString(),
-              conversation_id: currentConversation.id,
+              session_id: currentSession.id,
               role: 'assistant',
               content: s.streamingContent,
               created_at: new Date().toISOString(),

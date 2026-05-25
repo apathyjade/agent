@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub mod conversation;
+pub mod session;
 pub mod environment;
 pub mod mcp;
 pub mod memory;
@@ -13,7 +13,7 @@ pub mod skill;
 pub mod tool;
 pub mod window;
 
-pub use conversation::*;
+pub use session::*;
 pub use environment::*;
 pub use mcp::*;
 pub use memory::*;

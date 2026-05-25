@@ -19,11 +19,11 @@ import { setWindowPosition } from './api/tauri';
 import './styles/global.css';
 
 function App() {
-  const fetchConversations = useStore((state) => state.fetchConversations);
+  const fetchSessions = useStore((state) => state.fetchSessions);
   const fetchTools = useStore((state) => state.fetchTools);
   const fetchModels = useStore((state) => state.fetchModels);
   const darkMode = useStore((state) => state.darkMode);
-  const currentConversation = useStore((state) => state.currentConversation);
+  const currentSession = useStore((state) => state.currentSession);
   const currentView = useStore((state) => state.currentView);
   const sidebarOpen = useStore((state) => state.sidebarOpen);
 
@@ -77,10 +77,10 @@ function App() {
   };
 
   useEffect(() => {
-    fetchConversations();
+    fetchSessions();
     fetchTools();
     fetchModels();
-  }, [fetchConversations, fetchTools, fetchModels]);
+  }, [fetchSessions, fetchTools, fetchModels]);
 
   // Init dark mode on mount
   useEffect(() => {
@@ -113,7 +113,7 @@ function App() {
     if (currentView === 'workflows') {
       return <WorkflowManagerPage />;
     }
-    return currentConversation ? <ChatArea /> : <WelcomePage />;
+    return currentSession ? <ChatArea /> : <WelcomePage />;
   };
 
   return (

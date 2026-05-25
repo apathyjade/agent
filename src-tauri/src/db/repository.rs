@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{BoundProjectModel, Conversation, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
+use crate::db::models::{BoundProjectModel, Session, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -37,7 +37,7 @@ impl Database {
             "
             PRAGMA foreign_keys = OFF;
 
-            CREATE TABLE IF NOT EXISTS conversations (
+            CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 model_id TEXT NOT NULL,
@@ -48,14 +48,14 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 tool_calls TEXT,
                 tool_call_id TEXT,
                 tokens INTEGER,
                 created_at TEXT NOT NULL,
-                FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
             );
 
             CREATE TABLE IF NOT EXISTS settings (
@@ -172,7 +172,7 @@ impl Database {
                 PRIMARY KEY (persona_id, project_path)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
             ",
         )?;
 
@@ -211,8 +211,9 @@ impl Database {
     }
 
     fn migrate_tables(conn: &Connection) -> Result<()> {
+        // Migration v1: rename provider column (old schema)
         let has_provider = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name='provider'",
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='provider'",
             [],
             |row| row.get::<_, i32>(0),
         ).unwrap_or(0);
@@ -220,9 +221,9 @@ impl Database {
         if has_provider > 0 {
             conn.execute_batch(
                 "
-                ALTER TABLE conversations RENAME TO conversations_old;
+                ALTER TABLE sessions RENAME TO sessions_old;
 
-                CREATE TABLE conversations (
+                CREATE TABLE sessions (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     model_id TEXT NOT NULL,
@@ -231,11 +232,11 @@ impl Database {
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT INTO conversations (id, title, model_id, system_prompt, created_at, updated_at)
+                INSERT INTO sessions (id, title, model_id, system_prompt, created_at, updated_at)
                 SELECT id, title, COALESCE(model, 'default-openai'), system_prompt, created_at, updated_at
-                FROM conversations_old;
+                FROM sessions_old;
 
-                DROP TABLE conversations_old;
+                DROP TABLE sessions_old;
                 ",
             )?;
         }
@@ -267,7 +268,44 @@ impl Database {
             )?;
         }
 
-        // Migration v4: rebuild FTS5 index if existing memories haven't been indexed yet.
+        // Migration v4: rename sessersations → sessions, sessersation_id → session_id
+        let has_old_table = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessersations'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+        if has_old_table > 0 {
+            conn.execute_batch(
+                "
+                PRAGMA foreign_keys = OFF;
+
+                -- Recreate messages table with session_id
+                ALTER TABLE messages RENAME TO messages_old;
+                CREATE TABLE messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    tool_calls TEXT,
+                    tool_call_id TEXT,
+                    tokens INTEGER,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                );
+                INSERT INTO messages (id, session_id, role, content, tool_calls, tool_call_id, tokens, created_at)
+                SELECT id, sessersation_id, role, content, tool_calls, tool_call_id, tokens, created_at
+                FROM messages_old;
+                DROP TABLE messages_old;
+
+                -- Rename sessersations table
+                ALTER TABLE sessersations RENAME TO sessions;
+
+                PRAGMA foreign_keys = ON;
+                ",
+            )?;
+        }
+
+        // Migration v5: rebuild FTS5 index if existing memories haven't been indexed yet.
         // The FTS table was just created in init_tables (or already existed from a prior run).
         // Check if the FTS index is empty while the memories table has rows.
         let mem_count: i32 = conn
@@ -285,78 +323,78 @@ impl Database {
         Ok(())
     }
 
-    pub fn create_conversation(&self, conv: &Conversation) -> Result<()> {
+    pub fn create_session(&self, sess: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO conversations (id, title, model_id, system_prompt, created_at, updated_at)
+            "INSERT INTO sessions (id, title, model_id, system_prompt, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![conv.id, conv.title, conv.model_id, conv.system_prompt, conv.created_at, conv.updated_at],
+            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.created_at, sess.updated_at],
         )?;
         Ok(())
     }
 
-    pub fn list_conversations(&self) -> Result<Vec<Conversation>> {
+    pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, created_at, updated_at FROM conversations ORDER BY updated_at DESC",
+            "SELECT id, title, model_id, system_prompt, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
         )?;
-        let conversations = stmt.query_map([], |row| {
-            Ok(Conversation { id: row.get(0)?, title: row.get(1)?, model_id: row.get(2)?, system_prompt: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
+        let sessions = stmt.query_map([], |row| {
+            Ok(Session { id: row.get(0)?, title: row.get(1)?, model_id: row.get(2)?, system_prompt: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(conversations)
+        Ok(sessions)
     }
 
-    pub fn get_conversation(&self, id: &str) -> Result<Option<Conversation>> {
+    pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, created_at, updated_at FROM conversations WHERE id = ?1",
+            "SELECT id, title, model_id, system_prompt, created_at, updated_at FROM sessions WHERE id = ?1",
         )?;
-        let conv = stmt.query_row(params![id], |row| {
-            Ok(Conversation { id: row.get(0)?, title: row.get(1)?, model_id: row.get(2)?, system_prompt: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
+        let sess = stmt.query_row(params![id], |row| {
+            Ok(Session { id: row.get(0)?, title: row.get(1)?, model_id: row.get(2)?, system_prompt: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
         }).optional()?;
-        Ok(conv)
+        Ok(sess)
     }
 
-    pub fn delete_conversation(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+    pub fn delete_session(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         self.conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("request_ctx:{}", id)])?;
         Ok(())
     }
 
-    pub fn update_conversation_title(&self, id: &str, title: &str) -> Result<()> {
-        self.conn.execute("UPDATE conversations SET title = ?1, updated_at = datetime('now') WHERE id = ?2", params![title, id])?;
+    pub fn update_session_title(&self, id: &str, title: &str) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2", params![title, id])?;
         Ok(())
     }
 
-    pub fn update_conversation_model(&self, id: &str, model_id: &str) -> Result<()> {
-        self.conn.execute("UPDATE conversations SET model_id = ?1, updated_at = datetime('now') WHERE id = ?2", params![model_id, id])?;
+    pub fn update_session_model(&self, id: &str, model_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET model_id = ?1, updated_at = datetime('now') WHERE id = ?2", params![model_id, id])?;
         Ok(())
     }
 
-    pub fn update_conversation_system_prompt(&self, id: &str, system_prompt: &str) -> Result<()> {
-        self.conn.execute("UPDATE conversations SET system_prompt = ?1, updated_at = datetime('now') WHERE id = ?2", params![system_prompt, id])?;
+    pub fn update_session_system_prompt(&self, id: &str, system_prompt: &str) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET system_prompt = ?1, updated_at = datetime('now') WHERE id = ?2", params![system_prompt, id])?;
         Ok(())
     }
 
-    pub fn clear_messages(&self, conversation_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![conversation_id])?;
-        self.conn.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1", params![conversation_id])?;
+    pub fn clear_messages(&self, session_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])?;
+        self.conn.execute("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1", params![session_id])?;
         Ok(())
     }
 
     pub fn insert_message(&self, msg: &Message) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, tokens, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![msg.id, msg.conversation_id, msg.role, msg.content, msg.tool_calls, msg.tool_call_id, msg.tokens, msg.created_at],
+            "INSERT INTO messages (id, session_id, role, content, tool_calls, tool_call_id, tokens, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![msg.id, msg.session_id, msg.role, msg.content, msg.tool_calls, msg.tool_call_id, msg.tokens, msg.created_at],
         )?;
-        self.conn.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1", params![msg.conversation_id])?;
+        self.conn.execute("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1", params![msg.session_id])?;
         Ok(())
     }
 
-    pub fn get_messages(&self, conversation_id: &str) -> Result<Vec<Message>> {
+    pub fn get_messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, conversation_id, role, content, tool_calls, tool_call_id, tokens, created_at FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id, tokens, created_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
-        let messages = stmt.query_map(params![conversation_id], |row| {
-            Ok(Message { id: row.get(0)?, conversation_id: row.get(1)?, role: row.get(2)?, content: row.get(3)?, tool_calls: row.get(4)?, tool_call_id: row.get(5)?, tokens: row.get(6)?, created_at: row.get(7)? })
+        let messages = stmt.query_map(params![session_id], |row| {
+            Ok(Message { id: row.get(0)?, session_id: row.get(1)?, role: row.get(2)?, content: row.get(3)?, tool_calls: row.get(4)?, tool_call_id: row.get(5)?, tokens: row.get(6)?, created_at: row.get(7)? })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(messages)
     }

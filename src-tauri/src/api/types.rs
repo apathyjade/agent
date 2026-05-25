@@ -25,8 +25,9 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// API-level session info returned by LLM providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Conversation {
+pub struct Session {
     pub id: String,
     pub title: String,
     pub provider: String,

@@ -1,4 +1,4 @@
-﻿export interface Conversation {
+﻿export interface Session {
   id: string;
   title: string;
   model_id: string;
@@ -9,7 +9,7 @@
 
 export interface Message {
   id: string;
-  conversation_id: string;
+  session_id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   tool_calls?: string | null;

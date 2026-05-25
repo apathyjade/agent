@@ -6,46 +6,46 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Conversation, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult } from '../types';
+import type { Session, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult } from '../types';
 
-export async function createConversation(
+export async function createSession(
   title: string,
   modelId: string,
   systemPrompt?: string
-): Promise<Conversation> {
-  return invoke('create_conversation', { title, modelId, systemPrompt });
+): Promise<Session> {
+  return invoke('create_session', { title, modelId, systemPrompt });
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  return invoke('list_conversations');
+export async function listSessions(): Promise<Session[]> {
+  return invoke('list_sessions');
 }
 
-export async function getConversation(id: string): Promise<Conversation | null> {
-  return invoke('get_conversation', { id });
+export async function getSession(id: string): Promise<Session | null> {
+  return invoke('get_session', { id });
 }
 
-export async function deleteConversation(id: string): Promise<void> {
-  return invoke('delete_conversation', { id });
+export async function deleteSession(id: string): Promise<void> {
+  return invoke('delete_session', { id });
 }
 
-export async function updateConversationTitle(id: string, title: string): Promise<void> {
-  return invoke('update_conversation_title', { id, title });
+export async function updateSessionTitle(id: string, title: string): Promise<void> {
+  return invoke('update_session_title', { id, title });
 }
 
-export async function updateConversationModel(id: string, modelId: string): Promise<void> {
-  return invoke('update_conversation_model', { id, modelId });
+export async function updateSessionModel(id: string, modelId: string): Promise<void> {
+  return invoke('update_session_model', { id, modelId });
 }
 
-export async function clearConversation(conversationId: string): Promise<void> {
-  return invoke('clear_conversation', { conversationId });
+export async function clearSession(sessionId: string): Promise<void> {
+  return invoke('clear_session', { sessionId });
 }
 
-export async function sendMessage(conversationId: string, content: string, toolsEnabled?: boolean): Promise<Message> {
-  return invoke('send_message', { conversationId, content, toolsEnabled });
+export async function sendMessage(sessionId: string, content: string, toolsEnabled?: boolean): Promise<Message> {
+  return invoke('send_message', { sessionId, content, toolsEnabled });
 }
 
 export async function sendMessageStream(
-  conversationId: string,
+  sessionId: string,
   content: string,
   onChunk: (chunk: StreamChunk) => void,
   toolsEnabled?: boolean,
@@ -57,7 +57,7 @@ export async function sendMessageStream(
 
   try {
     const result = await invoke<string>('send_message_stream', {
-      conversationId,
+      sessionId,
       content,
       toolsEnabled,
       activePersonaId: activePersonaId ?? null,
@@ -68,12 +68,12 @@ export async function sendMessageStream(
   }
 }
 
-export async function getMessages(conversationId: string): Promise<Message[]> {
-  return invoke('get_messages', { conversationId });
+export async function getMessages(sessionId: string): Promise<Message[]> {
+  return invoke('get_messages', { sessionId });
 }
 
-export async function getRequestContext(conversationId: string): Promise<string | null> {
-  return invoke('get_request_context', { conversationId });
+export async function getRequestContext(sessionId: string): Promise<string | null> {
+  return invoke('get_request_context', { sessionId });
 }
 
 export async function listProviders(): Promise<ProviderStatus[]> {

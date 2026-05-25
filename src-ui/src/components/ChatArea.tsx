@@ -41,7 +41,7 @@ const MessageList = memo(function MessageList({ messages }: { messages: Message[
 });
 
 export function ChatArea() {
-  const currentConversation = useStore((s) => s.currentConversation);
+  const currentSession = useStore((s) => s.currentSession);
   const messages = useStore((s) => s.messages);
   const loading = useStore((s) => s.loading);
   const error = useStore((s) => s.error);
@@ -50,7 +50,7 @@ export function ChatArea() {
   const activeToolCalls = useStore((s) => s.activeToolCalls);
   const sendMessageStream = useStore((s) => s.sendMessageStream);
   const models = useStore((s) => s.models);
-  const updateConversationModel = useStore((s) => s.updateConversationModel);
+  const updateSessionModel = useStore((s) => s.updateSessionModel);
   const setError = useStore((s) => s.setError);
   const lastSessionMessages = useStore((s) => s.lastSessionMessages);
   const setSessionMessages = useStore((s) => s.setSessionMessages);
@@ -119,7 +119,7 @@ export function ChatArea() {
     setError(null);
   }, [setError]);
 
-  if (!currentConversation) return null;
+  if (!currentSession) return null;
 
   return (
     <Col className="bg-white dark:bg-gray-900 transition-colors">
@@ -127,9 +127,9 @@ export function ChatArea() {
         <Row $justify="space-between" $align="center" className="px-6 py-3 border-b border-gray-100 dark:border-gray-700 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
           <Row $align="center" $gap={8}>
             <Select
-              value={currentConversation.model_id}
+              value={currentSession.model_id}
               onChange={async (value) => {
-                await updateConversationModel(currentConversation.id, value);
+                await updateSessionModel(currentSession.id, value);
               }}
               size="small"
               variant="borderless"
@@ -150,7 +150,7 @@ export function ChatArea() {
             />
           </Row>
           <Row $align="center" $gap={12}>
-            {currentConversation.system_prompt && (
+            {currentSession.system_prompt && (
               <span className="px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs rounded-lg">提示词已加载</span>
             )}
             {lastSessionMessages && (

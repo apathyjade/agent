@@ -4,7 +4,7 @@ import { EmptyState } from '../EmptyState';
 
 describe('EmptyState', () => {
   it('renders conversations empty state', () => {
-    render(<EmptyState type="conversations" />);
+  render(<EmptyState type="sessions" />);
     expect(screen.getByText('暂无对话')).toBeDefined();
     expect(screen.getByText('点击"新对话"按钮开始第一个对话')).toBeDefined();
   });

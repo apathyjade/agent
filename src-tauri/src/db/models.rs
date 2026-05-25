@@ -18,8 +18,9 @@ pub struct PersonaRecord {
     pub updated_at: String,
 }
 
+/// A session — a series of messages with a title, model, and optional system prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Conversation {
+pub struct Session {
     pub id: String,
     pub title: String,
     pub model_id: String,
@@ -31,7 +32,7 @@ pub struct Conversation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
-    pub conversation_id: String,
+    pub session_id: String,
     pub role: String,
     pub content: String,
     pub tool_calls: Option<String>,

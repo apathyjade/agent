@@ -4,14 +4,14 @@ import { useStore } from '../store';
 import { ChatInput } from './ChatInput';
 
 export function WelcomePage() {
-  const createConversation = useStore((state) => state.createConversation);
+  const createSession = useStore((state) => state.createSession);
   const sendMessageStream = useStore((state) => state.sendMessageStream);
   const defaultModel = useStore((state) => state.defaultModel);
 
   const handleQuickStart = async (prompt: string) => {
     const modelId = defaultModel || '';
     if (!modelId) return;
-    await createConversation('New Chat', modelId);
+    await createSession('New Chat', modelId);
     setTimeout(() => sendMessageStream(prompt), 100);
   };
 

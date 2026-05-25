@@ -76,7 +76,7 @@ pub struct UpdatePersonaParams {
     pub is_default: Option<bool>,
 }
 
-/// Persona resolution result — how a persona was selected for a conversation.
+/// Persona resolution result — how a persona was selected for a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersonaResolution {
     /// User explicitly specified

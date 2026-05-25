@@ -6,11 +6,11 @@ import { useStore } from '../store';
 
 export function Sidebar() {
   const {
-    conversations,
-    currentConversation,
-    selectConversation,
-    deleteConversation,
-    updateConversationTitle,
+    sessions,
+    currentSession,
+    selectSession,
+    deleteSession,
+    updateSessionTitle,
     newChat,
   } = useStore();
 
@@ -18,14 +18,14 @@ export function Sidebar() {
   const [editingTitle, setEditingTitle] = useState('');
   const [activePopconfirmId, setActivePopconfirmId] = useState<string | null>(null);
 
-  const handleStartEdit = (conv: { id: string; title: string }) => {
-    setEditingId(conv.id);
-    setEditingTitle(conv.title);
+  const handleStartEdit = (sess: { id: string; title: string }) => {
+    setEditingId(sess.id);
+    setEditingTitle(sess.title);
   };
 
   const handleSaveEdit = async () => {
     if (editingId && editingTitle.trim()) {
-      await updateConversationTitle(editingId, editingTitle);
+      await updateSessionTitle(editingId, editingTitle);
     }
     setEditingId(null);
     setEditingTitle('');
@@ -36,24 +36,24 @@ export function Sidebar() {
       <Col.Item $scale={1}>
         <div className="overflow-y-auto h-full px-2">
           <div className="text-xs font-medium text-gray-400 dark:text-gray-500 px-3 py-2">最近对话</div>
-          {conversations.length === 0 && (
+          {sessions.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
               <MessageSquare size={32} className="text-gray-300 dark:text-gray-600 mb-3" />
               <p className="text-sm text-gray-400 dark:text-gray-500 mb-1">暂无对话</p>
               <p className="text-xs text-gray-300 dark:text-gray-600">在右侧输入，开启新对话</p>
             </div>
           )}
-          {conversations.map((conv) => (
+          {sessions.map((sess) => (
             <div
-              key={conv.id}
+              key={sess.id}
               className={`flex items-center gap-2 px-3 py-2.5 rounded-lg mb-1 cursor-pointer group transition-all ${
-                currentConversation?.id === conv.id
+                currentSession?.id === sess.id
                   ? 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
                   : 'hover:bg-purple-50/50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300'
               }`}
             >
               <MessageSquare size={16} className="flex-shrink-0 text-gray-400 dark:text-gray-500" />
-              {editingId === conv.id ? (
+              {editingId === sess.id ? (
                   <input
                     type="text"
                     value={editingTitle}
@@ -66,15 +66,15 @@ export function Sidebar() {
               ) : (
                 <span
                   className="flex-1 truncate text-sm"
-                  onClick={() => selectConversation(conv.id)}
-                  onDoubleClick={() => handleStartEdit(conv)}
+                  onClick={() => selectSession(sess.id)}
+                  onDoubleClick={() => handleStartEdit(sess)}
                 >
-                  {conv.title}
+                  {sess.title}
                 </span>
               )}
               <div
                 className={`flex items-center gap-1 flex-shrink-0 transition-opacity ${
-                  activePopconfirmId === conv.id || currentConversation?.id === conv.id
+                  activePopconfirmId === sess.id || currentSession?.id === sess.id
                     ? 'opacity-100'
                     : 'opacity-0 group-hover:opacity-100'
                 }`}
@@ -82,8 +82,8 @@ export function Sidebar() {
               >
                 <Popconfirm
                   title="确认删除此对话？"
-                  onConfirm={() => deleteConversation(conv.id)}
-                  onOpenChange={(visible) => setActivePopconfirmId(visible ? conv.id : null)}
+                  onConfirm={() => deleteSession(sess.id)}
+                  onOpenChange={(visible) => setActivePopconfirmId(visible ? sess.id : null)}
                   okText="确认"
                   cancelText="取消"
                   placement="right"
@@ -107,7 +107,7 @@ export function Sidebar() {
         <div className="p-3 border-t border-purple-100/50 dark:border-purple-900/30">
           <button
             onClick={newChat}
-            disabled={!currentConversation}
+            disabled={!currentSession}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-40 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white disabled:from-gray-300 disabled:to-gray-300 dark:disabled:from-gray-600 dark:disabled:to-gray-600 disabled:text-gray-500 dark:disabled:text-gray-400"
           >
             <Plus size={16} />

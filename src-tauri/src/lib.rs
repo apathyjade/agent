@@ -78,14 +78,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::create_conversation,
-            commands::list_conversations,
-            commands::get_conversation,
-            commands::delete_conversation,
-            commands::update_conversation_title,
-            commands::update_conversation_model,
-            commands::update_conversation_system_prompt,
-            commands::clear_conversation,
+            commands::create_session,
+            commands::list_sessions,
+            commands::get_session,
+            commands::delete_session,
+            commands::update_session_title,
+            commands::update_session_model,
+            commands::update_session_system_prompt,
+            commands::clear_session,
             commands::send_message,
             commands::send_message_stream,
             commands::get_messages,
