@@ -1,51 +1,20 @@
-﻿import { useState } from 'react';
-import { Sparkles, Search, Code, PenTool, Image, Globe } from 'lucide-react';
+﻿import { Sparkles, Search, Code, PenTool, Image, Globe } from 'lucide-react';
 import { Row } from '@jelper/component';
 import { useStore } from '../store';
 import { ChatInput } from './ChatInput';
-import { SessionConfigPanel } from './SessionConfigPanel';
 
 export function WelcomePage() {
   const createSession = useStore((state) => state.createSession);
   const sendMessageStream = useStore((state) => state.sendMessageStream);
   const defaultModel = useStore((state) => state.defaultModel);
 
-  const [showConfig, setShowConfig] = useState(false);
-  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
-
   const handleQuickStart = async (prompt: string) => {
     const modelId = defaultModel || '';
     if (!modelId) return;
-    // Show config panel first
-    setPendingPrompt(prompt);
-    setShowConfig(true);
+    // Create session with defaults directly, no config panel
+    await createSession('New Chat', modelId);
+    setTimeout(() => sendMessageStream(prompt), 100);
   };
-
-  const handleConfigStart = async (config: { modelId: string; personaId: string | null; enabledTools: string[] }) => {
-    setShowConfig(false);
-    await createSession('New Chat', config.modelId, undefined, config.personaId ?? undefined);
-
-    // Save tool config to the newly created session
-    const state = useStore.getState();
-    const newSessionId = state.currentSession?.id;
-    if (newSessionId && config.enabledTools.length > 0) {
-      await state.updateSessionConfig(newSessionId, { enabled_tools: config.enabledTools });
-    }
-
-    if (pendingPrompt) {
-      setTimeout(() => sendMessageStream(pendingPrompt), 100);
-      setPendingPrompt(null);
-    }
-  };
-
-  const handleConfigCancel = () => {
-    setShowConfig(false);
-    setPendingPrompt(null);
-  };
-
-  if (showConfig) {
-    return <SessionConfigPanel onStart={handleConfigStart} onCancel={handleConfigCancel} />;
-  }
 
   const features = [
     { icon: <Search size={20} />, title: '深入研究', desc: '深度分析复杂主题' },

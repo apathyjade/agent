@@ -13,6 +13,7 @@ export interface UISlice {
   error: string | null;
   streamingContent: string;
   isStreaming: boolean;
+  currentPhase: string | null;
   activeToolCalls: Array<{ id: string; name: string; status: string; result?: string }>;
   darkMode: boolean;
   toasts: Toast[];
@@ -39,6 +40,7 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set, get) 
   error: null,
   streamingContent: '',
   isStreaming: false,
+  currentPhase: null,
   activeToolCalls: [],
   darkMode: localStorage.getItem('darkMode') === 'true',
   toasts: [],

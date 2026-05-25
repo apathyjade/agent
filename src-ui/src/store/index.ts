@@ -98,22 +98,52 @@ export const useStore = create<AppState>()((set, get, store) => ({
           }
           if (chunk.tool_calls) {
             set({ activeToolCalls: chunk.tool_calls });
+
+            // Persist completed/failed tool calls as visible messages in the flow
+            const { currentSession } = get();
+            const finishedToolMsg = chunk.tool_calls
+              .filter(tc => tc.status === 'completed' || tc.status === 'failed')
+              .map(tc => ({
+                id: `tool-${tc.id}`,
+                session_id: currentSession?.id || '',
+                role: 'tool' as const,
+                content: JSON.stringify({
+                  name: tc.name,
+                  result: tc.result || '',
+                  status: tc.status,
+                }),
+                created_at: new Date().toISOString(),
+              }));
+            if (finishedToolMsg.length > 0) {
+              set((state) => ({
+                messages: [...state.messages, ...finishedToolMsg],
+              }));
+            }
+          }
+          if (chunk.phase !== undefined) {
+            set({ currentPhase: chunk.phase ?? null });
           }
           if (chunk.done) {
             const s = get();
-            const assistantMsg: Message = {
-              id: Date.now().toString(),
-              session_id: currentSession.id,
-              role: 'assistant',
-              content: s.streamingContent,
-              created_at: new Date().toISOString(),
-            };
-            set((state) => ({
-              messages: [...state.messages, assistantMsg],
+            if (s.streamingContent) {
+              const assistantMsg: Message = {
+                id: Date.now().toString(),
+                session_id: currentSession.id,
+                role: 'assistant',
+                content: s.streamingContent,
+                created_at: new Date().toISOString(),
+              };
+              set((state) => ({
+                messages: [...state.messages, assistantMsg],
+              }));
+            }
+            set({
               loading: false,
               isStreaming: false,
               streamingContent: '',
-            }));
+              activeToolCalls: [],
+              currentPhase: null,
+            });
             // Refresh summaries after stream completes
             get().fetchSummaries(currentSession.id);
           }

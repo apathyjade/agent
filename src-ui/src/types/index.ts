@@ -74,6 +74,7 @@ export interface StreamChunk {
     status: string;
     result?: string;
   }>;
+  phase?: string | null;
 }
 
 export interface SystemPrompt {

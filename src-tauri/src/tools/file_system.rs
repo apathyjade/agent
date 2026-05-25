@@ -25,7 +25,13 @@ impl FileSystemTool {
         if let Some(desktop) = dirs::desktop_dir() {
             dirs.push(desktop);
         }
-        // Default to current dir as fallback
+        // Always allow the current working directory
+        if let Ok(cwd) = std::env::current_dir() {
+            if !dirs.iter().any(|d| cwd.starts_with(d)) {
+                dirs.push(cwd);
+            }
+        }
+        // Absolute fallback
         if dirs.is_empty() {
             dirs.push(PathBuf::from("."));
         }

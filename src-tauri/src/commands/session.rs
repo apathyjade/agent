@@ -354,6 +354,22 @@ pub async fn send_message_stream(
     let messages = db.get_messages(&session_id)?;
     drop(db);
 
+    // ── Phase: classifying intent ──
+    let _ = app_handle.emit("stream_chunk", StreamChunk {
+        content: String::new(), done: false, tool_calls: None,
+        phase: Some("classifying".to_string()),
+    });
+
+    // ── Intent Routing: classify user message ──
+    let _intent_result: crate::intent::IntentResult = state.intent_router.classify(&content);
+    let _current_intent = std::sync::Arc::new(std::sync::Mutex::new(_intent_result.name.clone()));
+
+    // ── Phase: building context ──
+    let _ = app_handle.emit("stream_chunk", StreamChunk {
+        content: String::new(), done: false, tool_calls: None,
+        phase: Some("building_context".to_string()),
+    });
+
     let mut api_messages: Vec<Message> = Vec::new();
 
     // Use custom system prompt, or fall back to a sensible default
@@ -404,6 +420,17 @@ pub async fn send_message_stream(
                 "Your current role: {} {}\n{}",
                 persona.emoji, persona.title, persona.system_prompt
             ),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    // ── Intent Routing: append intent system prompt appendix ──
+    if let Some(appendix) = &_intent_result.config.system_prompt_appendix {
+        api_messages.push(Message {
+            id: None,
+            role: MessageRole::System,
+            content: format!("[Intent: {}]\n{}", _intent_result.name, appendix),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -460,20 +487,37 @@ pub async fn send_message_stream(
     }
 
     // Parse session config for tool filtering
-    let allowed_tools: Option<Vec<String>> = sess.config.as_ref().and_then(|c| {
+    let session_allowed_tools: Option<Vec<String>> = sess.config.as_ref().and_then(|c| {
         serde_json::from_str::<serde_json::Value>(c).ok()
             .and_then(|v| v.get("enabled_tools").cloned())
             .and_then(|v| serde_json::from_value(v).ok())
     });
 
+    // ── Intent Routing: resolve final tool list ──
+    let allowed_tools = state.intent_router.resolve_tools(
+        session_allowed_tools,
+        _intent_result.config.enabled_tools.as_ref(),
+    );
+
     let mut agent = AgentLoop::new(state.providers.clone(), state.tools.clone());
     if let Some(ctx) = context_window {
         agent = agent.with_context_limit(ctx);
+    }
+    // ── Intent Routing: apply max_iterations if configured ──
+    if let Some(max_iter) = _intent_result.config.max_iterations {
+        agent = agent.with_max_iterations(max_iter);
     }
     let mut stream = agent.run_stream(&effective_model_id, api_messages, tools_enabled.unwrap_or(true), allowed_tools.clone()).await?;
 
     let mut full_content = String::new();
     let sess_id_for_messages = session_id.clone();
+    let intent_for_reclassify = _current_intent.clone();
+
+    // ── Phase: thinking (LLM generating first response) ──
+    let _ = app_handle.emit("stream_chunk", StreamChunk {
+        content: String::new(), done: false, tool_calls: None,
+        phase: Some("thinking".to_string()),
+    });
 
     while let Some(chunk) = stream.recv().await {
         match chunk {
@@ -483,6 +527,7 @@ pub async fn send_message_stream(
                     content: text,
                     done: false,
                     tool_calls: None,
+                    phase: None,
                 });
             }
             crate::agent::r#loop::StreamEvent::ToolCall(tool_call) => {
@@ -495,9 +540,21 @@ pub async fn send_message_stream(
                         status: "calling".to_string(),
                         result: None,
                     }]),
+                    phase: Some("executing_tool".to_string()),
                 });
             }
             crate::agent::r#loop::StreamEvent::ToolResult(tool_result) => {
+                // ── Intent Routing: reclassify after tool result ──
+                let current_intent_name = intent_for_reclassify.lock().unwrap().clone();
+                if let Some(new_intent) = state.intent_router.reclassify(&tool_result.result, &current_intent_name) {
+                    log::info!(
+                        "Intent reclassified: {} → {} (matched: {})",
+                        current_intent_name, new_intent.name,
+                        new_intent.matched_rule.unwrap_or_default()
+                    );
+                    *intent_for_reclassify.lock().unwrap() = new_intent.name;
+                }
+
                 // Persist tool result message to DB
                 {
                     let db = state.db.lock().await;
@@ -514,15 +571,25 @@ pub async fn send_message_stream(
                     let _ = db.insert_message(&tool_msg);
                 } // db lock released here
 
+                let is_error = tool_result.result.starts_with("Tool execution error:");
+                let status = if is_error { "failed".to_string() } else { "completed".to_string() };
                 let _ = app_handle.emit("stream_chunk", StreamChunk {
                     content: String::new(),
                     done: false,
                     tool_calls: Some(vec![ToolCallEvent {
                         id: tool_result.call_id,
                         name: tool_result.name,
-                        status: "completed".to_string(),
+                        status,
                         result: Some(tool_result.result),
                     }]),
+                    phase: None,
+                });
+                // After tool result, LLM will think again — emit "thinking" phase
+                let _ = app_handle.emit("stream_chunk", StreamChunk {
+                    content: String::new(),
+                    done: false,
+                    tool_calls: None,
+                    phase: Some("thinking".to_string()),
                 });
             }
             crate::agent::r#loop::StreamEvent::Done => {
@@ -530,6 +597,7 @@ pub async fn send_message_stream(
                     content: String::new(),
                     done: true,
                     tool_calls: None,
+                    phase: Some("completed".to_string()),
                 });
                 break;
             }

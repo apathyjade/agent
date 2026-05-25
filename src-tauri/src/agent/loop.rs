@@ -371,6 +371,11 @@ impl AgentLoop {
                     }
                     Err(e) => {
                         let err_str = format!("Tool execution error: {}", e);
+                        let _ = tx.send(StreamEvent::ToolResult(ToolResultInfo {
+                            call_id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            result: err_str.clone(),
+                        })).await;
                         current_messages.push(Message {
                             id: None,
                             role: MessageRole::Tool,

@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import {
   Loader2,
   Sparkles,
-  Wrench,
   CheckCircle,
   XCircle,
   ArrowDown,
@@ -90,6 +89,7 @@ export function ChatArea() {
   const isStreaming = useStore((s) => s.isStreaming);
   const streamingContent = useStore((s) => s.streamingContent);
   const activeToolCalls = useStore((s) => s.activeToolCalls);
+  const currentPhase = useStore((s) => s.currentPhase);
   const sendMessageStream = useStore((s) => s.sendMessageStream);
   const models = useStore((s) => s.models);
   const personas = useStore((s) => s.personas);
@@ -270,24 +270,67 @@ export function ChatArea() {
             </div>
           )}
 
-          {/* Tool call indicators */}
-          {isStreaming && activeToolCalls.length > 0 && (
+          {/* Phase indicator */}
+          {isStreaming && currentPhase && activeToolCalls.length === 0 && !streamingContent && (
+            <div className="flex items-center gap-2 px-6 py-2">
+              <Loader2 size={12} className="animate-spin text-purple-500" />
+              <span className="text-xs text-purple-500 dark:text-purple-400 capitalize">
+                {currentPhase === 'classifying' && '正在分析意图...'}
+                {currentPhase === 'building_context' && '正在构建上下文...'}
+                {currentPhase === 'thinking' && '正在思考...'}
+                {currentPhase === 'executing_tool' && '正在执行工具...'}
+                {currentPhase === 'processing_result' && '正在处理结果...'}
+                {currentPhase === 'completed' && '完成'}
+                {!['classifying','building_context','thinking','executing_tool','processing_result','completed'].includes(currentPhase) && currentPhase}
+              </span>
+            </div>
+          )}
+
+          {/* Process steps — tool calls & phase info shown inline */}
+          {isStreaming && (
             <div className="space-y-0">
+              {/* Pre-stream phase hint */}
+              {currentPhase && activeToolCalls.length === 0 && !streamingContent && (
+                <div className="group">
+                  <hr className="tui-divider" />
+                  <div className="tui-header">
+                    {currentPhase === 'classifying' && <><Loader2 size={12} className="animate-spin text-purple-500" /><span className="text-purple-600 dark:text-purple-400">正在分析意图...</span></>}
+                    {currentPhase === 'building_context' && <><Loader2 size={12} className="animate-spin text-blue-500" /><span className="text-blue-600 dark:text-blue-400">正在构建上下文...</span></>}
+                    {currentPhase === 'thinking' && <><Loader2 size={12} className="animate-spin text-amber-500" /><span className="text-amber-600 dark:text-amber-400">思考中...</span></>}
+                  </div>
+                </div>
+              )}
+
+              {/* Tool call & result cards */}
               {activeToolCalls.map((tc) => (
                 <div key={tc.id} className="group">
                   <hr className="tui-divider" />
                   <div className="tui-header">
-                    <Wrench size={12} className="text-orange-500" />
-                    <span className="text-orange-600 dark:text-orange-400 capitalize">
-                      {tc.name.replace(/_/g, ' ')}
-                    </span>
-                    {tc.status === 'calling' && (
-                      <Loader2 size={10} className="animate-spin text-purple-500 ml-auto" />
-                    )}
-                    {tc.status === 'completed' && (
-                      <CheckCircle size={10} className="text-green-500 ml-auto" />
-                    )}
+                    {tc.status === 'calling' && <><Loader2 size={12} className="animate-spin text-orange-500" /><span className="text-orange-600 dark:text-orange-400 font-medium">正在执行: {tc.name.replace(/_/g, ' ')}</span></>}
+                    {tc.status === 'completed' && <><CheckCircle size={12} className="text-green-500" /><span className="text-green-600 dark:text-green-400 font-medium">已完成: {tc.name.replace(/_/g, ' ')}</span></>}
+                    {tc.status === 'failed' && <><XCircle size={12} className="text-red-500" /><span className="text-red-600 dark:text-red-400 font-medium">执行失败: {tc.name.replace(/_/g, ' ')}</span></>}
                   </div>
+                  {(tc.status === 'completed' || tc.status === 'failed') && tc.result && (
+                    <div className={`mx-1 my-1.5 p-2 rounded-lg text-xs font-mono whitespace-pre-wrap max-h-48 overflow-y-auto ${
+                      tc.status === 'failed'
+                        ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+                        : 'bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'
+                    }`}>
+                      {tc.status === 'failed'
+                        ? tc.result.replace(/^Tool execution error: /, '')
+                        : (() => {
+                            try {
+                              const json = JSON.parse(tc.result);
+                              return JSON.stringify(json, null, 2);
+                            } catch {
+                              return tc.result.length > 500
+                                ? tc.result.substring(0, 500) + '...'
+                                : tc.result;
+                            }
+                          })()
+                      }
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -9,6 +9,7 @@ use crate::environment::alias::AliasManager;
 use crate::environment::resolver::VersionResolver;
 use crate::environment::RuntimeManager;
 use crate::environment::registry::RuntimeRegistry;
+use crate::intent::router::IntentRouter;
 use crate::lifecycle::LifecycleManager;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub version_resolver: Arc<VersionResolver>,
     pub alias_manager: Arc<AliasManager>,
     pub lifecycle: LifecycleManager,
+    pub intent_router: Arc<IntentRouter>,
 }
 
 impl AppState {
@@ -68,6 +70,8 @@ impl AppState {
         let mcp = McpServerManager::new(tools_arc.clone())
             .with_runtime_manager(runtime_manager.clone());
 
+        let intent_router = Arc::new(IntentRouter::new(&config.intent_routing));
+
         Ok(Self {
             app_handle: app_handle.clone(),
             db: db_arc,
@@ -83,6 +87,7 @@ impl AppState {
             version_resolver,
             alias_manager,
             lifecycle,
+            intent_router,
         })
     }
 }

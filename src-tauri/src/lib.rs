@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod environment;
 pub mod error;
+pub mod intent;
 pub mod keychain;
 pub mod lifecycle;
 pub mod mcp;
