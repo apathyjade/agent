@@ -25,8 +25,31 @@ pub struct Session {
     pub title: String,
     pub model_id: String,
     pub system_prompt: Option<String>,
+    /// Optional persona bound to this session
+    pub persona_id: Option<String>,
+    /// JSON config for per-session settings (e.g. enabled_tools)
+    pub config: Option<String>,
+    /// Source of the title: "manual" | "auto_generated"
+    pub title_source: String,
+    /// Whether this session has been archived
+    pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// A summary of a range of messages within a session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub session_id: String,
+    pub message_start_id: String,
+    pub message_end_id: String,
+    pub summary: String,
+    pub key_points: Option<String>,  // JSON array string
+    pub original_token_count: i32,
+    pub summary_token_count: i32,
+    pub model_used: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

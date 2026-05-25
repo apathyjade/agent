@@ -9,6 +9,7 @@ use crate::environment::alias::AliasManager;
 use crate::environment::resolver::VersionResolver;
 use crate::environment::RuntimeManager;
 use crate::environment::registry::RuntimeRegistry;
+use crate::lifecycle::LifecycleManager;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
 use crate::persona::PersonaManager;
@@ -29,6 +30,7 @@ pub struct AppState {
     pub runtime_registry: Arc<RuntimeRegistry>,
     pub version_resolver: Arc<VersionResolver>,
     pub alias_manager: Arc<AliasManager>,
+    pub lifecycle: LifecycleManager,
 }
 
 impl AppState {
@@ -36,6 +38,7 @@ impl AppState {
         let db = Database::new()?;
         let config = AppConfig::load()?;
         let providers = ProviderRegistry::new(&config);
+        let providers_arc = Arc::new(Mutex::new(providers));
         let tools = ToolRegistry::new();
 
         let db_arc = Arc::new(Mutex::new(db));
@@ -44,6 +47,7 @@ impl AppState {
         let skills = SkillManager::new(db_arc.clone(), tools_arc.clone());
         let memory = MemoryManager::new(db_arc.clone());
         let persona = PersonaManager::new(db_arc.clone());
+        let lifecycle = LifecycleManager::new(db_arc.clone(), providers_arc.clone());
 
         // Runtime manager: stores runtimes at configured path (or default)
         let runtime_dir = match &config.runtime_install_dir {
@@ -68,7 +72,7 @@ impl AppState {
             app_handle: app_handle.clone(),
             db: db_arc,
             config: Arc::new(Mutex::new(config)),
-            providers: Arc::new(Mutex::new(providers)),
+            providers: providers_arc,
             tools: tools_arc,
             skills: Arc::new(Mutex::new(skills)),
             memory,
@@ -78,6 +82,7 @@ impl AppState {
             runtime_registry,
             version_resolver,
             alias_manager,
+            lifecycle,
         })
     }
 }

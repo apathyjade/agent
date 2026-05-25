@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{BoundProjectModel, Session, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
+use crate::db::models::{BoundProjectModel, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -207,6 +207,28 @@ impl Database {
             ",
         )?;
 
+        // Session summaries table for conversation lifecycle management
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_start_id TEXT NOT NULL,
+                message_end_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                key_points TEXT,
+                original_token_count INTEGER NOT NULL DEFAULT 0,
+                summary_token_count INTEGER NOT NULL DEFAULT 0,
+                model_used TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id);
+            CREATE INDEX IF NOT EXISTS idx_summaries_range ON session_summaries(session_id, message_end_id);
+            ",
+        )?;
+
         Ok(())
     }
 
@@ -305,6 +327,46 @@ impl Database {
             )?;
         }
 
+        // Migration v6: add title_source and archived columns to sessions table
+        let has_title_source = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='title_source'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_title_source == 0 {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT 'manual';
+                 ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
+        // Migration v7: add persona_id column to sessions table
+        let has_persona_id = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='persona_id'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_persona_id == 0 {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN persona_id TEXT REFERENCES personas(id);",
+            )?;
+        }
+
+        // Migration v8: add config column to sessions table
+        let has_config = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='config'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_config == 0 {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN config TEXT;",
+            )?;
+        }
+
         // Migration v5: rebuild FTS5 index if existing memories haven't been indexed yet.
         // The FTS table was just created in init_tables (or already existed from a prior run).
         // Check if the FTS index is empty while the memories table has rows.
@@ -325,34 +387,57 @@ impl Database {
 
     pub fn create_session(&self, sess: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, title, model_id, system_prompt, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.created_at, sess.updated_at],
+            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at],
         )?;
         Ok(())
     }
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map([], |row| {
-            Ok(Session { id: row.get(0)?, title: row.get(1)?, model_id: row.get(2)?, system_prompt: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
+            Ok(Session {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_id: row.get(2)?,
+                system_prompt: row.get(3)?,
+                persona_id: row.get(4)?,
+                config: row.get(5)?,
+                title_source: row.get(6)?,
+                archived: row.get::<_, i32>(7)? != 0,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, created_at, updated_at FROM sessions WHERE id = ?1",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at FROM sessions WHERE id = ?1",
         )?;
         let sess = stmt.query_row(params![id], |row| {
-            Ok(Session { id: row.get(0)?, title: row.get(1)?, model_id: row.get(2)?, system_prompt: row.get(3)?, created_at: row.get(4)?, updated_at: row.get(5)? })
+            Ok(Session {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_id: row.get(2)?,
+                system_prompt: row.get(3)?,
+                persona_id: row.get(4)?,
+                config: row.get(5)?,
+                title_source: row.get(6)?,
+                archived: row.get::<_, i32>(7)? != 0,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
         }).optional()?;
         Ok(sess)
     }
 
     pub fn delete_session(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM session_summaries WHERE session_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         self.conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("request_ctx:{}", id)])?;
@@ -374,9 +459,79 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_session_config(&self, id: &str, config: &str) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET config = ?1, updated_at = datetime('now') WHERE id = ?2", params![config, id])?;
+        Ok(())
+    }
+
     pub fn clear_messages(&self, session_id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])?;
         self.conn.execute("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1", params![session_id])?;
+        Ok(())
+    }
+
+    // ── Session Summaries CRUD ──
+
+    pub fn insert_summary(&self, summary: &SessionSummary) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO session_summaries (id, session_id, message_start_id, message_end_id, summary, key_points, original_token_count, summary_token_count, model_used, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![summary.id, summary.session_id, summary.message_start_id, summary.message_end_id, summary.summary, summary.key_points, summary.original_token_count, summary.summary_token_count, summary.model_used, summary.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_session_summaries(&self, session_id: &str) -> Result<Vec<SessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, message_start_id, message_end_id, summary, key_points, original_token_count, summary_token_count, model_used, created_at
+             FROM session_summaries WHERE session_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let summaries = stmt.query_map(params![session_id], |row| {
+            Ok(SessionSummary {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                message_start_id: row.get(2)?,
+                message_end_id: row.get(3)?,
+                summary: row.get(4)?,
+                key_points: row.get(5)?,
+                original_token_count: row.get(6)?,
+                summary_token_count: row.get(7)?,
+                model_used: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(summaries)
+    }
+
+    pub fn get_latest_summary_end_id(&self, session_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT message_end_id FROM session_summaries WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let id = stmt.query_row(params![session_id], |row| row.get(0)).optional()?;
+        Ok(id)
+    }
+
+    /// Query sessions eligible for archival (not archived + old)
+    pub fn list_archivable_sessions(&self, archive_after_days: u32) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM sessions WHERE archived = 0 AND updated_at < datetime('now', ?1)",
+        )?;
+        let since = format!("-{} days", archive_after_days);
+        let ids = stmt.query_map(params![since], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    pub fn set_session_archived(&self, id: &str, archived: bool) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET archived = ?1 WHERE id = ?2", params![archived as i32, id])?;
+        Ok(())
+    }
+
+    pub fn update_session_title_with_source(&self, id: &str, title: &str, source: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET title = ?1, title_source = ?2, updated_at = datetime('now') WHERE id = ?3",
+            params![title, source, id],
+        )?;
         Ok(())
     }
 

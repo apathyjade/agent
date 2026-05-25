@@ -1,9 +1,7 @@
 import { useState, memo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Sparkles, Wrench, ChevronDown, ChevronRight, User, Info, Copy, Check } from 'lucide-react';
+import { User, Sparkles, Wrench, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
 import { CodeBlock } from './CodeBlock';
 import type { Message } from '../types';
 
@@ -26,17 +24,31 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   }
 }
 
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
 const UserMessage = memo(function UserMessage({ message }: MessageBubbleProps) {
   return (
-    <div className="flex gap-4 flex-row-reverse group animate-in fade-in slide-in-from-right-4 duration-300">
-      <div className="w-8 h-8 rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center flex-shrink-0 shadow-sm group-hover:shadow-md transition-shadow">
-        <User size={16} className="text-gray-500 dark:text-gray-400" />
+    <div className="group">
+      <hr className="tui-divider" />
+      <div className="tui-header">
+        <User size={12} className="text-purple-500" />
+        <span className="text-purple-600 dark:text-purple-400 font-semibold">You</span>
+        <span>{formatTime(message.created_at)}</span>
       </div>
-      <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm hover:shadow-md transition-shadow">
-        <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
-        {message.tokens && (
-          <p className="text-xs mt-2 text-purple-200/80">{message.tokens} tokens</p>
-        )}
+      <div className="tui-content">
+        <span className="text-gray-400 dark:text-gray-500 mr-2 font-mono">&gt;</span>
+        {message.content}
       </div>
     </div>
   );
@@ -44,47 +56,58 @@ const UserMessage = memo(function UserMessage({ message }: MessageBubbleProps) {
 
 const AssistantMessage = memo(function AssistantMessage({ message }: MessageBubbleProps) {
   return (
-    <div className="flex gap-4 group animate-in fade-in slide-in-from-left-4 duration-300">
-      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center flex-shrink-0 shadow-sm group-hover:shadow-md transition-shadow">
-        <Sparkles size={16} className="text-white" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="rounded-2xl px-4 py-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
-          <div className="prose prose-sm max-w-none prose-p:my-2 prose-pre:my-0 prose-pre:p-0 prose-pre:border-0 prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-pink-600 prose-code:font-mono prose-code:text-sm prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-hr:my-3 prose-blockquote:border-l-purple-400 prose-blockquote:text-gray-500 prose-blockquote:not-italic prose-a:text-purple-600 prose-a:no-underline hover:prose-a:underline prose-table:my-2 prose-th:bg-gray-50 prose-td:border prose-td:border-gray-200 prose-img:rounded-lg dark:prose-code:bg-gray-700 dark:prose-code:text-pink-300">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                pre({ children }: { children?: React.ReactNode }) {
-                  const child = children as React.ReactElement<{ className?: string; children?: React.ReactNode }>;
-                  if (child?.type === 'code' && child?.props?.className) {
-                    const match = /language-(\w+)/.exec(String(child.props.className));
-                    if (match) {
-                      return (
-                        <CodeBlock
-                          language={match[1]}
-                          value={String(child.props.children).replace(/\n$/, '')}
-                        />
-                      );
-                    }
-                  }
-                  return <pre className="bg-gray-100 rounded-lg p-4 overflow-x-auto text-sm">{children}</pre>;
-                },
-                code({ className, children, ...props }) {
-                  return (
-                    <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono text-pink-600" {...props}>
-                      {children}
-                    </code>
-                  );
-                },
-              }}
-            >
-              {message.content}
-            </ReactMarkdown>
-          </div>
-        </div>
+    <div className="group">
+      <hr className="tui-divider" />
+      <div className="tui-header">
+        <Sparkles size={12} className="text-purple-500" />
+        <span className="text-purple-600 dark:text-purple-400 font-semibold">Agent</span>
+        <span>{formatTime(message.created_at)}</span>
         {message.tokens && (
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 ml-1">{message.tokens} tokens</p>
+          <span className="ml-auto text-gray-400">{message.tokens} tokens</span>
         )}
+      </div>
+      <div className="tui-content">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            pre({ children }) {
+              const child = children as React.ReactElement<{
+                className?: string;
+                children?: React.ReactNode;
+              }>;
+              if (child?.type === 'code' && child?.props?.className) {
+                const match = /language-(\w+)/.exec(
+                  String(child.props.className),
+                );
+                if (match) {
+                  return (
+                    <CodeBlock
+                      language={match[1]}
+                      value={String(child.props.children).replace(/\n$/, '')}
+                    />
+                  );
+                }
+              }
+              return (
+                <pre className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 overflow-x-auto text-sm text-gray-700 dark:text-gray-300">
+                  {children}
+                </pre>
+              );
+            },
+            code({ className, children, ...props }) {
+              return (
+                <code
+                  className="bg-gray-100 dark:bg-gray-700 text-pink-600 dark:text-pink-300 px-1.5 py-0.5 rounded text-sm font-mono"
+                  {...props}
+                >
+                  {children}
+                </code>
+              );
+            },
+          }}
+        >
+          {message.content}
+        </ReactMarkdown>
       </div>
     </div>
   );
@@ -92,19 +115,22 @@ const AssistantMessage = memo(function AssistantMessage({ message }: MessageBubb
 
 const SystemMessage = memo(function SystemMessage({ message }: MessageBubbleProps) {
   return (
-    <div className="flex justify-center animate-in fade-in zoom-in-95 duration-300">
-      <div className="flex items-start gap-2 max-w-[70%] px-4 py-2.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800 rounded-xl shadow-sm">
-        <Info size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
-        <div className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed whitespace-pre-wrap">
-          {message.content}
-        </div>
+    <div className="group">
+      <hr className="tui-divider" />
+      <div className="tui-header">
+        <span className="text-amber-500">◆</span>
+        <span className="text-amber-600 dark:text-amber-400 font-medium">System</span>
+        <span>{formatTime(message.created_at)}</span>
+      </div>
+      <div className="tui-content text-amber-700 dark:text-amber-300 text-sm">
+        {message.content}
       </div>
     </div>
   );
 });
 
 const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
-  const [expanded, setExpanded] = useState(true); // default expanded for recent tool calls
+  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
   let parsed: { name?: string; args?: string; result?: string } | null = null;
@@ -114,14 +140,13 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
     parsed = null;
   }
 
-  const displayContent = parsed?.result || message.content;
+  const toolName = parsed?.name || message.tool_call_id || 'tool_call';
   const displayArgs = parsed?.args || '';
-  const toolName = parsed?.name || message.tool_call_id || '工具调用';
+  const resultContent = parsed?.result || message.content;
 
-  // Try to pretty-print JSON for display
-  let prettyResult = displayContent;
+  let prettyResult = resultContent;
   try {
-    const json = JSON.parse(displayContent);
+    const json = JSON.parse(prettyResult);
     prettyResult = JSON.stringify(json, null, 2);
   } catch { /* not JSON, use as-is */ }
 
@@ -133,6 +158,11 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
     }
   } catch { /* not JSON */ }
 
+  const truncated =
+    prettyResult.length > 120
+      ? prettyResult.substring(0, 120) + '...'
+      : prettyResult;
+
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(prettyResult);
     setCopied(true);
@@ -140,87 +170,59 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
   }, [prettyResult]);
 
   return (
-    <div className="flex gap-4 pl-10 animate-in fade-in duration-300">
-      <div className="flex-1 min-w-0">
-        <div
-          className="rounded-xl border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-900/10 overflow-hidden cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-all"
-          onClick={() => setExpanded(!expanded)}
-        >
-          <div className="flex items-center gap-2 px-3 py-2 text-sm text-orange-700 dark:text-orange-400">
-            <Wrench size={14} className="text-orange-500" />
-            <span className="font-medium capitalize">{toolName}</span>
-            <span className="text-xs text-orange-400 dark:text-orange-500">工具调用</span>
-            <span className="flex-1" />
-            <span className="text-xs text-gray-400">{message.tokens ? `${message.tokens} tokens` : ''}</span>
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </div>
-          {expanded && (
-            <div className="border-t border-orange-200 dark:border-orange-700 px-3 py-2 space-y-2">
-              {displayArgs && (
-                <div>
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">参数</span>
-                  <div className="mt-1 rounded overflow-hidden">
-                    <SyntaxHighlighter
-                      language="json"
-                      style={oneDark}
-                      customStyle={{
-                        margin: 0,
-                        borderRadius: '0.375rem',
-                        fontSize: '0.75rem',
-                        lineHeight: '1.5',
-                        padding: '0.5rem',
-                        maxHeight: '12rem',
-                      }}
-                    >
-                      {prettyArgs}
-                    </SyntaxHighlighter>
-                  </div>
-                </div>
-              )}
-              <div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">结果</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleCopy(); }}
-                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                  >
-                    {copied ? (
-                      <>
-                        <Check size={12} className="text-green-500" />
-                        <span className="text-green-500">已复制</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={12} />
-                        <span>复制</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-                <div className="mt-1 rounded overflow-hidden">
-                  <SyntaxHighlighter
-                    language="json"
-                    style={oneDark}
-                    customStyle={{
-                      margin: 0,
-                      borderRadius: '0.375rem',
-                      fontSize: '0.75rem',
-                      lineHeight: '1.5',
-                      padding: '0.5rem',
-                      maxHeight: '16rem',
-                    }}
-                    codeTagProps={{
-                      style: { fontFamily: "'JetBrains Mono', 'Fira Code', monospace" },
-                    }}
-                  >
-                    {prettyResult}
-                  </SyntaxHighlighter>
-                </div>
-              </div>
+    <div className="group">
+      <hr className="tui-divider" />
+      <div
+        className="tui-header cursor-pointer select-none"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <Wrench size={12} className="text-orange-500" />
+        <span className="text-orange-600 dark:text-orange-400 capitalize font-medium">
+          {toolName}
+        </span>
+        <span>{formatTime(message.created_at)}</span>
+        <span className="ml-auto flex items-center gap-1 text-gray-400">
+          <span className="text-[11px]">{expanded ? 'hide' : 'show'}</span>
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
+      </div>
+      {!expanded && (
+        <div className="text-xs text-gray-400 dark:text-gray-500 px-1 py-1">{truncated}</div>
+      )}
+      {expanded && (
+        <div className="py-1 space-y-2">
+          {prettyArgs && (
+            <div>
+              <div className="text-[11px] text-gray-400 dark:text-gray-500 mb-1 font-mono">args</div>
+              <pre className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 overflow-x-auto text-xs font-mono text-gray-700 dark:text-gray-300">
+                {prettyArgs}
+              </pre>
             </div>
           )}
+          <div className="flex items-center justify-end">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleCopy();
+              }}
+              className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors flex items-center gap-1"
+            >
+              {copied ? (
+                <>
+                  <Check size={10} className="text-green-500" /> 已复制
+                </>
+              ) : (
+                <>
+                  <Copy size={10} /> 复制
+                </>
+              )}
+            </button>
+          </div>
+          <pre className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 overflow-x-auto text-xs font-mono text-gray-700 dark:text-gray-300">
+            {prettyResult}
+          </pre>
         </div>
-      </div>
+      )}
     </div>
   );
 });

@@ -1,5 +1,5 @@
 ﻿import { create } from 'zustand';
-import type { StreamChunk, Message, PersonaInfo } from '../types';
+import type { StreamChunk, Message, PersonaInfo, SessionSummary } from '../types';
 import * as api from '../api/tauri';
 
 import { type UISlice, createUISlice } from './uiSlice';
@@ -13,6 +13,7 @@ import { type MemorySlice, createMemorySlice } from './memorySlice';
 import { type PersonaSlice, createPersonaSlice } from './personaSlice';
 import { type RuntimeSlice, createRuntimeSlice } from './runtimeSlice';
 import { type WorkflowSlice, createWorkflowSlice } from './workflowSlice';
+import { type LifecycleSlice, createLifecycleSlice } from './lifecycleSlice';
 
 export type { Toast } from './uiSlice';
 
@@ -21,7 +22,9 @@ export interface StreamSlice {
   sendMessageStream: (content: string, toolsEnabled?: boolean, activePersonaId?: string) => Promise<void>;
 }
 
-export type AppState = UISlice & SessionSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & StreamSlice & {
+export type AppState = UISlice & SessionSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & LifecycleSlice & StreamSlice & {
+  summaries: SessionSummary[];
+  fetchSummaries: (sessionId: string) => Promise<void>;
   activePersonaId: string | null;
   activePersonaInfo: PersonaInfo | null;
   setActivePersona: (info: PersonaInfo | null) => void;
@@ -39,6 +42,18 @@ export const useStore = create<AppState>()((set, get, store) => ({
   ...createPersonaSlice(set, get, store),
   ...createRuntimeSlice(set, get, store),
   ...createWorkflowSlice(set, get, store),
+  ...createLifecycleSlice(set, get, store),
+
+  summaries: [],
+
+  fetchSummaries: async (sessionId: string) => {
+    try {
+      const summaries = await api.getSessionSummaries(sessionId);
+      set({ summaries });
+    } catch (err) {
+      console.error('Failed to fetch summaries:', err);
+    }
+  },
 
   activePersonaId: null,
   activePersonaInfo: null,
@@ -99,6 +114,8 @@ export const useStore = create<AppState>()((set, get, store) => ({
               isStreaming: false,
               streamingContent: '',
             }));
+            // Refresh summaries after stream completes
+            get().fetchSummaries(currentSession.id);
           }
         },
         toolsEnabled,

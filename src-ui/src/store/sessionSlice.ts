@@ -8,7 +8,7 @@ export interface SessionSlice {
   messages: Message[];
 
   fetchSessions: () => Promise<void>;
-  createSession: (title: string, modelId: string, systemPrompt?: string) => Promise<void>;
+  createSession: (title: string, modelId: string, systemPrompt?: string, personaId?: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   updateSessionTitle: (id: string, title: string) => Promise<void>;
@@ -16,6 +16,7 @@ export interface SessionSlice {
   clearSession: () => Promise<void>;
   newChat: () => void;
   sendMessage: (content: string) => Promise<void>;
+  updateSessionConfig: (id: string, config: Record<string, unknown>) => Promise<void>;
 }
 
 export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set, get) => ({
@@ -26,17 +27,17 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   fetchSessions: async () => {
     get().setLoading(true);
     try {
-      const sessions = await api.listSessions();
+      const sessions = await api.listSessions(true);
       set({ sessions, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
     }
   },
 
-  createSession: async (title, modelId, systemPrompt) => {
+  createSession: async (title, modelId, systemPrompt, personaId) => {
     get().setLoading(true);
     try {
-      const conv = await api.createSession(title, modelId, systemPrompt);
+      const conv = await api.createSession(title, modelId, systemPrompt, personaId);
       set((state: any) => ({
         sessions: [conv, ...state.sessions],
         currentSession: conv,
@@ -155,6 +156,23 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       }));
     } catch (err) {
       set({ error: String(err), loading: false });
+    }
+  },
+
+  updateSessionConfig: async (id, config) => {
+    try {
+      const configStr = JSON.stringify(config);
+      await api.updateSessionConfig(id, configStr);
+      set((state: any) => ({
+        sessions: state.sessions.map((s: any) =>
+          s.id === id ? { ...s, config: configStr } : s
+        ),
+        currentSession: state.currentSession?.id === id
+          ? { ...state.currentSession, config: configStr }
+          : state.currentSession,
+      }));
+    } catch (err) {
+      console.error('Failed to update session config:', err);
     }
   },
 });

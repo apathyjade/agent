@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings as SettingsIcon, Server, FolderOpen, Globe } from 'lucide-react';
+import { Eye, EyeOff, Check, FileText, Cpu, MessageSquare, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings as SettingsIcon, Server, FolderOpen, Globe } from 'lucide-react';
 import { Row } from '@jelper/component';
-import { Select } from 'antd';
+import { Select, Switch, InputNumber } from 'antd';
 import { useStore } from '../store';
 import * as api from '../api/tauri';
 import { ManagerPageLayout } from './ManagerPageLayout';
@@ -10,13 +10,14 @@ import { SkillInstallDialog } from './SkillInstallDialog';
 import { DirectoryPicker } from './DirectoryPicker';
 
 export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills' | 'runtime'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills' | 'runtime' | 'conversation'>('providers');
   const {
     providers, fetchProviders, setupProvider, updateProviderConfig, removeProvider,
     skills, fetchSkills, toggleSkill,
     systemPrompts, fetchSystemPrompts, deleteSystemPrompt, setDefaultSystemPrompt,
     models, fetchModels, defaultModel, setDefaultModel,
     installDir, fetchInstallDir, setInstallDir,
+    lifecycleConfig, updateLifecycleConfig, fetchLifecycleConfig,
   } = useStore();
 
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -74,6 +75,7 @@ export function SettingsPage() {
     fetchSkills();
     fetchInstallDir();
     loadProxySetting();
+    fetchLifecycleConfig();
   }, []);
 
   const selected = providers.find(p => p.id === selectedProvider);
@@ -161,6 +163,7 @@ export function SettingsPage() {
     { id: 'prompts' as const, icon: <FileText size={16} />, label: '提示词' },
     { id: 'skills' as const, icon: <BrainCircuit size={16} />, label: '技能' },
     { id: 'runtime' as const, icon: <Server size={16} />, label: '运行环境' },
+    { id: 'conversation' as const, icon: <MessageSquare size={16} />, label: '对话管理' },
   ];
 
   const renderTabContent = () => {
@@ -169,6 +172,7 @@ export function SettingsPage() {
       case 'skills': return renderSkillsTab();
       case 'prompts': return renderPromptsTab();
       case 'runtime': return renderRuntimeTab();
+      case 'conversation': return renderConversationTab();
     }
   };
 
@@ -610,6 +614,92 @@ export function SettingsPage() {
             设置后，运行时下载将通过该代理进行。支持 http:// 和 https:// 协议。
           </p>
         </div>
+      </div>
+    );
+  }
+
+  // ── Conversation Tab ──
+
+  function renderConversationTab() {
+    return (
+      <div className="space-y-4">
+        {/* Auto-title */}
+        <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+          <div className="flex items-center justify-between mb-1">
+            <div>
+              <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">自动标题生成</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">AI 自动为对话生成标题</p>
+            </div>
+            <Switch
+              checked={lifecycleConfig.auto_title_enabled}
+              onChange={(checked) => updateLifecycleConfig({ ...lifecycleConfig, auto_title_enabled: checked })}
+            />
+          </div>
+        </div>
+
+        {/* Auto-summarization */}
+        <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">自动摘要</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">将早期消息压缩为摘要以节省上下文</p>
+            </div>
+            <Switch
+              checked={lifecycleConfig.auto_summarize_enabled}
+              onChange={(checked) => updateLifecycleConfig({ ...lifecycleConfig, auto_summarize_enabled: checked })}
+            />
+          </div>
+          {lifecycleConfig.auto_summarize_enabled && (
+            <div className="flex items-center justify-between pt-3 border-t border-gray-200 dark:border-gray-600">
+              <span className="text-sm text-gray-600 dark:text-gray-400">摘要触发间隔</span>
+              <div className="flex items-center gap-2">
+                <InputNumber
+                  size="small"
+                  min={5}
+                  max={100}
+                  value={lifecycleConfig.summarize_chunk_size}
+                  onChange={(val) => val && updateLifecycleConfig({ ...lifecycleConfig, summarize_chunk_size: val })}
+                  className="w-20"
+                />
+                <span className="text-xs text-gray-400">条消息</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Auto-archive */}
+        <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">自动归档</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">将长期未更新的会话自动归档</p>
+            </div>
+            <Switch
+              checked={lifecycleConfig.auto_archive_enabled}
+              onChange={(checked) => updateLifecycleConfig({ ...lifecycleConfig, auto_archive_enabled: checked })}
+            />
+          </div>
+          {lifecycleConfig.auto_archive_enabled && (
+            <div className="flex items-center justify-between pt-3 border-t border-gray-200 dark:border-gray-600">
+              <span className="text-sm text-gray-600 dark:text-gray-400">归档阈值</span>
+              <div className="flex items-center gap-2">
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={365}
+                  value={lifecycleConfig.archive_after_days}
+                  onChange={(val) => val && updateLifecycleConfig({ ...lifecycleConfig, archive_after_days: val })}
+                  className="w-20"
+                />
+                <span className="text-xs text-gray-400">天未活跃</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <p className="text-[11px] text-gray-400 px-1">
+          所有配置更改会自动保存
+        </p>
       </div>
     );
   }

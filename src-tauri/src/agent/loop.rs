@@ -58,13 +58,20 @@ impl AgentLoop {
         self
     }
 
-    pub async fn run(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool) -> Result<ChatResponse> {
+    pub async fn run(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool, allowed_tools: Option<Vec<String>>) -> Result<ChatResponse> {
         let provider = self.providers.lock().await.get(model_id)?;
         let tool_registry = self.tools.lock().await;
 
         let tool_definitions: Vec<ToolDefinition> = if tools_enabled {
             tool_registry.get_enabled()
                 .iter()
+                .filter(|tool| {
+                    if let Some(ref allow) = allowed_tools {
+                        allow.contains(&tool.name().to_string())
+                    } else {
+                        true
+                    }
+                })
                 .map(|tool| ToolDefinition {
                     tool_type: "function".to_string(),
                     function: crate::api::types::FunctionDefinition {
@@ -126,7 +133,7 @@ impl AgentLoop {
         }
     }
 
-    pub async fn run_stream(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool) -> Result<mpsc::Receiver<StreamEvent>> {
+    pub async fn run_stream(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool, allowed_tools: Option<Vec<String>>) -> Result<mpsc::Receiver<StreamEvent>> {
         let (tx, rx) = mpsc::channel(32);
 
         let providers = self.providers.clone();
@@ -138,7 +145,7 @@ impl AgentLoop {
         tokio::spawn(async move {
             let optimized = Self::optimize_context(&messages, max_context_tokens);
 
-            if let Err(e) = Self::run_stream_inner(&providers, &tools, &mid, optimized, tools_enabled, &tx, max_iterations).await {
+            if let Err(e) = Self::run_stream_inner(&providers, &tools, &mid, optimized, tools_enabled, allowed_tools, &tx, max_iterations).await {
                 let _ = tx.send(StreamEvent::Content(format!("\n[Error: {}]", e))).await;
             }
             let _ = tx.send(StreamEvent::Done).await;
@@ -189,7 +196,7 @@ impl AgentLoop {
         result
     }
 
-    fn estimate_tokens(content: &str) -> usize {
+    pub fn estimate_tokens(content: &str) -> usize {
         let mut cjk_chars: usize = 0;
         let mut ascii_chars: usize = 0;
         let mut other_chars: usize = 0;
@@ -249,6 +256,7 @@ impl AgentLoop {
         model_id: &str,
         messages: Vec<Message>,
         tools_enabled: bool,
+        allowed_tools: Option<Vec<String>>,
         tx: &mpsc::Sender<StreamEvent>,
         max_iterations: usize,
     ) -> Result<()> {
@@ -258,6 +266,13 @@ impl AgentLoop {
             if tools_enabled {
                 tool_registry.get_enabled()
                     .iter()
+                    .filter(|tool| {
+                        if let Some(ref allow) = allowed_tools {
+                            allow.contains(&tool.name().to_string())
+                        } else {
+                            true
+                        }
+                    })
                     .map(|tool| ToolDefinition {
                         tool_type: "function".to_string(),
                         function: crate::api::types::FunctionDefinition {

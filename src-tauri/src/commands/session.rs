@@ -24,6 +24,7 @@ pub async fn create_session(
     title: String,
     model_id: String,
     system_prompt: Option<String>,
+    persona_id: Option<String>,
 ) -> Result<DbSession> {
     let now = Utc::now().to_rfc3339();
     let sess = DbSession {
@@ -31,6 +32,10 @@ pub async fn create_session(
         title,
         model_id,
         system_prompt,
+        persona_id,
+        config: None,
+        title_source: String::from("manual"),
+        archived: false,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -42,9 +47,36 @@ pub async fn create_session(
 }
 
 #[tauri::command]
-pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<DbSession>> {
+pub async fn list_sessions(
+    state: State<'_, AppState>,
+    include_archived: Option<bool>,
+) -> Result<Vec<DbSession>> {
     let db = state.db.lock().await;
-    db.list_sessions()
+    let all = db.list_sessions()?;
+    if include_archived.unwrap_or(false) {
+        Ok(all)
+    } else {
+        Ok(all.into_iter().filter(|s| !s.archived).collect())
+    }
+}
+
+#[tauri::command]
+pub async fn archive_session(state: State<'_, AppState>, id: String) -> Result<()> {
+    let db = state.db.lock().await;
+    db.set_session_archived(&id, true)
+}
+
+#[tauri::command]
+pub async fn unarchive_session(state: State<'_, AppState>, id: String) -> Result<()> {
+    let db = state.db.lock().await;
+    db.set_session_archived(&id, false)
+}
+
+#[tauri::command]
+pub async fn list_archived_sessions(state: State<'_, AppState>) -> Result<Vec<DbSession>> {
+    let db = state.db.lock().await;
+    let all = db.list_sessions()?;
+    Ok(all.into_iter().filter(|s| s.archived).collect())
 }
 
 #[tauri::command]
@@ -90,6 +122,16 @@ pub async fn update_session_system_prompt(
 ) -> Result<()> {
     let db = state.db.lock().await;
     db.update_session_system_prompt(&id, &system_prompt)
+}
+
+#[tauri::command]
+pub async fn update_session_config(
+    state: State<'_, AppState>,
+    id: String,
+    config: String,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.update_session_config(&id, &config)
 }
 
 #[tauri::command]
@@ -146,14 +188,29 @@ pub async fn send_message(
         tool_call_id: None,
     });
 
-    // Resolve and inject persona context
+    // Resolve persona: explicit active_persona_id > session's persona_id > auto-detect
+    let effective_persona_id = active_persona_id.clone()
+        .or_else(|| sess.persona_id.clone());
     let project_dir = state.app_handle.path().resource_dir().ok()
         .and_then(|p| p.parent().map(|pp| pp.to_string_lossy().to_string()));
     let active_persona = state.persona.resolve(
         &content,
         project_dir.as_deref(),
-        active_persona_id.as_deref(),
+        effective_persona_id.as_deref(),
     ).await;
+
+    // If persona specifies a model, override the session model
+    let effective_model_id = match &active_persona {
+        PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => {
+            if !p.model_name.is_empty() {
+                p.model_name.clone()
+            } else {
+                sess.model_id.clone()
+            }
+        }
+        _ => sess.model_id.clone(),
+    };
+
     if !matches!(active_persona, PersonaResolution::None) {
         let persona = match &active_persona {
             PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => p,
@@ -201,15 +258,30 @@ pub async fn send_message(
     }));
 
     let context_window = state.config.lock().await
-        .get_model(&sess.model_id)
+        .get_model(&effective_model_id)
         .and_then(|m| m.context_window)
         .map(|v| v as usize);
+
+    // Compress context if a context window limit is configured
+    if let Some(ctx) = context_window {
+        let db = state.db.lock().await;
+        api_messages = crate::lifecycle::compactor::compress_context(
+            &db, &session_id, api_messages, ctx,
+        )?;
+    }
+
+    // Parse session config for tool filtering
+    let allowed_tools: Option<Vec<String>> = sess.config.as_ref().and_then(|c| {
+        serde_json::from_str::<serde_json::Value>(c).ok()
+            .and_then(|v| v.get("enabled_tools").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+    });
 
     let mut agent = AgentLoop::new(state.providers.clone(), state.tools.clone());
     if let Some(ctx) = context_window {
         agent = agent.with_context_limit(ctx);
     }
-    let response = agent.run(&sess.model_id, api_messages, tools_enabled.unwrap_or(true)).await?;
+    let response = agent.run(&effective_model_id, api_messages, tools_enabled.unwrap_or(true), allowed_tools.clone()).await?;
 
     let db = state.db.lock().await;
     if let Some(choice) = response.choices.first() {
@@ -225,6 +297,26 @@ pub async fn send_message(
         };
 
         db.insert_message(&assistant_msg)?;
+
+        // Fire-and-forget lifecycle hooks
+        let lifecycle = state.lifecycle.clone();
+        let sid = session_id.clone();
+        let mid = sess.model_id.clone();
+        tokio::spawn(async move {
+            let _ = crate::lifecycle::titler::maybe_generate_title(
+                &lifecycle, &sid, &mid,
+            ).await;
+        });
+
+        let lifecycle2 = state.lifecycle.clone();
+        let sid2 = session_id.clone();
+        let mid2 = sess.model_id.clone();
+        tokio::spawn(async move {
+            let _ = crate::lifecycle::summarizer::maybe_generate_summary(
+                &lifecycle2, &sid2, &mid2,
+            ).await;
+        });
+
         Ok(assistant_msg)
     } else {
         Err(AppError::Provider("No response from LLM".to_string()))
@@ -277,14 +369,29 @@ pub async fn send_message_stream(
         tool_call_id: None,
     });
 
-    // Resolve and inject persona context
+    // Resolve persona: explicit active_persona_id > session's persona_id > auto-detect
+    let effective_persona_id = active_persona_id.clone()
+        .or_else(|| sess.persona_id.clone());
     let project_dir = state.app_handle.path().resource_dir().ok()
         .and_then(|p| p.parent().map(|pp| pp.to_string_lossy().to_string()));
     let active_persona = state.persona.resolve(
         &content,
         project_dir.as_deref(),
-        active_persona_id.as_deref(),
+        effective_persona_id.as_deref(),
     ).await;
+
+    // If persona specifies a model, override the session model
+    let effective_model_id = match &active_persona {
+        PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => {
+            if !p.model_name.is_empty() {
+                p.model_name.clone()
+            } else {
+                sess.model_id.clone()
+            }
+        }
+        _ => sess.model_id.clone(),
+    };
+
     if !matches!(active_persona, PersonaResolution::None) {
         let persona = match &active_persona {
             PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => p,
@@ -340,15 +447,30 @@ pub async fn send_message_stream(
     }
 
     let context_window = state.config.lock().await
-        .get_model(&sess.model_id)
+        .get_model(&effective_model_id)
         .and_then(|m| m.context_window)
         .map(|v| v as usize);
+
+    // Compress context if a context window limit is configured
+    if let Some(ctx) = context_window {
+        let db = state.db.lock().await;
+        api_messages = crate::lifecycle::compactor::compress_context(
+            &db, &session_id, api_messages, ctx,
+        )?;
+    }
+
+    // Parse session config for tool filtering
+    let allowed_tools: Option<Vec<String>> = sess.config.as_ref().and_then(|c| {
+        serde_json::from_str::<serde_json::Value>(c).ok()
+            .and_then(|v| v.get("enabled_tools").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+    });
 
     let mut agent = AgentLoop::new(state.providers.clone(), state.tools.clone());
     if let Some(ctx) = context_window {
         agent = agent.with_context_limit(ctx);
     }
-    let mut stream = agent.run_stream(&sess.model_id, api_messages, tools_enabled.unwrap_or(true)).await?;
+    let mut stream = agent.run_stream(&effective_model_id, api_messages, tools_enabled.unwrap_or(true), allowed_tools.clone()).await?;
 
     let mut full_content = String::new();
     let sess_id_for_messages = session_id.clone();
@@ -417,7 +539,7 @@ pub async fn send_message_stream(
     let db = state.db.lock().await;
     let assistant_msg = DbMessage {
         id: Uuid::new_v4().to_string(),
-        session_id,
+        session_id: session_id.clone(),
         role: "assistant".to_string(),
         content: full_content.clone(),
         tool_calls: None,
@@ -427,6 +549,26 @@ pub async fn send_message_stream(
     };
 
     db.insert_message(&assistant_msg)?;
+
+    // Fire-and-forget lifecycle hooks
+    let lifecycle = state.lifecycle.clone();
+    let sid = session_id.clone();
+    let mid = sess.model_id.clone();
+    tokio::spawn(async move {
+        let _ = crate::lifecycle::titler::maybe_generate_title(
+            &lifecycle, &sid, &mid,
+        ).await;
+    });
+
+    let lifecycle2 = state.lifecycle.clone();
+    let sid2 = session_id.clone();
+    let mid2 = sess.model_id.clone();
+    tokio::spawn(async move {
+        let _ = crate::lifecycle::summarizer::maybe_generate_summary(
+            &lifecycle2, &sid2, &mid2,
+        ).await;
+    });
+
     Ok(full_content)
 }
 

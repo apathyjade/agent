@@ -6,18 +6,19 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Session, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult } from '../types';
+import type { Session, SessionSummary, LifecycleConfig, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult } from '../types';
 
 export async function createSession(
   title: string,
   modelId: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  personaId?: string,
 ): Promise<Session> {
-  return invoke('create_session', { title, modelId, systemPrompt });
+  return invoke('create_session', { title, modelId, systemPrompt, personaId });
 }
 
-export async function listSessions(): Promise<Session[]> {
-  return invoke('list_sessions');
+export async function listSessions(includeArchived?: boolean): Promise<Session[]> {
+  return invoke('list_sessions', { includeArchived });
 }
 
 export async function getSession(id: string): Promise<Session | null> {
@@ -40,8 +41,12 @@ export async function clearSession(sessionId: string): Promise<void> {
   return invoke('clear_session', { sessionId });
 }
 
-export async function sendMessage(sessionId: string, content: string, toolsEnabled?: boolean): Promise<Message> {
-  return invoke('send_message', { sessionId, content, toolsEnabled });
+export async function updateSessionConfig(id: string, config: string): Promise<void> {
+  return invoke('update_session_config', { id, config });
+}
+
+export async function sendMessage(sessionId: string, content: string, toolsEnabled?: boolean, activePersonaId?: string): Promise<Message> {
+  return invoke('send_message', { sessionId, content, toolsEnabled, activePersonaId: activePersonaId ?? null });
 }
 
 export async function sendMessageStream(
@@ -74,6 +79,32 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
 
 export async function getRequestContext(sessionId: string): Promise<string | null> {
   return invoke('get_request_context', { sessionId });
+}
+
+// ── Session Lifecycle Commands ──
+
+export async function getSessionSummaries(sessionId: string): Promise<SessionSummary[]> {
+  return invoke('get_session_summaries', { sessionId });
+}
+
+export async function forceGenerateSummary(sessionId: string): Promise<void> {
+  return invoke('force_generate_summary', { sessionId });
+}
+
+export async function getLifecycleConfig(): Promise<LifecycleConfig> {
+  return invoke('get_lifecycle_config');
+}
+
+export async function updateLifecycleConfig(config: LifecycleConfig): Promise<void> {
+  return invoke('update_lifecycle_config', { config });
+}
+
+export async function archiveSession(id: string): Promise<void> {
+  return invoke('archive_session', { id });
+}
+
+export async function unarchiveSession(id: string): Promise<void> {
+  return invoke('unarchive_session', { id });
 }
 
 export async function listProviders(): Promise<ProviderStatus[]> {

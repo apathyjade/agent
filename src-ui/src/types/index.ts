@@ -3,6 +3,10 @@
   title: string;
   model_id: string;
   system_prompt?: string | null;
+  persona_id?: string | null;
+  title_source?: string;
+  archived?: boolean;
+  config?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -484,4 +488,29 @@ export interface VersionManager {
   install_guide?: string | null;
   recommended: boolean;
   install_url?: string | null;
+}
+
+// ── Lifecycle Types ──
+
+export interface SessionSummary {
+  id: string;
+  session_id: string;
+  message_start_id: string;
+  message_end_id: string;
+  summary: string;
+  key_points: string[] | null;
+  original_token_count: number;
+  summary_token_count: number;
+  model_used: string | null;
+  created_at: string;
+}
+
+export interface LifecycleConfig {
+  auto_title_enabled: boolean;
+  title_model: string | null;
+  auto_summarize_enabled: boolean;
+  summarize_chunk_size: number;
+  summarize_model: string | null;
+  auto_archive_enabled: boolean;
+  archive_after_days: number;
 }

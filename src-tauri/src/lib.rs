@@ -7,6 +7,7 @@ pub mod db;
 pub mod environment;
 pub mod error;
 pub mod keychain;
+pub mod lifecycle;
 pub mod mcp;
 pub mod memory;
 pub mod persona;
@@ -73,6 +74,18 @@ pub fn run() {
                     drop(config);
                     state.mcp.connect_all(&mcp_configs).await;
                 }
+
+                // 4. Load lifecycle config
+                {
+                    state.lifecycle.load_config().await;
+                }
+
+                // 5. Archive old sessions
+                {
+                    if let Err(e) = crate::lifecycle::archiver::run_archive_check(&state.lifecycle).await {
+                        log::error!("Failed to run archive check: {}", e);
+                    }
+                }
             });
 
             Ok(())
@@ -85,12 +98,20 @@ pub fn run() {
             commands::update_session_title,
             commands::update_session_model,
             commands::update_session_system_prompt,
+            commands::update_session_config,
             commands::clear_session,
             commands::send_message,
             commands::send_message_stream,
             commands::get_messages,
             commands::save_request_context,
             commands::get_request_context,
+            commands::archive_session,
+            commands::unarchive_session,
+            commands::list_archived_sessions,
+            commands::get_session_summaries,
+            commands::force_generate_summary,
+            commands::get_lifecycle_config,
+            commands::update_lifecycle_config,
             commands::get_models,
             commands::add_model,
             commands::remove_model,
