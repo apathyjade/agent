@@ -59,6 +59,20 @@ impl std::str::FromStr for ModelProvider {
     }
 }
 
+/// Runtime backend selection for model providers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendKind {
+    Native,
+    Rig,
+}
+
+impl Default for BackendKind {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub id: String,
@@ -71,6 +85,8 @@ pub struct ModelConfig {
     pub enabled: bool,
     pub context_window: Option<u32>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub backend: BackendKind,
 }
 
 impl ModelConfig {
@@ -153,6 +169,7 @@ impl Default for AppConfig {
                     enabled: true,
                     context_window: Some(1_000_000),
                     max_tokens: Some(128_000),
+                    backend: BackendKind::Native,
                 },
                 ModelConfig {
                     id: "default-ollama".to_string(),
@@ -165,6 +182,7 @@ impl Default for AppConfig {
                     enabled: false,
                     context_window: Some(131072),
                     max_tokens: Some(32768),
+                    backend: BackendKind::Native,
                 },
             ],
             enabled_tools: vec![

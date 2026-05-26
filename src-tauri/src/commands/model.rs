@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::config::ModelConfig;
+use crate::config::{BackendKind, ModelConfig};
 use crate::commands::ModelInfo;
 use crate::error::{AppError, Result};
 use crate::state::AppState;
@@ -47,6 +47,7 @@ pub async fn add_model(
         enabled: true,
         context_window,
         max_tokens,
+        backend: BackendKind::Native,
     };
 
     let mut config = state.config.lock().await;
