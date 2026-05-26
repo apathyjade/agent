@@ -32,6 +32,9 @@ pub enum AppError {
 
     #[error("Skill validation error: {0}")]
     SkillValidation(String),
+
+    #[error("Execution error: {0}")]
+    Execution(String),
 }
 
 impl serde::Serialize for AppError {
@@ -70,6 +73,7 @@ impl AppError {
             AppError::Tool(_) => false,
             AppError::Skill(_) => false,
             AppError::SkillValidation(_) => false,
+            AppError::Execution(_) => false,
         }
     }
 }

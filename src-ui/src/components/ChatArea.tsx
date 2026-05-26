@@ -11,6 +11,8 @@ import { Select } from 'antd';
 import { useStore } from '../store';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
+import { ExecutionStatusBar } from './ExecutionStatusBar';
+import { PlanTimeline } from './PlanTimeline';
 import type { Message } from '../types';
 
 const StreamingMessage = memo(function StreamingMessage({
@@ -389,6 +391,12 @@ export function ChatArea() {
           </button>
         )}
       </div>
+
+      {/* Execution status bar */}
+      <ExecutionStatusBar />
+
+      {/* Plan timeline */}
+      <PlanTimeline />
 
       {/* Input area */}
       <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 px-6 py-4 flex-shrink-0 transition-colors">

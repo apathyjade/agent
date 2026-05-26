@@ -6,7 +6,7 @@ export async function setWindowPosition(x: number, y: number): Promise<void> {
 }
 
 
-import type { Session, SessionSummary, LifecycleConfig, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult } from '../types';
+import type { Session, SessionSummary, LifecycleConfig, Message, ToolInfo, StreamChunk, SystemPrompt, ProviderStatus, ProviderSetupParams, ModelConfig, SkillInfo, SkillDetail, MarketSkill, ReconcileResult, McpConnectionInfo, ConnectionStats, WorkflowInfo, WorkflowRunRecord, RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion, BoundProject, ProjectScanResult, SyncResult, VersionUpdate, PathConflict, BatchInstallItem, BatchInstallResult, DiskUsageItem, VersionManager, MemoryInfo, CreateMemoryParams, UpdateMemoryParams, PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult, PlanDetail } from '../types';
 
 export async function createSession(
   title: string,
@@ -569,4 +569,30 @@ export async function updateMemory(id: string, params: UpdateMemoryParams): Prom
 
 export async function deleteMemory(id: string): Promise<void> {
   return invoke('delete_memory', { id });
+}
+
+// ── Execution Commands ──
+
+export async function executePlan(sessionId: string, planJson: string): Promise<void> {
+  return invoke('execute_plan', { sessionId, planJson });
+}
+
+export async function pauseExecution(sessionId: string): Promise<void> {
+  return invoke('pause_execution', { sessionId });
+}
+
+export async function resumeExecution(sessionId: string): Promise<void> {
+  return invoke('resume_execution', { sessionId });
+}
+
+export async function cancelExecution(sessionId: string): Promise<void> {
+  return invoke('cancel_execution', { sessionId });
+}
+
+export async function getExecutionStatus(sessionId: string): Promise<string | null> {
+  return invoke('get_execution_status', { sessionId });
+}
+
+export async function getPlanDetail(planId: string): Promise<PlanDetail | null> {
+  return invoke('get_plan_detail', { planId });
 }

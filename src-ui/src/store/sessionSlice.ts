@@ -1,11 +1,17 @@
 import type { StateCreator } from 'zustand';
-import type { Session, Message } from '../types';
+import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent } from '../types';
 import * as api from '../api/tauri';
 
 export interface SessionSlice {
   sessions: Session[];
   currentSession: Session | null;
   messages: Message[];
+
+  // Execution state
+  sessionMode: SessionMode;
+  executionStatus: ExecStatus;
+  activePlan: ExecutionPlan | null;
+  planProgress: PlanProgressEvent | null;
 
   fetchSessions: () => Promise<void>;
   createSession: (title: string, modelId: string, systemPrompt?: string, personaId?: string) => Promise<void>;
@@ -17,12 +23,26 @@ export interface SessionSlice {
   newChat: () => void;
   sendMessage: (content: string) => Promise<void>;
   updateSessionConfig: (id: string, config: Record<string, unknown>) => Promise<void>;
+
+  // Execution actions
+  setSessionMode: (mode: SessionMode) => void;
+  setExecutionStatus: (status: ExecStatus) => void;
+  setActivePlan: (plan: ExecutionPlan | null) => void;
+  setPlanProgress: (progress: PlanProgressEvent | null) => void;
+  executePlan: (sessionId: string, plan: ExecutionPlan) => Promise<void>;
+  pauseExecution: (sessionId: string) => Promise<void>;
+  resumeExecution: (sessionId: string) => Promise<void>;
+  cancelExecution: (sessionId: string) => Promise<void>;
 }
 
 export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set, get) => ({
   sessions: [],
   currentSession: null,
   messages: [],
+  sessionMode: 'chat',
+  executionStatus: { type: 'idle' },
+  activePlan: null,
+  planProgress: null,
 
   fetchSessions: async () => {
     get().setLoading(true);
@@ -173,6 +193,57 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       }));
     } catch (err) {
       console.error('Failed to update session config:', err);
+    }
+  },
+
+  // ── Execution Actions ──
+
+  setSessionMode: (mode) => set({ sessionMode: mode }),
+
+  setExecutionStatus: (status) => set({ executionStatus: status }),
+
+  setActivePlan: (plan) => set({ activePlan: plan }),
+
+  setPlanProgress: (progress) => set({ planProgress: progress }),
+
+  executePlan: async (sessionId, plan) => {
+    set({
+      sessionMode: 'autonomous',
+      executionStatus: { type: 'running', step_index: 0, started_at: new Date().toISOString() },
+      activePlan: plan,
+    });
+    try {
+      await api.executePlan(sessionId, JSON.stringify(plan));
+    } catch (err) {
+      set({ executionStatus: { type: 'failed', step_index: 0, error: String(err) } });
+    }
+  },
+
+  pauseExecution: async (sessionId) => {
+    try {
+      await api.pauseExecution(sessionId);
+      set((state: any) => ({
+        executionStatus: { type: 'paused', step_index: state.planProgress?.step_index ?? 0, reason: 'user_paused' },
+      }));
+    } catch (err) {
+      console.error('Failed to pause:', err);
+    }
+  },
+
+  resumeExecution: async (sessionId) => {
+    try {
+      await api.resumeExecution(sessionId);
+    } catch (err) {
+      console.error('Failed to resume:', err);
+    }
+  },
+
+  cancelExecution: async (sessionId) => {
+    try {
+      await api.cancelExecution(sessionId);
+      set({ activePlan: null, executionStatus: { type: 'idle' }, planProgress: null });
+    } catch (err) {
+      console.error('Failed to cancel:', err);
     }
   },
 });

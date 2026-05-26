@@ -515,3 +515,72 @@ export interface LifecycleConfig {
   auto_archive_enabled: boolean;
   archive_after_days: number;
 }
+
+// ── Execution Types ──
+
+export type SessionMode = 'chat' | 'autonomous';
+
+export type ExecStatus =
+  | { type: 'idle' }
+  | { type: 'running'; step_index: number; started_at: string }
+  | { type: 'paused'; step_index: number; reason: string }
+  | { type: 'completed'; finished_at: string }
+  | { type: 'failed'; step_index: number; error: string }
+  | { type: 'cancelled' };
+
+export type ExecStep =
+  | { type: 'agent_task'; instruction: string; model_id?: string; max_iterations?: number; allowed_tools?: string[]; temperature?: number }
+  | { type: 'llm_call'; prompt: string; system_prompt?: string; model_id?: string; temperature?: number; max_tokens?: number }
+  | { type: 'tool_call'; tool: string; params: Record<string, unknown>; retry?: { max: number; delay_seconds: number }; timeout_seconds?: number }
+  | { type: 'condition'; expression: string; on_true?: string; on_false?: string };
+
+export interface PlanStep {
+  id: string;
+  label: string;
+  execution: ExecStep;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  result?: unknown;
+  error?: string | null;
+  started_at?: string | null;
+  duration_ms?: number | null;
+}
+
+export interface ExecutionPlan {
+  id: string;
+  session_id: string;
+  source: { type: 'dynamic'; goal: string; generated_by: string } | { type: 'static'; workflow_name: string };
+  steps: PlanStep[];
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  created_at: string;
+  finished_at?: string | null;
+}
+
+export interface PlanProgressEvent {
+  plan_id: string;
+  session_id: string;
+  event_type: 'step_started' | 'step_completed' | 'step_failed' | 'plan_completed' | 'plan_failed' | 'paused' | 'cancelled';
+  step_index?: number | null;
+  step_label?: string | null;
+  result_summary?: string | null;
+  error?: string | null;
+  total_steps: number;
+  completed_steps: number;
+}
+
+export interface PlanStepRecord {
+  id: string;
+  plan_id: string;
+  step_index: number;
+  label: string;
+  step_type: string;
+  status: string;
+  result_json?: string | null;
+  error?: string | null;
+  started_at?: string | null;
+  duration_ms?: number | null;
+}
+
+export interface PlanDetail {
+  plan: ExecutionPlan;
+  step_records: PlanStepRecord[];
+}

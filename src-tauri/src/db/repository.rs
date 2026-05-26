@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::models::{BoundProjectModel, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
+use crate::execution::types::{ExecutionPlanRecord, PlanStepRecord};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -226,6 +227,35 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id);
             CREATE INDEX IF NOT EXISTS idx_summaries_range ON session_summaries(session_id, message_end_id);
+
+            CREATE TABLE IF NOT EXISTS execution_plans (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                goal TEXT,
+                plan_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                finished_at TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_plan_steps (
+                id TEXT PRIMARY KEY,
+                plan_id TEXT NOT NULL,
+                step_index INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                step_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                result_json TEXT,
+                error TEXT,
+                started_at TEXT,
+                duration_ms INTEGER,
+                FOREIGN KEY (plan_id) REFERENCES execution_plans(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_exec_plans_session ON execution_plans(session_id);
+            CREATE INDEX IF NOT EXISTS idx_exec_steps_plan ON execution_plan_steps(plan_id);
             ",
         )?;
 
@@ -367,6 +397,21 @@ impl Database {
             )?;
         }
 
+        // Migration v9: add mode, execution_status, active_plan_id to sessions
+        let has_mode = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='mode'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_mode == 0 {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat';
+                 ALTER TABLE sessions ADD COLUMN execution_status TEXT NOT NULL DEFAULT 'idle';
+                 ALTER TABLE sessions ADD COLUMN active_plan_id TEXT;",
+            )?;
+        }
+
         // Migration v5: rebuild FTS5 index if existing memories haven't been indexed yet.
         // The FTS table was just created in init_tables (or already existed from a prior run).
         // Check if the FTS index is empty while the memories table has rows.
@@ -387,16 +432,16 @@ impl Database {
 
     pub fn create_session(&self, sess: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at],
+            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at, sess.mode, sess.execution_status, sess.active_plan_id],
         )?;
         Ok(())
     }
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id FROM sessions ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map([], |row| {
             Ok(Session {
@@ -410,6 +455,9 @@ impl Database {
                 archived: row.get::<_, i32>(7)? != 0,
                 created_at: row.get(8)?,
                 updated_at: row.get(9)?,
+                mode: row.get(10)?,
+                execution_status: row.get(11)?,
+                active_plan_id: row.get(12)?,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
@@ -417,7 +465,7 @@ impl Database {
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at FROM sessions WHERE id = ?1",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id FROM sessions WHERE id = ?1",
         )?;
         let sess = stmt.query_row(params![id], |row| {
             Ok(Session {
@@ -431,6 +479,9 @@ impl Database {
                 archived: row.get::<_, i32>(7)? != 0,
                 created_at: row.get(8)?,
                 updated_at: row.get(9)?,
+                mode: row.get(10)?,
+                execution_status: row.get(11)?,
+                active_plan_id: row.get(12)?,
             })
         }).optional()?;
         Ok(sess)
@@ -1297,6 +1348,23 @@ impl Database {
         Ok(())
     }
 
+    /// Update session execution_status (used by ExecutionRuntime via conn access)
+    pub fn update_session_execution_status(&self, session_id: &str, status_json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET execution_status = ?1 WHERE id = ?2",
+            params![status_json, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_session_execution(&self, session_id: &str, mode: &str, status_json: &str, active_plan_id: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET mode = ?1, execution_status = ?2, active_plan_id = ?3 WHERE id = ?4",
+            params![mode, status_json, active_plan_id, session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_personas_for_project(&self, project_path: &str) -> Result<Vec<PersonaRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.created_at, p.updated_at
@@ -1308,5 +1376,101 @@ impl Database {
         let personas = stmt.query_map(params![project_path], Self::map_persona_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(personas)
+    }
+
+    // ── Execution Plans CRUD ──
+
+    pub fn insert_execution_plan(&self, plan: &ExecutionPlanRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO execution_plans (id, session_id, source, goal, plan_json, status, created_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![plan.id, plan.session_id, plan.source, plan.goal, plan.plan_json, plan.status, plan.created_at, plan.finished_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_execution_plan_status(&self, id: &str, status: &str, finished_at: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE execution_plans SET status = ?2, finished_at = ?3 WHERE id = ?1",
+            params![id, status, finished_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_execution_plan(&self, id: &str) -> Result<Option<ExecutionPlanRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, source, goal, plan_json, status, created_at, finished_at
+             FROM execution_plans WHERE id = ?1",
+        )?;
+        let plan = stmt.query_row(params![id], |row| {
+            Ok(ExecutionPlanRecord {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                source: row.get(2)?,
+                goal: row.get(3)?,
+                plan_json: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+                finished_at: row.get(7)?,
+            })
+        }).optional()?;
+        Ok(plan)
+    }
+
+    pub fn list_execution_plans(&self, session_id: &str) -> Result<Vec<ExecutionPlanRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, source, goal, plan_json, status, created_at, finished_at
+             FROM execution_plans WHERE session_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let plans = stmt.query_map(params![session_id], |row| {
+            Ok(ExecutionPlanRecord {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                source: row.get(2)?,
+                goal: row.get(3)?,
+                plan_json: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(6)?,
+                finished_at: row.get(7)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(plans)
+    }
+
+    pub fn upsert_plan_step(&self, step: &PlanStepRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO execution_plan_steps (id, plan_id, step_index, label, step_type, status, result_json, error, started_at, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                result_json = excluded.result_json,
+                error = excluded.error,
+                duration_ms = excluded.duration_ms",
+            params![step.id, step.plan_id, step.step_index, step.label, step.step_type,
+                    step.status, step.result_json, step.error, step.started_at, step.duration_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_plan_steps(&self, plan_id: &str) -> Result<Vec<PlanStepRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, plan_id, step_index, label, step_type, status, result_json, error, started_at, duration_ms
+             FROM execution_plan_steps WHERE plan_id = ?1 ORDER BY step_index ASC",
+        )?;
+        let steps = stmt.query_map(params![plan_id], |row| {
+            Ok(PlanStepRecord {
+                id: row.get(0)?,
+                plan_id: row.get(1)?,
+                step_index: row.get(2)?,
+                label: row.get(3)?,
+                step_type: row.get(4)?,
+                status: row.get(5)?,
+                result_json: row.get(6)?,
+                error: row.get(7)?,
+                started_at: row.get(8)?,
+                duration_ms: row.get(9)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(steps)
     }
 }

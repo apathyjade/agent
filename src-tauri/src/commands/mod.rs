@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod session;
 pub mod environment;
+pub mod execution;
 pub mod mcp;
 pub mod memory;
 pub mod model;
@@ -16,6 +17,7 @@ pub mod window;
 
 pub use session::*;
 pub use environment::*;
+pub use execution::*;
 pub use mcp::*;
 pub use memory::*;
 pub use model::*;

@@ -38,6 +38,9 @@ pub async fn create_session(
         archived: false,
         created_at: now.clone(),
         updated_at: now,
+        mode: "chat".to_string(),
+        execution_status: r#"{"type":"idle"}"#.to_string(),
+        active_plan_id: None,
     };
 
     let db = state.db.lock().await;

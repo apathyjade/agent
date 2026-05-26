@@ -35,6 +35,15 @@ pub struct Session {
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Session mode: "chat" | "autonomous"
+    #[serde(default)]
+    pub mode: String,
+    /// JSON-serialized ExecStatus
+    #[serde(default)]
+    pub execution_status: String,
+    /// Active execution plan ID (if any)
+    #[serde(default)]
+    pub active_plan_id: Option<String>,
 }
 
 /// A summary of a range of messages within a session.

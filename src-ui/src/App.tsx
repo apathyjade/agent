@@ -1,6 +1,7 @@
 ﻿import { useEffect, useRef } from 'react';
 import { Minus, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 import { Col, Row } from '@jelper/component';
 import { ModuleBar } from './components/ModuleBar';
 import { Sidebar } from './components/Sidebar';
@@ -16,6 +17,7 @@ import { WorkflowManagerPage } from './components/WorkflowManagerPage';
 import { ToastContainer } from './components/Toast';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
+import type { PlanProgressEvent } from './types';
 import './styles/global.css';
 
 function App() {
@@ -89,6 +91,43 @@ function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
+  }, []);
+
+  // Listen for plan_progress events from Tauri
+  useEffect(() => {
+    const unlisten = listen<PlanProgressEvent>('plan_progress', (event) => {
+      const payload = event.payload;
+      const store = useStore.getState();
+
+      switch (payload.event_type) {
+        case 'step_completed':
+        case 'step_failed':
+        case 'step_started':
+          store.setPlanProgress(payload);
+          break;
+        case 'plan_completed':
+          store.setExecutionStatus({ type: 'completed', finished_at: new Date().toISOString() });
+          store.setPlanProgress(payload);
+          break;
+        case 'plan_failed':
+          store.setExecutionStatus({
+            type: 'failed',
+            step_index: payload.step_index ?? 0,
+            error: payload.error ?? 'Unknown error',
+          });
+          store.setPlanProgress(payload);
+          break;
+        case 'cancelled':
+          store.setExecutionStatus({ type: 'idle' });
+          store.setActivePlan(null);
+          store.setPlanProgress(null);
+          break;
+      }
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const renderMainContent = () => {

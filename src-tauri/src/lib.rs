@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod environment;
 pub mod error;
+pub mod execution;
 pub mod intent;
 pub mod keychain;
 pub mod lifecycle;
@@ -106,6 +107,12 @@ pub fn run() {
             commands::get_messages,
             commands::save_request_context,
             commands::get_request_context,
+            commands::execute_plan,
+            commands::pause_execution,
+            commands::resume_execution,
+            commands::cancel_execution,
+            commands::get_execution_status,
+            commands::get_plan_detail,
             commands::archive_session,
             commands::unarchive_session,
             commands::list_archived_sessions,

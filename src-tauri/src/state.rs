@@ -1,4 +1,5 @@
-﻿use std::sync::Arc;
+﻿use std::collections::HashMap;
+use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
@@ -9,6 +10,7 @@ use crate::environment::alias::AliasManager;
 use crate::environment::resolver::VersionResolver;
 use crate::environment::RuntimeManager;
 use crate::environment::registry::RuntimeRegistry;
+use crate::execution::types::ExecutionHandle;
 use crate::intent::router::IntentRouter;
 use crate::lifecycle::LifecycleManager;
 use crate::mcp::McpServerManager;
@@ -33,6 +35,8 @@ pub struct AppState {
     pub alias_manager: Arc<AliasManager>,
     pub lifecycle: LifecycleManager,
     pub intent_router: Arc<IntentRouter>,
+    /// 运行中的执行句柄（session_id → ExecutionHandle）
+    pub active_executions: Arc<Mutex<HashMap<String, ExecutionHandle>>>,
 }
 
 impl AppState {
@@ -88,6 +92,7 @@ impl AppState {
             alias_manager,
             lifecycle,
             intent_router,
+            active_executions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
