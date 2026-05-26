@@ -9,6 +9,9 @@
   config?: string | null;
   created_at: string;
   updated_at: string;
+  mode?: string;
+  execution_status?: string;
+  active_plan_id?: string | null;
 }
 
 export interface Message {

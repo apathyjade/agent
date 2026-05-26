@@ -4,7 +4,7 @@ import type { ExecStatus } from '../types';
 function getStatusInfo(status: ExecStatus) {
   switch (status.type) {
     case 'running':
-      return { label: '执行中...', dot: 'bg-green-500 animate-pulse', bg: 'bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-800' };
+      return { label: '执行中', dot: 'bg-green-500 animate-pulse', bg: 'bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-800' };
     case 'paused':
       return { label: '已暂停', dot: 'bg-yellow-500', bg: 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800' };
     case 'completed':
@@ -22,6 +22,7 @@ export function ExecutionStatusBar() {
   const sessionMode = useStore((s) => s.sessionMode);
   const executionStatus = useStore((s) => s.executionStatus);
   const activePlan = useStore((s) => s.activePlan);
+  const planProgress = useStore((s) => s.planProgress);
   const currentSession = useStore((s) => s.currentSession);
   const pauseExecution = useStore((s) => s.pauseExecution);
   const resumeExecution = useStore((s) => s.resumeExecution);
@@ -36,20 +37,43 @@ export function ExecutionStatusBar() {
   const isPaused = executionStatus.type === 'paused';
   const sessionId = currentSession?.id;
 
+  // Get current step label
+  const currentStepLabel = planProgress?.step_label ?? null;
+  const totalSteps = activePlan.steps.length;
+  const completedSteps = planProgress?.completed_steps ?? 0;
+
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 border-b text-sm ${info.bg}`}>
-      <span className="flex items-center gap-1">
+      <span className="flex items-center gap-1 flex-shrink-0">
         <span className={`w-2 h-2 rounded-full ${info.dot}`} />
         <span className="font-medium text-purple-700 dark:text-purple-300">
           {info.label}
         </span>
       </span>
 
-      <span className="text-gray-500 dark:text-gray-400 text-xs ml-2">
-        {activePlan.steps.length} 步计划
+      {/* Step info */}
+      <span className="text-gray-500 dark:text-gray-400 text-xs ml-1">
+        {isRunning && currentStepLabel && (
+          <span className="truncate max-w-[200px] inline-block align-bottom" title={currentStepLabel}>
+            {completedSteps}/{totalSteps} · {currentStepLabel}
+          </span>
+        )}
+        {!isRunning && (
+          <span>{totalSteps} 步计划</span>
+        )}
       </span>
 
-      <div className="ml-auto flex gap-1">
+      {/* Progress bar (running only) */}
+      {isRunning && (
+        <div className="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden max-w-[80px]">
+          <div
+            className="h-full bg-purple-500 rounded-full transition-all duration-500"
+            style={{ width: `${totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0}%` }}
+          />
+        </div>
+      )}
+
+      <div className="ml-auto flex gap-1 flex-shrink-0">
         {isRunning && sessionId && (
           <>
             <button

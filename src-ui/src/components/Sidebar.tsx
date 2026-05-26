@@ -84,7 +84,11 @@ export function Sidebar() {
                   : 'hover:bg-purple-50/50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300'
               }`}
             >
-              <MessageSquare size={16} className="flex-shrink-0 text-gray-400 dark:text-gray-500" />
+              {sess.mode === 'autonomous' || (sess as any).mode === 'autonomous' ? (
+                <span className="w-2 h-2 rounded-full bg-purple-500 flex-shrink-0" title="自主模式" />
+              ) : (
+                <MessageSquare size={16} className="flex-shrink-0 text-gray-400 dark:text-gray-500" />
+              )}
               {editingId === sess.id ? (
                   <input
                     type="text"

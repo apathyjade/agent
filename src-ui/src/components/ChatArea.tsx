@@ -153,6 +153,20 @@ export function ChatArea() {
     if (currentSession?.id) fetchSummaries(currentSession.id);
   }, [currentSession?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Esc key to cancel autonomous execution
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const state = useStore.getState();
+        if (state.sessionMode === 'autonomous' && state.currentSession?.id) {
+          state.cancelExecution(state.currentSession.id);
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const handleChatSend = useCallback(
     async (content: string) => {
       setIsNearBottom(true);
