@@ -189,26 +189,40 @@ Respond with a JSON object ONLY, no other text:
             let params = step_val.get("params");
 
             let execution = match step_type {
-                "tool_call" => ExecStep::ToolCall {
-                    tool: params
+                "tool_call" => {
+                    let tool_name = params
                         .and_then(|p| p.get("tool"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    params: params
-                        .and_then(|p| p.get("params"))
-                        .and_then(|v| v.as_object())
-                        .map(|m| {
-                            m.iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    retry: Some(RetryConfig {
-                        max: 2,
-                        delay_seconds: 1,
-                    }),
-                    timeout_seconds: None,
+                        .unwrap_or("");
+                    if tool_name.is_empty() {
+                        // Empty tool name — fall back to AgentTask
+                        log::warn!("Planner generated tool_call with empty tool name, falling back to agent_task");
+                        ExecStep::AgentTask {
+                            instruction: label.clone(),
+                            model_id: None,
+                            max_iterations: Some(10),
+                            allowed_tools: None,
+                            temperature: None,
+                        }
+                    } else {
+                        ExecStep::ToolCall {
+                            tool: tool_name.to_string(),
+                            params: params
+                                .and_then(|p| p.get("params"))
+                                .and_then(|v| v.as_object())
+                                .map(|m| {
+                                    m.iter()
+                                        .map(|(k, v)| (k.clone(), v.clone()))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            retry: Some(RetryConfig {
+                                max: 2,
+                                delay_seconds: 1,
+                            }),
+                            timeout_seconds: None,
+                        }
+                    }
                 },
                 "agent_task" => ExecStep::AgentTask {
                     instruction: params
