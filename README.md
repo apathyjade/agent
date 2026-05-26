@@ -2,6 +2,8 @@
 
 A cross-platform AI agent client built with Rust and Tauri 2.x, supporting multiple LLM backends and extensible tool system.
 
+> 开发文档见 [AGENTS.md](AGENTS.md) 和 [docs/](docs/) 目录。
+
 ## Features
 
 - **Cross-platform**: Windows, macOS, Linux, Android, iOS, Web
@@ -25,21 +27,23 @@ A cross-platform AI agent client built with Rust and Tauri 2.x, supporting multi
 
 ```
 agent/
-├── src/                    # Rust core
-│   ├── api/                # LLM API clients
-│   ├── db/                 # SQLite storage
-│   ├── tools/              # Agent tool system
-│   ├── agent/              # Agent execution loop
-│   ├── commands.rs         # Tauri IPC commands
-│   └── ...
-├── src-ui/                 # React frontend
+├── src-tauri/              # Tauri Rust 后端
 │   ├── src/
-│   │   ├── components/     # UI components
-│   │   ├── store/          # Zustand state
+│   │   ├── agent/          # Agent 执行循环
+│   │   ├── api/            # LLM API 客户端
+│   │   ├── commands/       # IPC 命令
+│   │   ├── db/             # SQLite 存储
+│   │   ├── tools/          # 工具系统
+│   │   └── ...
+│   └── Cargo.toml
+├── src-ui/                 # React 前端
+│   ├── src/
+│   │   ├── components/     # UI 组件
+│   │   ├── store/          # Zustand 状态
 │   │   └── ...
 │   └── ...
-├── Cargo.toml
-└── tauri.conf.json
+├── docs/                   # 项目文档（见 AGENTS.md）
+└── scripts/                # AI 工作流脚本
 ```
 
 ## Getting Started

@@ -1,9 +1,11 @@
 # AGENTS.md — Agent（Tauri AI 客户端）
 
-> 详细文档已拆分到 `docs/agents/` 目录：
-> - [架构与项目结构](docs/agents/architecture.md)
-> - [AI 开发工作流](docs/agents/workflow.md)
-> - [常见陷阱与安全规范](docs/agents/traps.md)
+> 详细文档见 `docs/agents/`：
+> - [项目概览](docs/agents/overview.md) — 技术栈、目录结构、Provider、工具系统
+> - [开发流程](docs/agents/workflow.md) — branch-per-session + OpenSpec 双流程
+> - [OpenSpec 工作流](docs/agents/openspec-workflow.md) — 功能开发标准化流程
+> - [常见陷阱](docs/agents/traps.md) — 项目配置、消息流、MCP 等注意事项
+> - [安全编码与依赖管理](docs/agents/safety.md) — 安全红线、第三方依赖规范
 
 ---
 
@@ -12,6 +14,31 @@
 - 始终使用中文回复
 - 代码注释、变量命名、git commit 使用英文
 - /init 命令生成的 AGENTS.md 也使用中文
+
+---
+
+## 文档约定
+
+所有产出文档统一归入 `docs/` 下的子目录，不分散到多个位置。
+
+| 类型 | 存放位置 | 说明 |
+|------|----------|------|
+| 产品 PRD / 需求文档 | `docs/prd/` | 做什么、为什么 |
+| 规格 / 详细需求 | `docs/specs/` | 每个能力的详细规格 |
+| 架构 / 设计文档 | `docs/design/` | 怎么做（技术设计） |
+| 实施计划 | `docs/plans/` | 可执行的步骤拆分 |
+| 路线图 | `docs/roadmap/` | 长期规划 |
+
+**工具工作目录规则：**
+- `.omo/plans/` — OpenCode 内部 plan 缓存，**不**作为文档源。有参考价值的产物复制到 `docs/` 对应目录。
+- `openspec/changes/` — OpenSpec change 产物（proposal/design/specs/tasks），在 change 生命周期内以那里为准。archive 后关键内容摘到 `docs/` 对应目录。
+- 不要在 `docs/` 根目录直接放文档，使用子目录归类。
+
+**AI agent 规则：**
+- 生成文档时写入 `docs/{prd,specs,design,plans,roadmap}/` 对应目录，不写别处。
+- `.omo/` 和 `openspec/` 是工具私有空间，不直接写文档到这两处之外。
+
+---
 
 ## 构建
 
@@ -35,6 +62,8 @@ cd src-tauri && cargo tauri build
 
 ## 速查
 
+### 开发场景
+
 | 场景 | 命令或位置 |
 |------|-----------|
 | 构建检查 | `cd src-tauri && cargo check` |
@@ -46,61 +75,33 @@ cd src-tauri && cargo tauri build
 | 添加记忆种子 | `memory/seeds.rs` 的 `default_seed_memories()` 中添加 |
 | 修改 CSP 白名单 | 编辑 `src-tauri/tauri.conf.json` 的 `connect-src` |
 
----
+### 工作流命令
 
-## 项目一览
-
-| 维度 | 数据 |
+| 场景 | 命令 |
 |------|------|
-| 后端模块 | 17 个（agent, api, commands, config, db, environment, error, keychain, mcp, memory, pipeline, skills, state, tools...） |
-| IPC 命令 | ~100 个注册命令 |
-| Provider | 11 个（10 OpenAI 兼容 + 1 Anthropic） |
-| 内置工具 | 5 个（calculator, file_system, web_search, code_executor, script_tool） |
-| 运行时支持 | 8 种（Node, Python, Docker, uv, Go, Rust, Java, Deno） |
-| 数据表 | 9 张 |
-| 前端组件 | ~30 个 |
-| 内置记忆 | 17 条种子记忆，关键词检索注入 Agent 上下文 |
+| 开始 AI 开发会话 | `node scripts/start-session.mjs <desc>` |
+| 暂存当前进度 | `node scripts/checkpoint.mjs <描述>` |
+| 结束会话并合并 | `node scripts/finish-session.mjs [--squash]` |
+| 开始功能开发 | `/opsx-propose` |
+| 实施功能开发 | `/opsx-apply` |
+| 归档已完成功能 | `/opsx-archive` |
 
 ---
 
-## AI 工作流
+## 安全红线
 
-采用 **branch-per-session** 工作流。AI 会话自动：
-1. `node scripts/start-session.mjs <desc>` — 创建分支
-2. `node scripts/checkpoint.mjs <desc>` — 每次响应后暂存
-3. `node scripts/finish-session.mjs --squash` — 归档合并
+详细规范见 [docs/agents/safety.md](docs/agents/safety.md)，核心红线：
 
-详细说明见 [docs/agents/workflow.md](docs/agents/workflow.md)。
+- **API Key / Token** — 严禁硬编码，使用 `process.env` 或 keychain
+- **SQL 注入** — 全部使用参数化查询（`rusqlite::params!`）
+- **日志脱敏** — 禁止打印密码、API Key 等敏感信息
+- **类型安全** — 禁止 `as any`、`@ts-ignore`、`@ts-expect-error`
 
----
+### Sisyphus 自动遵循的规则
 
-## 文档约定
-
-所有产出文档统一归入 `docs/` 下的子目录，不分散到多个位置。
-
-| 类型 | 存放位置 | 说明 |
-|------|----------|------|
-| 产品 PRD / 需求文档 | `docs/prd/` | 做什么、为什么 |
-| 规格 / 详细需求 | `docs/specs/` | 每个能力的详细规格 |
-| 架构 / 设计文档 | `docs/design/` | 怎么做（技术设计） |
-| 实施计划 | `docs/plans/` | 可执行的步骤拆分 |
-| 路线图 | `docs/roadmap/` | 长期规划 |
-
-**工具工作目录规则：**
-- `.omo/plans/` — OpenCode 内部 plan 缓存，**不**作为文档源。有参考价值的产物复制到 `docs/` 对应目录。
-- `openspec/changes/` — OpenSpec change 产物（proposal/design/specs/tasks），在 change 生命周期内以那里为准。archive 后关键内容摘到 `docs/` 对应目录。
-- `docs/superpowers/` — 旧流程遗留产物，逐步迁移到 `docs/` 标准位置后删除。
-- 不要在 `docs/` 根目录直接放文档，使用子目录归类。
-
-**AI agent 规则：**
-- 生成 PRD/设计/计划时，写入 `docs/{prd,specs,design,plans,roadmap}/` 对应目录，不写别处。
-- 不往 `.omo/` 或 `openspec/` 外直接写文档，这两个目录是工具私有空间。
-
----
-
-## 安全规则
-
-- 严禁硬编码 API Key，使用 `process.env` 或 keychain
-- 所有数据库操作使用参数化查询
-- 避免 `as any`、`@ts-ignore`、`@ts-expect-error`
-- 详细规范见 [docs/agents/traps.md](docs/agents/traps.md)
+| 阶段 | 行为 |
+|------|------|
+| **会话开始** | 自动执行 `start-session.mjs` 创建/切换到 `ai/<desc>` 分支 |
+| **每次完成任务** | 执行 `checkpoint.mjs` 提交所有变更到当前分支 |
+| **功能开发** | 通过 openspec 流程管理（propose → apply → archive） |
+| **会话结束** | 执行 `finish-session.mjs --squash` 归档到 master 并清理分支 |
