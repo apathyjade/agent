@@ -66,12 +66,12 @@ pub struct IntentRouterConfig {
 fn default_rules() -> Vec<IntentRule> {
     vec![
         IntentRule {
-            pattern: r"(?i)\b(code|implement|write|refactor|fix|debug|compile|test|function|class|api|endpoint)\b".to_string(),
+            pattern: r"(?i)(?:\b(?:code|implement|write|refactor|fix|debug|compile|test|function|class|api|endpoint|analyze|build|create|add|remove|update|delete|migrate|generate|parse|transform)\b|重构|实现|编写|修复|调试|编译|测试|分析|创建|开发|构建|修改|添加|删除|迁移|生成|解析|转换|优化|拆分|合并|抽取|注入)".to_string(),
             intent: "code".to_string(),
             priority: 10,
         },
         IntentRule {
-            pattern: r"(?i)\b(search|research|find|look up|investigate|what is|how does|explain|compare)\b".to_string(),
+            pattern: r"(?i)(?:\b(?:search|research|find|look up|investigate|what is|how does|explain|compare|explore|discover)\b|搜索|查询|研究|查找|解释|比较|了解|探索|发现|为什么|如何)".to_string(),
             intent: "research".to_string(),
             priority: 10,
         },
