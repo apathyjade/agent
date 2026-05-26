@@ -450,7 +450,16 @@ pub async fn send_message_stream(
             let _ = db.insert_message(&summary_msg);
         }
 
-        return Ok(format!("Autonomous plan started: {} steps", step_count));
+        // Emit stream_chunk with content so frontend shows the message
+        let summary = format!("开始自主执行计划——共 {} 步。进度将在时间线中显示。", step_count);
+        let _ = app_handle.emit("stream_chunk", StreamChunk {
+            content: summary.clone(),
+            done: true,
+            tool_calls: None,
+            phase: Some("completed".to_string()),
+        });
+
+        return Ok(summary);
     }
 
     // ── Phase: building context ──

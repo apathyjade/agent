@@ -81,7 +81,7 @@ fn default_rules() -> Vec<IntentRule> {
 impl Default for IntentRouterConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             classifier_model_id: None,
             rules: default_rules(),
             intents: default_intents(),
