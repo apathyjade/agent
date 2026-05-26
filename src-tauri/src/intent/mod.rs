@@ -15,6 +15,9 @@ pub struct IntentConfig {
     pub max_iterations: Option<usize>,
     #[serde(default)]
     pub reclassify_triggers: Vec<ReclassifyTrigger>,
+    /// If true, this intent triggers autonomous session mode (Phase 2+).
+    #[serde(default)]
+    pub auto_escalate: bool,
 }
 
 /// A rule that triggers reclassification when tool result content matches.
@@ -107,6 +110,7 @@ fn default_intents() -> std::collections::HashMap<String, IntentConfig> {
                 pattern: r"search results|found|according to|citation".to_string(),
                 to_intent: "research".to_string(),
             }],
+            auto_escalate: true,
         },
     );
     m.insert(
@@ -125,6 +129,7 @@ fn default_intents() -> std::collections::HashMap<String, IntentConfig> {
                 pattern: r"```|fn |function |class |def |impl ".to_string(),
                 to_intent: "code".to_string(),
             }],
+            auto_escalate: true,
         },
     );
     m

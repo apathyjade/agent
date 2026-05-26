@@ -7,6 +7,9 @@ use crate::api::types::{Message, MessageRole, ToolCall};
 use crate::commands::{StreamChunk, ToolCallEvent};
 use crate::db::models::{Session as DbSession, Message as DbMessage};
 use crate::error::{AppError, Result};
+use crate::execution::planner::LlmPlanner;
+use crate::execution::runtime::ExecutionRuntime;
+use crate::execution::types::{ExecutionHandle, PlanProgressEvent};
 use crate::persona::PersonaResolution;
 use crate::state::AppState;
 
@@ -366,6 +369,89 @@ pub async fn send_message_stream(
     // ── Intent Routing: classify user message ──
     let _intent_result: crate::intent::IntentResult = state.intent_router.classify(&content);
     let _current_intent = std::sync::Arc::new(std::sync::Mutex::new(_intent_result.name.clone()));
+
+    // ── Autonomous mode: check if this intent should auto-escalate ──
+    if state.intent_router.should_auto_escalate(&_intent_result.name) {
+        let _ = app_handle.emit("stream_chunk", StreamChunk {
+            content: String::new(), done: false, tool_calls: None,
+            phase: Some("planning".to_string()),
+        });
+
+        // Generate execution plan
+        let planner = LlmPlanner::new(state.providers.clone(), state.tools.clone());
+        let plan = planner.generate_plan(&content, &session_id, _intent_result.config.model_id.as_deref())
+            .await
+            .map_err(|e| AppError::Execution(format!("Plan generation failed: {}", e)))?;
+
+        let step_count = plan.steps.len();
+        let plan_id = plan.id.clone();
+
+        // Emit plan to frontend
+        let _ = app_handle.emit("plan_generated", &plan);
+
+        // Update session to autonomous mode
+        {
+            let db = state.db.lock().await;
+            let status_json = serde_json::to_string(
+                &crate::execution::types::ExecStatus::Running { step_index: 0, started_at: Utc::now().to_rfc3339() }
+            ).unwrap_or_default();
+            let _ = db.update_session_execution(&session_id, "autonomous", &status_json, Some(&plan_id));
+        }
+
+        // Spawn background execution
+        let handle = ExecutionHandle::new(session_id.clone(), plan_id.clone());
+        let cf = handle.cancel_flag.clone();
+        let pf = handle.pause_flag.clone();
+        let sid = session_id.clone();
+        let app_handle2 = app_handle.clone();
+
+        let runtime = ExecutionRuntime::new(state.providers.clone(), state.tools.clone(), state.db.clone());
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<PlanProgressEvent>(32);
+
+        // Forward events
+        let app_handle3 = app_handle.clone();
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                let _ = app_handle3.emit("plan_progress", event);
+            }
+        });
+
+        // Execute plan
+        let plan_to_execute = plan;
+        tokio::spawn(async move {
+            let result = runtime.execute(plan_to_execute, event_tx, cf, pf).await;
+            let _ = app_handle2.emit("stream_chunk", StreamChunk {
+                content: String::new(),
+                done: true,
+                tool_calls: None,
+                phase: Some(match result {
+                    Ok(()) => "completed",
+                    Err(_) => "failed",
+                }.to_string()),
+            });
+        });
+
+        // Store execution handle
+        state.active_executions.lock().await.insert(session_id.clone(), handle);
+
+        // Save a placeholder assistant message so the session has a record
+        {
+            let db = state.db.lock().await;
+            let summary_msg = DbMessage {
+                id: Uuid::new_v4().to_string(),
+                session_id: sid.clone(),
+                role: "assistant".to_string(),
+                content: format!("开始自主执行计划——共 {} 步。进度将在时间线中显示。", step_count),
+                tool_calls: None,
+                tool_call_id: None,
+                tokens: None,
+                created_at: Utc::now().to_rfc3339(),
+            };
+            let _ = db.insert_message(&summary_msg);
+        }
+
+        return Ok(format!("Autonomous plan started: {} steps", step_count));
+    }
 
     // ── Phase: building context ──
     let _ = app_handle.emit("stream_chunk", StreamChunk {

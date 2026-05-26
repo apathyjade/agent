@@ -6,7 +6,9 @@ use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
+use crate::agent::r#loop::AgentLoop;
 use crate::api::provider::ProviderRegistry;
+use crate::api::types::{ChatRequest, Message as ApiMessage, MessageRole};
 use crate::db::repository::Database;
 use crate::execution::error::ExecutionError;
 use crate::execution::types::*;
@@ -368,31 +370,168 @@ impl ExecutionRuntime {
 
     async fn execute_llm(
         &self,
-        _prompt: &str,
-        _system_prompt: &Option<String>,
-        _model_id: &Option<String>,
-        _temperature: Option<f32>,
-        _max_tokens: Option<u32>,
+        prompt: &str,
+        system_prompt: &Option<String>,
+        model_id: &Option<String>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
     ) -> Result<Value, ExecutionError> {
-        // Phase 2: 实际 LLM 调用
-        Err(ExecutionError::Internal(
-            "LLM call not yet implemented in Phase 1".to_string(),
-        ))
+        let providers = self.providers.lock().await;
+        let mid = model_id.as_deref().unwrap_or_else(|| providers.default_model_id());
+        if mid.is_empty() {
+            return Err(ExecutionError::Internal("No model ID configured for LLM call".to_string()));
+        }
+        let provider = providers.get(mid).map_err(|e| {
+            ExecutionError::Internal(format!("Failed to get provider for '{}': {}", mid, e))
+        })?;
+
+        let mut messages = Vec::new();
+        if let Some(sys) = system_prompt {
+            if !sys.is_empty() {
+                messages.push(ApiMessage {
+                    id: None,
+                    role: MessageRole::System,
+                    content: sys.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
+        messages.push(ApiMessage {
+            id: None,
+            role: MessageRole::User,
+            content: prompt.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        let request = ChatRequest {
+            messages,
+            model: mid.to_string(),
+            tools: None,
+            stream: Some(false),
+            max_tokens: max_tokens.map(|t| t as usize),
+            temperature,
+        };
+
+        let response = provider.chat(request).await.map_err(|e| {
+            ExecutionError::StepFailed {
+                step: 0,
+                message: format!("LLM call failed: {}", e),
+            }
+        })?;
+
+        let content = response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        Ok(Value::String(content))
     }
 
     async fn execute_agent_task(
         &self,
-        _instruction: &str,
-        _model_id: &Option<String>,
-        _max_iterations: Option<usize>,
-        _allowed_tools: &Option<Vec<String>>,
-        _temperature: Option<f32>,
-        _cancel_flag: Arc<AtomicBool>,
+        instruction: &str,
+        model_id: &Option<String>,
+        max_iterations: Option<usize>,
+        allowed_tools: &Option<Vec<String>>,
+        temperature: Option<f32>,
+        cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
-        // Phase 2: 完整 Agent 循环
-        Err(ExecutionError::Internal(
-            "Agent task not yet implemented in Phase 1".to_string(),
-        ))
+        self.run_agent(instruction, None, model_id, max_iterations, allowed_tools, temperature, cancel_flag)
+            .await
+    }
+
+    /// 执行 AgentTask，失败时自动重试一次（带错误上下文）
+    async fn run_agent(
+        &self,
+        instruction: &str,
+        prev_error: Option<&str>,
+        model_id: &Option<String>,
+        max_iterations: Option<usize>,
+        allowed_tools: &Option<Vec<String>>,
+        temperature: Option<f32>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<Value, ExecutionError> {
+        // Retry loop: attempt 1, then retry once on failure
+        let mut last_error: Option<String> = prev_error.map(|s| s.to_string());
+        let max_attempts: usize = if prev_error.is_some() { 1 } else { 2 };
+
+        for attempt in 0..max_attempts {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err(ExecutionError::Cancelled);
+            }
+
+            let providers = self.providers.lock().await;
+            let mid = model_id.as_deref().unwrap_or_else(|| providers.default_model_id());
+            let mid = mid.to_string();
+            drop(providers);
+
+            if mid.is_empty() {
+                return Err(ExecutionError::Internal("No model ID configured for agent task".to_string()));
+            }
+
+            // Build instruction with optional error context for retry
+            let final_instruction = if let Some(err) = &last_error {
+                format!(
+                    "{}\n\nNote: A previous attempt failed with this error:\n{}\n\nPlease try a different approach to avoid the same issue.",
+                    instruction, err
+                )
+            } else {
+                instruction.to_string()
+            };
+
+            let system_msg = "You are an autonomous agent executing a specific task. \
+                Use the available tools to complete the task step by step. \
+                When you are done, provide a clear summary of what you accomplished.";
+
+            let messages = vec![
+                ApiMessage {
+                    id: None,
+                    role: MessageRole::System,
+                    content: system_msg.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                ApiMessage {
+                    id: None,
+                    role: MessageRole::User,
+                    content: final_instruction,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ];
+
+            let mut agent = AgentLoop::new(self.providers.clone(), self.tools.clone());
+            if let Some(max_iter) = max_iterations {
+                agent = agent.with_max_iterations(max_iter);
+            }
+
+            let tools_enabled = allowed_tools.is_some() || last_error.is_some();
+
+            match agent.run(&mid, messages, tools_enabled, allowed_tools.clone()).await {
+                Ok(response) => {
+                    let content = response.choices.first()
+                        .map(|c| c.message.content.clone())
+                        .unwrap_or_default();
+                    return Ok(Value::String(content));
+                }
+                Err(e) if attempt < max_attempts - 1 => {
+                    log::warn!("Agent task attempt {} failed, retrying: {}", attempt + 1, e);
+                    last_error = Some(e.to_string());
+                    // Continue to next attempt
+                }
+                Err(e) => {
+                    return Err(ExecutionError::StepFailed {
+                        step: 0,
+                        message: format!("Agent task failed after {} attempts: {}", attempt + 1, e),
+                    });
+                }
+            }
+        }
+
+        Err(ExecutionError::MaxRetries { step: 0 })
     }
 
     async fn execute_condition(

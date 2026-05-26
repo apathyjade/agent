@@ -49,6 +49,7 @@ impl IntentRouter {
                 model_id: None,
                 max_iterations: None,
                 reclassify_triggers: vec![],
+                auto_escalate: false,
             },
             enabled: config.enabled,
         }
@@ -160,6 +161,14 @@ impl IntentRouter {
     /// Whether routing is enabled.
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// 根据 intent name 判断是否应自动升级到 autonomous 模式
+    pub fn should_auto_escalate(&self, intent_name: &str) -> bool {
+        self.configs
+            .get(intent_name)
+            .map(|cfg| cfg.auto_escalate)
+            .unwrap_or(false)
     }
 }
 
