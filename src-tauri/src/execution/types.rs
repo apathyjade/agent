@@ -82,6 +82,12 @@ pub enum ExecStep {
         #[serde(default)]
         on_false: BranchTarget,
     },
+    /// 执行一个预定义的 YAML 工作流作为子 Plan
+    Pipeline {
+        name: String,
+        #[serde(default)]
+        params: HashMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +122,7 @@ pub fn exec_step_type_name(step: &ExecStep) -> &'static str {
         ExecStep::LlmCall { .. } => "llm_call",
         ExecStep::ToolCall { .. } => "tool_call",
         ExecStep::Condition { .. } => "condition",
+        ExecStep::Pipeline { .. } => "pipeline",
     }
 }
 

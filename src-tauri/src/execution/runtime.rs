@@ -134,7 +134,7 @@ impl ExecutionRuntime {
 
             // 执行步骤
             let step_start = Instant::now();
-            let result = self.execute_step(&step.execution, &step.id, cancel_flag.clone()).await;
+            let result = self.execute_step(&step.execution, &step.id, cancel_flag.clone(), event_tx.clone()).await;
 
             match result {
                 Ok(val) => {
@@ -274,6 +274,7 @@ impl ExecutionRuntime {
         step: &ExecStep,
         _step_id: &str,
         cancel_flag: Arc<AtomicBool>,
+        event_tx: mpsc::Sender<PlanProgressEvent>,
     ) -> Result<Value, ExecutionError> {
         match step {
             ExecStep::ToolCall {
@@ -318,7 +319,122 @@ impl ExecutionRuntime {
                 on_true,
                 on_false,
             } => self.execute_condition(expression, on_true, on_false).await,
+            ExecStep::Pipeline { name, params } => {
+                self.execute_pipeline(name, params, event_tx, cancel_flag.clone())
+                    .await
+            }
         }
+    }
+
+    /// 执行 Pipeline（YAML 工作流）作为子 Plan
+    /// 内联执行以避免递归 async fn
+    async fn execute_pipeline(
+        &self,
+        name: &str,
+        _params: &std::collections::HashMap<String, String>,
+        event_tx: mpsc::Sender<PlanProgressEvent>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<Value, ExecutionError> {
+        // 加载工作流
+        let workflow = crate::execution::pipeline_adapter::PipelineAdapter::load_by_name(name)?;
+
+        // 转换为 ExecutionPlan
+        let vars = _params.clone();
+        let sub_plan = crate::execution::pipeline_adapter::PipelineAdapter::convert(
+            &workflow,
+            "sub",
+            &vars,
+        );
+
+        if sub_plan.steps.is_empty() {
+            return Ok(Value::String(format!("Pipeline '{}' has no steps", name)));
+        }
+
+        // 内联执行子 Plan 步骤（不通过 execute_step 以免递归）
+        let plan_id = sub_plan.id.clone();
+        let total_steps = sub_plan.steps.len();
+        let mut results: Vec<Value> = Vec::new();
+
+        for (i, step) in sub_plan.steps.iter().enumerate() {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err(ExecutionError::Cancelled);
+            }
+
+            let _ = event_tx
+                .send(PlanProgressEvent {
+                    plan_id: plan_id.clone(),
+                    session_id: String::new(),
+                    event_type: "step_started".to_string(),
+                    step_index: Some(i),
+                    step_label: Some(format!("[{}] {}", plan_id, step.label)),
+                    result_summary: None,
+                    error: None,
+                    total_steps,
+                    completed_steps: results.len(),
+                })
+                .await;
+
+            // 直接调度步骤类型，不调用 execute_step
+            let result = match &step.execution {
+                ExecStep::ToolCall { tool, params, retry, timeout_seconds } => {
+                    self.execute_tool(tool, params, retry, *timeout_seconds, cancel_flag.clone()).await
+                }
+                ExecStep::LlmCall { prompt, system_prompt, model_id, temperature, max_tokens } => {
+                    self.execute_llm(prompt, system_prompt, model_id, *temperature, *max_tokens).await
+                }
+                ExecStep::AgentTask { instruction, model_id, max_iterations, allowed_tools, temperature } => {
+                    self.execute_agent_task(instruction, model_id, *max_iterations, allowed_tools, *temperature, cancel_flag.clone()).await
+                }
+                ExecStep::Condition { expression, on_true, on_false } => {
+                    self.execute_condition(expression, on_true, on_false).await
+                }
+                // Prevent deep nesting: Pipeline steps in sub-plans are not supported
+                ExecStep::Pipeline { .. } => {
+                    Err(ExecutionError::Internal("Nested pipeline execution is not supported".to_string()))
+                }
+            };
+
+            match result {
+                Ok(val) => {
+                    let _ = event_tx
+                        .send(PlanProgressEvent {
+                            plan_id: plan_id.clone(),
+                            session_id: String::new(),
+                            event_type: "step_completed".to_string(),
+                            step_index: Some(i),
+                            step_label: Some(step.label.clone()),
+                            result_summary: val.as_str().map(|s| s[..s.len().min(100)].to_string()),
+                            error: None,
+                            total_steps,
+                            completed_steps: results.len() + 1,
+                        })
+                        .await;
+                    results.push(val);
+                }
+                Err(e) => {
+                    let _ = event_tx
+                        .send(PlanProgressEvent {
+                            plan_id: plan_id.clone(),
+                            session_id: String::new(),
+                            event_type: "step_failed".to_string(),
+                            step_index: Some(i),
+                            step_label: Some(step.label.clone()),
+                            result_summary: None,
+                            error: Some(e.to_string()),
+                            total_steps,
+                            completed_steps: results.len(),
+                        })
+                        .await;
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "pipeline": name,
+            "steps_completed": results.len(),
+            "results": results,
+        }))
     }
 
     async fn execute_tool(

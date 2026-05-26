@@ -532,7 +532,8 @@ export type ExecStep =
   | { type: 'agent_task'; instruction: string; model_id?: string; max_iterations?: number; allowed_tools?: string[]; temperature?: number }
   | { type: 'llm_call'; prompt: string; system_prompt?: string; model_id?: string; temperature?: number; max_tokens?: number }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; retry?: { max: number; delay_seconds: number }; timeout_seconds?: number }
-  | { type: 'condition'; expression: string; on_true?: string; on_false?: string };
+  | { type: 'condition'; expression: string; on_true?: string; on_false?: string }
+  | { type: 'pipeline'; name: string; params?: Record<string, string> };
 
 export interface PlanStep {
   id: string;

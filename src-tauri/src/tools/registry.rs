@@ -5,6 +5,7 @@ use crate::error::{AppError, Result};
 use crate::tools::calculator::CalculatorTool;
 use crate::tools::code_executor::CodeExecutorTool;
 use crate::tools::file_system::FileSystemTool;
+use crate::tools::run_workflow::RunWorkflowTool;
 use crate::tools::web_search::WebSearchTool;
 use crate::tools::r#trait::{Tool, ToolInfo};
 
@@ -24,6 +25,7 @@ impl ToolRegistry {
         registry.register("file_system", Arc::new(FileSystemTool::new()), true);
         registry.register("web_search", Arc::new(WebSearchTool::new()), true);
         registry.register("code_executor", Arc::new(CodeExecutorTool::new()), true);
+        registry.register("run_workflow", Arc::new(RunWorkflowTool), true);
 
         registry
     }
