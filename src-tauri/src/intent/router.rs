@@ -171,9 +171,21 @@ impl IntentRouter {
                 return true;
             }
         }
-        // 降级策略：general 意图 + 消息超过 15 字符 → 也触发自主模式
-        // 这样即使 config 文件中的规则被旧版本保存覆盖，中文消息仍能触发
-        if intent_name == "general" && message.chars().count() > 15 {
+        // 降级策略：general 意图 → 检查消息是否像任务请求
+        let char_count = message.chars().count();
+        let has_chinese = message.chars().any(|c| c >= '\u{4e00}');
+        // 中文消息每个字承载更多语义，3 个字可能就是一个完整任务
+        // 英文需要更多单词才能表达任务意图
+        let threshold = if has_chinese { 4 } else { 18 };
+        if intent_name == "general" && char_count > threshold {
+            return true;
+        }
+        // 包含中文任务关键词但正则没匹配到 → 强制触发
+        let task_keywords = ["分析", "重构", "实现", "编写", "修复", "调试", "编译",
+            "测试", "创建", "开发", "构建", "修改", "添加", "删除", "迁移", "生成",
+            "解析", "转换", "优化", "拆分", "合并", "提取", "注入", "检查", "查看",
+            "告诉我", "列出", "显示", "搜索", "查询", "比较", "解释", "为什么"];
+        if intent_name == "general" && task_keywords.iter().any(|kw| message.contains(kw)) {
             return true;
         }
         false
