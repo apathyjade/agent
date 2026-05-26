@@ -9,7 +9,7 @@ use crate::db::models::{Session as DbSession, Message as DbMessage};
 use crate::error::{AppError, Result};
 use crate::execution::planner::LlmPlanner;
 use crate::execution::runtime::ExecutionRuntime;
-use crate::execution::types::{ExecutionHandle, PlanProgressEvent};
+use crate::execution::types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
 use crate::persona::PersonaResolution;
 use crate::state::AppState;
 
@@ -375,8 +375,19 @@ pub async fn send_message_stream(
         state.intent_router.should_auto_escalate(&_intent_result.name)
     );
 
+    // Emit execution log for debugging
+    let emit_log = |app_handle: &tauri::AppHandle, level: &str, step: &str, message: String| {
+        let entry = ExecutionLogEntry::new(level, step, message);
+        let _ = app_handle.emit("execution_log", entry);
+    };
+    emit_log(&app_handle, "info", "intent", format!("意图分类: name={}", _intent_result.name));
+
     // ── Autonomous mode: check if this intent should auto-escalate ──
-    if state.intent_router.should_auto_escalate(&_intent_result.name) {
+    let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name);
+    emit_log(&app_handle, "info", "intent", format!("自动升级检查: should_escalate={}", should_escalate));
+
+    if should_escalate {
+        emit_log(&app_handle, "info", "planner", "开始生成执行计划...".to_string());
         let _ = app_handle.emit("stream_chunk", StreamChunk {
             content: String::new(), done: false, tool_calls: None,
             phase: Some("planning".to_string()),
@@ -387,6 +398,7 @@ pub async fn send_message_stream(
         match planner.generate_plan(&content, &session_id, _intent_result.config.model_id.as_deref()).await {
             Ok(plan) => {
                 let step_count = plan.steps.len();
+                emit_log(&app_handle, "info", "planner", format!("计划生成成功: {} 步", step_count));
                 let plan_id = plan.id.clone();
 
                 // Emit plan to frontend
@@ -408,7 +420,7 @@ pub async fn send_message_stream(
                 let sid = session_id.clone();
                 let app_handle2 = app_handle.clone();
 
-                let runtime = ExecutionRuntime::new(state.providers.clone(), state.tools.clone(), state.db.clone());
+                let runtime = ExecutionRuntime::new(state.providers.clone(), state.tools.clone(), state.db.clone()).with_app_handle(app_handle.clone());
                 let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<PlanProgressEvent>(32);
 
                 // Forward events
@@ -462,14 +474,18 @@ pub async fn send_message_stream(
                     phase: Some("completed".to_string()),
                 });
 
-                log::info!("Autonomous mode activated for session {}", session_id);
+                emit_log(&app_handle, "info", "execution", "自主执行已在后台启动。可在时间线中查看进度。".to_string());
                 return Ok(summary);
             }
             Err(e) => {
-                log::error!("Plan generation failed, falling back to chat mode: {}", e);
+                let err_msg = format!("计划生成失败，降级到普通聊天模式: {}", e);
+                log::error!("{}", err_msg);
+                emit_log(&app_handle, "error", "planner", err_msg);
                 // Fall through to normal chat flow
             }
         }
+    } else {
+        emit_log(&app_handle, "info", "intent", format!("不触发自主模式，走普通 Chat 流程"));
     }
 
     // ── Phase: building context ──

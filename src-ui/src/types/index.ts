@@ -588,3 +588,13 @@ export interface PlanDetail {
   plan: ExecutionPlan;
   step_records: PlanStepRecord[];
 }
+
+// ── Execution Log Types ──
+
+export interface ExecutionLogEntry {
+  timestamp: string;
+  level: string;
+  step: string;
+  message: string;
+  detail?: string | null;
+}

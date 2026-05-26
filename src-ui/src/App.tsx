@@ -16,9 +16,10 @@ import { SettingsPage } from './components/SettingsPage';
 import { WorkflowManagerPage } from './components/WorkflowManagerPage';
 import { ToastContainer } from './components/Toast';
 import { PlanConfirmDialog } from './components/PlanConfirmDialog';
+import { ExecutionLogPanel } from './components/ExecutionLogPanel';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
-import type { PlanProgressEvent } from './types';
+import type { PlanProgressEvent, ExecutionLogEntry } from './types';
 import './styles/global.css';
 
 function App() {
@@ -131,6 +132,16 @@ function App() {
     };
   }, []);
 
+  // Listen for execution_log events
+  useEffect(() => {
+    const unlisten = listen<ExecutionLogEntry>('execution_log', (event) => {
+      useStore.getState().addExecutionLog(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   const renderMainContent = () => {
     if (currentView === 'skill-manager') {
       return <SkillManagerPage />;
@@ -221,6 +232,7 @@ function App() {
 
       <ToastContainer />
       <PlanConfirmDialog />
+      <ExecutionLogPanel />
     </Col>
   );
 }

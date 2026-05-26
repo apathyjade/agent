@@ -13,11 +13,13 @@ use crate::db::repository::Database;
 use crate::execution::error::ExecutionError;
 use crate::execution::types::*;
 use crate::tools::registry::ToolRegistry;
+use tauri::Emitter;
 
 pub struct ExecutionRuntime {
     providers: Arc<Mutex<ProviderRegistry>>,
     tools: Arc<Mutex<ToolRegistry>>,
     db: Arc<Mutex<Database>>,
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl ExecutionRuntime {
@@ -26,7 +28,20 @@ impl ExecutionRuntime {
         tools: Arc<Mutex<ToolRegistry>>,
         db: Arc<Mutex<Database>>,
     ) -> Self {
-        Self { providers, tools, db }
+        Self { providers, tools, db, app_handle: None }
+    }
+
+    pub fn with_app_handle(mut self, handle: tauri::AppHandle) -> Self {
+        self.app_handle = Some(handle);
+        self
+    }
+
+    /// Emit execution log event to frontend (if app_handle is set)
+    fn emit_log(&self, level: &str, step: &str, message: String) {
+        if let Some(ref handle) = self.app_handle {
+            let entry = ExecutionLogEntry::new(level, step, message);
+            let _ = handle.emit("execution_log", entry);
+        }
     }
 
     /// 执行一个 Plan，通过 event_tx 发射进度事件
@@ -40,6 +55,12 @@ impl ExecutionRuntime {
         let plan_id = plan.id.clone();
         let session_id = plan.session_id.clone();
         let total_steps = plan.steps.len();
+
+        let source_desc = match &plan.source {
+            PlanSource::Dynamic { goal, .. } => format!("dynamic: {}", goal.chars().take(50).collect::<String>()),
+            PlanSource::Static { workflow_name } => format!("static: {}", workflow_name),
+        };
+        self.emit_log("info", "execution", format!("执行计划开始: {} 步, {}", total_steps, source_desc));
 
         // 持久化 Plan 记录
         {
@@ -132,6 +153,8 @@ impl ExecutionRuntime {
                 })
                 .await;
 
+            self.emit_log("info", "execution", format!("步骤 {}/{} 开始: {}", i + 1, total_steps, step.label));
+
             // 执行步骤
             let step_start = Instant::now();
             let result = self.execute_step(&step.execution, &step.id, cancel_flag.clone(), event_tx.clone()).await;
@@ -139,6 +162,7 @@ impl ExecutionRuntime {
             match result {
                 Ok(val) => {
                     let duration = step_start.elapsed().as_millis() as u64;
+                    self.emit_log("info", "execution", format!("步骤 {}/{} 完成 ({}ms): {}", i + 1, total_steps, duration, step.label));
                     // 保存 checkpoint
                     {
                         let db = self.db.lock().await;
@@ -177,6 +201,7 @@ impl ExecutionRuntime {
                 }
                 Err(e) => {
                     let duration = step_start.elapsed().as_millis() as u64;
+                    self.emit_log("error", "execution", format!("步骤 {}/{} 失败: {} — {}", i + 1, total_steps, step.label, e));
                     // 保存失败 checkpoint
                     {
                         let db = self.db.lock().await;
@@ -240,6 +265,7 @@ impl ExecutionRuntime {
         }
 
         // Plan 完成
+        self.emit_log("info", "execution", format!("执行计划完成: {}/{} 步成功", completed_steps, total_steps));
         let finished_at = Utc::now().to_rfc3339();
         self.set_plan_status(&plan_id, "completed", Some(&finished_at))
             .await;

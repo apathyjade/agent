@@ -200,6 +200,33 @@ impl Default for StepStatus {
 
 // ── Events ──
 
+/// 执行日志条目（发送到前端用于调试）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionLogEntry {
+    pub timestamp: String,
+    pub level: String,       // "info" | "warn" | "error" | "debug"
+    pub step: String,        // "intent" | "planner" | "execution" | "runtime"
+    pub message: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl ExecutionLogEntry {
+    pub fn new(level: &str, step: &str, message: String) -> Self {
+        Self {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            level: level.to_string(),
+            step: step.to_string(),
+            message,
+            detail: None,
+        }
+    }
+    pub fn with_detail(mut self, detail: String) -> Self {
+        self.detail = Some(detail);
+        self
+    }
+}
+
 /// 执行进度事件（通过 Tauri event 发送到前端）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanProgressEvent {

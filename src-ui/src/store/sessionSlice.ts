@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent } from '../types';
+import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent, ExecutionLogEntry } from '../types';
 import * as api from '../api/tauri';
 
 export interface SessionSlice {
@@ -12,6 +12,7 @@ export interface SessionSlice {
   executionStatus: ExecStatus;
   activePlan: ExecutionPlan | null;
   planProgress: PlanProgressEvent | null;
+  executionLogs: ExecutionLogEntry[];
 
   fetchSessions: () => Promise<void>;
   createSession: (title: string, modelId: string, systemPrompt?: string, personaId?: string) => Promise<void>;
@@ -29,6 +30,8 @@ export interface SessionSlice {
   setExecutionStatus: (status: ExecStatus) => void;
   setActivePlan: (plan: ExecutionPlan | null) => void;
   setPlanProgress: (progress: PlanProgressEvent | null) => void;
+  addExecutionLog: (entry: ExecutionLogEntry) => void;
+  clearExecutionLogs: () => void;
   executePlan: (sessionId: string, plan: ExecutionPlan) => Promise<void>;
   pauseExecution: (sessionId: string) => Promise<void>;
   resumeExecution: (sessionId: string) => Promise<void>;
@@ -43,6 +46,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   executionStatus: { type: 'idle' },
   activePlan: null,
   planProgress: null,
+  executionLogs: [],
 
   fetchSessions: async () => {
     get().setLoading(true);
@@ -205,6 +209,12 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   setActivePlan: (plan) => set({ activePlan: plan }),
 
   setPlanProgress: (progress) => set({ planProgress: progress }),
+
+  addExecutionLog: (entry) => set((state: any) => ({
+    executionLogs: [...state.executionLogs, entry].slice(-200), // keep last 200
+  })),
+
+  clearExecutionLogs: () => set({ executionLogs: [] }),
 
   executePlan: async (sessionId, plan) => {
     set({
