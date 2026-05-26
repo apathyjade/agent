@@ -74,6 +74,30 @@ cd src-tauri && cargo tauri build
 
 ---
 
+## 文档约定
+
+所有产出文档统一归入 `docs/` 下的子目录，不分散到多个位置。
+
+| 类型 | 存放位置 | 说明 |
+|------|----------|------|
+| 产品 PRD / 需求文档 | `docs/prd/` | 做什么、为什么 |
+| 规格 / 详细需求 | `docs/specs/` | 每个能力的详细规格 |
+| 架构 / 设计文档 | `docs/design/` | 怎么做（技术设计） |
+| 实施计划 | `docs/plans/` | 可执行的步骤拆分 |
+| 路线图 | `docs/roadmap/` | 长期规划 |
+
+**工具工作目录规则：**
+- `.omo/plans/` — OpenCode 内部 plan 缓存，**不**作为文档源。有参考价值的产物复制到 `docs/` 对应目录。
+- `openspec/changes/` — OpenSpec change 产物（proposal/design/specs/tasks），在 change 生命周期内以那里为准。archive 后关键内容摘到 `docs/` 对应目录。
+- `docs/superpowers/` — 旧流程遗留产物，逐步迁移到 `docs/` 标准位置后删除。
+- 不要在 `docs/` 根目录直接放文档，使用子目录归类。
+
+**AI agent 规则：**
+- 生成 PRD/设计/计划时，写入 `docs/{prd,specs,design,plans,roadmap}/` 对应目录，不写别处。
+- 不往 `.omo/` 或 `openspec/` 外直接写文档，这两个目录是工具私有空间。
+
+---
+
 ## 安全规则
 
 - 严禁硬编码 API Key，使用 `process.env` 或 keychain
