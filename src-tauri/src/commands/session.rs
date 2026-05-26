@@ -366,12 +366,11 @@ pub async fn send_message_stream(
         phase: Some("classifying".to_string()),
     });
 
-    // ── Intent Routing: classify user message ──
-    let _intent_result: crate::intent::IntentResult = state.intent_router.classify(&content);
-    let _current_intent = std::sync::Arc::new(std::sync::Mutex::new(_intent_result.name.clone()));
-    let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name, &content);
+    // ── LLM Intent Classification ──
+    let _intent_result: crate::intent::IntentResult = state.intent_router.classify(&content).await;
+    let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name);
     log::info!(
-        "Intent classified: name={}, should_escalate={}",
+        "LLM classified: intent={}, should_escalate={}",
         _intent_result.name,
         should_escalate
     );
@@ -381,11 +380,9 @@ pub async fn send_message_stream(
         let entry = ExecutionLogEntry::new(level, step, message);
         let _ = app_handle.emit("execution_log", entry);
     };
-    emit_log(&app_handle, "info", "intent", format!("意图分类: name={}, msg_len={}", _intent_result.name, content.chars().count()));
+    emit_log(&app_handle, "info", "intent", format!("LLM 分类结果: intent={}, should_escalate={}", _intent_result.name, should_escalate));
 
     // ── Autonomous mode: check if this intent should auto-escalate ──
-    emit_log(&app_handle, "info", "intent", format!("自动升级检查: should_escalate={}, msg_len={}", should_escalate, content.chars().count()));
-
     if should_escalate {
         emit_log(&app_handle, "info", "planner", "开始生成执行计划...".to_string());
         let _ = app_handle.emit("stream_chunk", StreamChunk {
@@ -635,7 +632,6 @@ pub async fn send_message_stream(
 
     let mut full_content = String::new();
     let sess_id_for_messages = session_id.clone();
-    let intent_for_reclassify = _current_intent.clone();
 
     // ── Phase: thinking (LLM generating first response) ──
     let _ = app_handle.emit("stream_chunk", StreamChunk {
@@ -668,17 +664,6 @@ pub async fn send_message_stream(
                 });
             }
             crate::agent::r#loop::StreamEvent::ToolResult(tool_result) => {
-                // ── Intent Routing: reclassify after tool result ──
-                let current_intent_name = intent_for_reclassify.lock().unwrap().clone();
-                if let Some(new_intent) = state.intent_router.reclassify(&tool_result.result, &current_intent_name) {
-                    log::info!(
-                        "Intent reclassified: {} → {} (matched: {})",
-                        current_intent_name, new_intent.name,
-                        new_intent.matched_rule.unwrap_or_default()
-                    );
-                    *intent_for_reclassify.lock().unwrap() = new_intent.name;
-                }
-
                 // Persist tool result message to DB
                 {
                     let db = state.db.lock().await;

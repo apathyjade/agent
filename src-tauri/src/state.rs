@@ -74,7 +74,7 @@ impl AppState {
         let mcp = McpServerManager::new(tools_arc.clone())
             .with_runtime_manager(runtime_manager.clone());
 
-        let intent_router = Arc::new(IntentRouter::new(&config.intent_routing));
+        let intent_router = Arc::new(IntentRouter::new(&config.intent_routing, providers_arc.clone()));
 
         Ok(Self {
             app_handle: app_handle.clone(),

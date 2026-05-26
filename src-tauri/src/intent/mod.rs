@@ -1,3 +1,4 @@
+pub mod classifier;
 pub mod router;
 
 use serde::{Deserialize, Serialize};
@@ -13,41 +14,31 @@ pub struct IntentConfig {
     pub model_id: Option<String>,
     #[serde(default)]
     pub max_iterations: Option<usize>,
-    #[serde(default)]
-    pub reclassify_triggers: Vec<ReclassifyTrigger>,
-    /// If true, this intent triggers autonomous session mode (Phase 2+).
+    /// If true, this intent triggers autonomous session mode.
     #[serde(default)]
     pub auto_escalate: bool,
 }
 
-/// A rule that triggers reclassification when tool result content matches.
+/// Result from LLM classification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReclassifyTrigger {
-    pub from: String,
-    pub pattern: String,
-    #[serde(rename = "to")]
-    pub to_intent: String,
+pub struct ClassificationResult {
+    pub intent: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default = "default_true")]
+    pub auto_escalate: bool,
+    #[serde(default = "default_max_iter")]
+    pub max_iterations: usize,
 }
 
-/// Result of classification.
+fn default_true() -> bool { true }
+fn default_max_iter() -> usize { 10 }
+
+/// Result of the full routing decision (intent + its config merged).
 #[derive(Debug, Clone)]
 pub struct IntentResult {
     pub name: String,
     pub config: IntentConfig,
-    pub matched_rule: Option<String>,
-}
-
-/// A single classification rule loaded from config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IntentRule {
-    pub pattern: String,
-    pub intent: String,
-    #[serde(default = "default_priority")]
-    pub priority: i32,
-}
-
-fn default_priority() -> i32 {
-    10
 }
 
 /// Top-level config section for intent routing.
@@ -57,25 +48,8 @@ pub struct IntentRouterConfig {
     pub enabled: bool,
     #[serde(default)]
     pub classifier_model_id: Option<String>,
-    #[serde(default = "default_rules")]
-    pub rules: Vec<IntentRule>,
     #[serde(default)]
     pub intents: std::collections::HashMap<String, IntentConfig>,
-}
-
-fn default_rules() -> Vec<IntentRule> {
-    vec![
-        IntentRule {
-            pattern: r"(?i)(?:\b(?:code|implement|write|refactor|fix|debug|compile|test|function|class|api|endpoint|analyze|build|create|add|remove|update|delete|migrate|generate|parse|transform)\b|重构|实现|编写|修复|调试|编译|测试|分析|创建|开发|构建|修改|添加|删除|迁移|生成|解析|转换|优化|拆分|合并|抽取|注入)".to_string(),
-            intent: "code".to_string(),
-            priority: 10,
-        },
-        IntentRule {
-            pattern: r"(?i)(?:\b(?:search|research|find|look up|investigate|what is|how does|explain|compare|explore|discover)\b|搜索|查询|研究|查找|解释|比较|了解|探索|发现|为什么|如何)".to_string(),
-            intent: "research".to_string(),
-            priority: 10,
-        },
-    ]
 }
 
 impl Default for IntentRouterConfig {
@@ -83,7 +57,6 @@ impl Default for IntentRouterConfig {
         Self {
             enabled: true,
             classifier_model_id: None,
-            rules: default_rules(),
             intents: default_intents(),
         }
     }
@@ -105,11 +78,6 @@ fn default_intents() -> std::collections::HashMap<String, IntentConfig> {
             ]),
             model_id: None,
             max_iterations: None,
-            reclassify_triggers: vec![ReclassifyTrigger {
-                from: "code".to_string(),
-                pattern: r"search results|found|according to|citation".to_string(),
-                to_intent: "research".to_string(),
-            }],
             auto_escalate: true,
         },
     );
@@ -124,12 +92,31 @@ fn default_intents() -> std::collections::HashMap<String, IntentConfig> {
             enabled_tools: Some(vec!["web_search".to_string()]),
             model_id: None,
             max_iterations: None,
-            reclassify_triggers: vec![ReclassifyTrigger {
-                from: "research".to_string(),
-                pattern: r"```|fn |function |class |def |impl ".to_string(),
-                to_intent: "code".to_string(),
-            }],
             auto_escalate: true,
+        },
+    );
+    m.insert(
+        "auto".to_string(),
+        IntentConfig {
+            system_prompt_appendix: Some(
+                "You are an autonomous agent capable of multi-step planning and execution. \
+                 Break down the task, use tools as needed, and complete all steps."
+                    .to_string(),
+            ),
+            enabled_tools: None,
+            model_id: None,
+            max_iterations: Some(20),
+            auto_escalate: true,
+        },
+    );
+    m.insert(
+        "chat".to_string(),
+        IntentConfig {
+            system_prompt_appendix: None,
+            enabled_tools: None,
+            model_id: None,
+            max_iterations: None,
+            auto_escalate: false,
         },
     );
     m
