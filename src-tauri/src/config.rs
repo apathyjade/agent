@@ -5,7 +5,7 @@ use crate::error::{AppError, Result};
 use crate::intent::IntentRouterConfig;
 use crate::mcp::config::McpServerConfig;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelProvider {
     OpenAI,

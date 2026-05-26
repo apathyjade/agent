@@ -8,7 +8,14 @@ use crate::db::models::MemoryRecord;
 use crate::db::repository::Database;
 use crate::error::{AppError, Result};
 
+// Rig imports for embedding support
+use rig::client::EmbeddingsClient;
+use rig::embeddings::EmbeddingModel;
+
 pub mod seeds;
+pub mod vector_index;
+
+use vector_index::InMemoryVectorIndex;
 
 /// Lightweight memory info returned to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,13 +87,77 @@ pub struct UpdateMemoryParams {
 }
 
 /// Manages memory entries — CRUD, retrieval, and context injection.
+///
+/// When an OpenAI API key is available, memories are also embedded and
+/// stored in an in-memory vector index for semantic retrieval.  If no API
+/// key is provided (or embedding fails), the system gracefully degrades
+/// to SQLite keyword search.
 pub struct MemoryManager {
     db: Arc<Mutex<Database>>,
+    embedder: Option<rig::providers::openai::EmbeddingModel>,
+    vector_index: Arc<Mutex<InMemoryVectorIndex>>,
 }
 
 impl MemoryManager {
-    pub fn new(db: Arc<Mutex<Database>>) -> Self {
-        Self { db }
+    /// Create a new memory manager.
+    ///
+    /// If `openai_api_key` is `Some`, the manager will attempt to initialise
+    /// a Rig embedding model and rebuild the vector index from existing
+    /// memories on first `retrieve_relevant` call.
+    pub fn new(db: Arc<Mutex<Database>>, openai_api_key: Option<String>) -> Self {
+        let embedder = openai_api_key.and_then(|key| {
+            match rig::providers::openai::Client::new(&key) {
+                Ok(client) => {
+                    let model = client.embedding_model(
+                        rig::providers::openai::TEXT_EMBEDDING_3_SMALL,
+                    );
+                    log::info!("MemoryManager: embedding model initialised");
+                    Some(model)
+                }
+                Err(e) => {
+                    log::warn!("MemoryManager: failed to init embedder: {}", e);
+                    None
+                }
+            }
+        });
+
+        Self {
+            db,
+            embedder,
+            vector_index: Arc::new(Mutex::new(InMemoryVectorIndex::new())),
+        }
+    }
+
+    /// Lazily rebuild the vector index from the database.
+    async fn ensure_index_built(&self) -> Result<()> {
+        let embedder = match &self.embedder {
+            Some(e) => e,
+            None => return Ok(()), // no embedder available
+        };
+
+        let mut index = self.vector_index.lock().await;
+        if !index.is_empty() {
+            return Ok(()); // already built
+        }
+
+        let db = self.db.lock().await;
+        let records = db.list_memories()?;
+        drop(db); // release lock before network calls
+
+        for record in &records {
+                match embedder.embed_text(&record.content).await {
+                    Ok(embedding) => {
+                        let vec_f32: Vec<f32> = embedding.vec.iter().map(|&x| x as f32).collect();
+                        index.insert(record.id.clone(), record.content.clone(), vec_f32);
+                    }
+                    Err(e) => {
+                        log::warn!("MemoryManager: failed to embed '{}': {}", record.id, e);
+                    }
+                }
+            }
+
+            log::info!("MemoryManager: rebuilt index with {} entries", index.len());
+        Ok(())
     }
 
     /// Create a new memory entry.
@@ -124,9 +195,25 @@ impl MemoryManager {
 
         let db = self.db.lock().await;
         db.insert_memory(&record)?;
+        drop(db);
+
+        // Compute embedding and add to vector index (best-effort)
+        if let Some(ref embedder) = self.embedder {
+            match embedder.embed_text(&record.content).await {
+                Ok(embedding) => {
+                    let vec_f32: Vec<f32> = embedding.vec.iter().map(|&x| x as f32).collect();
+                    let mut index = self.vector_index.lock().await;
+                    index.insert(record.id.clone(), record.content.clone(), vec_f32);
+                }
+                Err(e) => {
+                    log::warn!("MemoryManager: failed to embed new memory: {}", e);
+                }
+            }
+        }
 
         Ok(MemoryInfo::from(record))
     }
+
 
     /// Get a single memory by ID.
     pub async fn get(&self, id: &str) -> Result<MemoryInfo> {
@@ -158,13 +245,50 @@ impl MemoryManager {
     }
 
     /// Retrieve memories relevant to a context string (for agent injection).
+    ///
+    /// Uses semantic search when the vector index is available, otherwise
+    /// falls back to SQLite keyword search.
     pub async fn retrieve_relevant(&self, context: &str, limit: i64) -> Result<Vec<MemoryInfo>> {
         if context.trim().is_empty() {
             return Ok(vec![]);
         }
+
+        self.ensure_index_built().await?;
+
+        // Semantic search path
+        if let Some(ref embedder) = self.embedder {
+            let index = self.vector_index.lock().await;
+            if !index.is_empty() {
+                match embedder.embed_text(context).await {
+                    Ok(query_emb) => {
+                        let query_vec: Vec<f32> = query_emb.vec.iter().map(|&x| x as f32).collect();
+                        let results = index.search(&query_vec, limit as usize);
+                        if !results.is_empty() {
+                            let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
+                            let db = self.db.lock().await;
+                            let mut records = Vec::with_capacity(results.len());
+                            for id in ids {
+                                if let Some(record) = db.get_memory(id)? {
+                                    records.push(MemoryInfo::from(record));
+                                }
+                            }
+                            // Bump access
+                            for r in &records {
+                                let _ = db.touch_memory(&r.id);
+                            }
+                            return Ok(records);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("MemoryManager: embedding failed, falling back: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Fallback to SQLite keyword search
         let db = self.db.lock().await;
         let records = db.retrieve_relevant(context, limit)?;
-        // Bump access on each
         for r in &records {
             let _ = db.touch_memory(&r.id);
         }
@@ -177,6 +301,7 @@ impl MemoryManager {
         let mut record = db.get_memory(id)?
             .ok_or_else(|| AppError::NotFound(format!("Memory '{}' not found", id)))?;
 
+        let content_updated = params.content.is_some();
         if let Some(content) = params.content {
             if content.trim().is_empty() {
                 return Err(AppError::InvalidInput("Memory content cannot be empty".to_string()));
@@ -204,7 +329,26 @@ impl MemoryManager {
         }
         record.updated_at = Utc::now().to_rfc3339();
 
+        let content_changed = content_updated;
         db.update_memory(&record)?;
+        drop(db);
+
+        // Re-embed if content changed
+        if content_changed {
+            if let Some(ref embedder) = self.embedder {
+                match embedder.embed_text(&record.content).await {
+                    Ok(embedding) => {
+                        let vec_f32: Vec<f32> = embedding.vec.iter().map(|&x| x as f32).collect();
+                        let mut index = self.vector_index.lock().await;
+                        index.insert(record.id.clone(), record.content.clone(), vec_f32);
+                    }
+                    Err(e) => {
+                        log::warn!("MemoryManager: failed to re-embed '{}': {}", record.id, e);
+                    }
+                }
+            }
+        }
+
         Ok(MemoryInfo::from(record))
     }
 
@@ -215,6 +359,12 @@ impl MemoryManager {
         let _ = db.get_memory(id)?
             .ok_or_else(|| AppError::NotFound(format!("Memory '{}' not found", id)))?;
         db.delete_memory(id)?;
+        drop(db);
+
+        // Remove from vector index
+        let mut index = self.vector_index.lock().await;
+        index.remove(id);
+
         Ok(())
     }
 

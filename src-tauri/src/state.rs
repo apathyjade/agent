@@ -4,7 +4,7 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ModelProvider};
 use crate::db::repository::Database;
 use crate::environment::alias::AliasManager;
 use crate::environment::resolver::VersionResolver;
@@ -51,7 +51,15 @@ impl AppState {
         let tools_arc = Arc::new(Mutex::new(tools));
 
         let skills = SkillManager::new(db_arc.clone(), tools_arc.clone());
-        let memory = MemoryManager::new(db_arc.clone());
+        // Pass the first available OpenAI API key for memory embedding.
+        // Embedding is best-effort — if no key is available the memory
+        // manager falls back to keyword search.
+        let openai_key = config.models
+            .iter()
+            .find(|m| m.provider == ModelProvider::OpenAI && !m.api_key.is_empty())
+            .map(|m| m.api_key.clone())
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok());
+        let memory = MemoryManager::new(db_arc.clone(), openai_key);
         let persona = PersonaManager::new(db_arc.clone());
         let lifecycle = LifecycleManager::new(db_arc.clone(), providers_arc.clone());
 
