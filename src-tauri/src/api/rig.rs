@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChatRequest, ChatResponse, Choice, Message, MessageRole, StreamPayload,
+    ChatRequest, ChatResponse, Choice, Message, MessageRole, StreamPayload, ToolCall as OurToolCall,
 };
 use crate::config::{ModelConfig, ModelProvider};
 use crate::error::{AppError, Result};
@@ -39,6 +39,7 @@ use super::provider::LLMProvider;
 // Rig traits needed by every provider client
 use rig::client::CompletionClient;
 use rig::completion::Chat;
+use rig::completion::Completion;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -159,27 +160,140 @@ impl<C: CompletionClient + Send + Sync + 'static> RigProvider<C> {
 #[async_trait]
 impl<C: CompletionClient + Send + Sync + 'static> LLMProvider for RigProvider<C> {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let content = self.do_chat(&request).await?;
-        Ok(map_response(content))
+        let has_tools = request.tools.as_ref().map_or(false, |t| !t.is_empty());
+
+        if has_tools {
+            self.chat_with_tools(request).await
+        } else {
+            let content = self.do_chat(&request).await?;
+            Ok(map_response(content))
+        }
     }
 
     async fn chat_stream(
         &self,
         request: ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamPayload>>> {
-        let content = self.do_chat(&request).await?;
+        let has_tools = request.tools.as_ref().map_or(false, |t| !t.is_empty());
 
-        // Phase 1b: wrapping non-streaming response in a single-item stream.
-        // True streaming via rig::streaming::StreamingChat can be added later.
-        let stream = futures::stream::once(async move {
-            Ok(StreamPayload {
-                content: Some(content),
-                tool_calls: None,
-                finish_reason: Some("stop".into()),
+        if has_tools {
+            // For streaming with tools, fall back to non-streaming for now.
+            let response = self.chat_with_tools(request).await?;
+            let content = response.choices.first()
+                .map(|c| c.message.content.clone())
+                .unwrap_or_default();
+            let tool_calls = response.choices.first()
+                .and_then(|c| c.message.tool_calls.clone());
+            let stream = futures::stream::once(async move {
+                Ok(StreamPayload {
+                    content: Some(content),
+                    tool_calls,
+                    finish_reason: Some("stop".into()),
+                })
+            });
+            Ok(Box::pin(stream))
+        } else {
+            let content = self.do_chat(&request).await?;
+            let stream = futures::stream::once(async move {
+                Ok(StreamPayload {
+                    content: Some(content),
+                    tool_calls: None,
+                    finish_reason: Some("stop".into()),
+                })
+            });
+            Ok(Box::pin(stream))
+        }
+    }
+}
+
+impl<C: CompletionClient + Send + Sync + 'static> RigProvider<C> {
+    /// Chat with tool definitions — uses Rig's lower-level completion API
+    /// to return raw tool_calls that our AgentLoop can execute.
+    async fn chat_with_tools(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let system = extract_system_prompt(&request.messages);
+        let last_user = extract_last_user_content(&request.messages);
+
+        if last_user.is_empty() {
+            return Err(AppError::Provider(
+                "No user message found in request".into(),
+            ));
+        }
+
+        let history = build_rig_history(&request.messages);
+
+        let agent_builder = self.client.agent(&self.model)
+            .preamble(&system)
+            .temperature(request.temperature.unwrap_or(0.7) as f64);
+
+        let agent_builder = if let Some(max_tokens) = request.max_tokens {
+            agent_builder.max_tokens(max_tokens as u64)
+        } else {
+            agent_builder
+        };
+
+        let agent = agent_builder.build();
+
+        // Convert our ToolDefinition to Rig's ToolDefinition
+        let rig_tools: Vec<rig::completion::ToolDefinition> = request
+            .tools
+            .unwrap_or_default()
+            .iter()
+            .map(|t| rig::completion::ToolDefinition {
+                name: t.function.name.clone(),
+                description: t.function.description.clone(),
+                parameters: t.function.parameters.clone(),
             })
-        });
+            .collect();
 
-        Ok(Box::pin(stream))
+        // Use the Completion trait which returns raw tool_calls
+        let builder = agent
+            .completion(&last_user, history)
+            .await
+            .map_err(|e| AppError::Provider(format!("Rig completion builder: {}", e)))?;
+
+        let builder = builder.tools(rig_tools);
+
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Rig completion send: {}", e)))?;
+
+        // Parse response for text and tool_calls
+        let mut content = String::new();
+        let mut tool_calls: Vec<OurToolCall> = Vec::new();
+
+        for item in response.choice.iter() {
+            match item {
+                rig::completion::AssistantContent::Text(text) => {
+                    content.push_str(&text.text);
+                }
+                rig::completion::AssistantContent::ToolCall(tc) => {
+                    tool_calls.push(OurToolCall {
+                        id: tc.id.clone(),
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                    });
+                }
+                _ => {} // Skip Reasoning, Image, etc.
+            }
+        }
+
+        Ok(ChatResponse {
+            id: response
+                .message_id
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            choices: vec![Choice {
+                message: Message {
+                    id: None,
+                    role: MessageRole::Assistant,
+                    content,
+                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    tool_call_id: None,
+                },
+                finish_reason: Some("stop".into()),
+            }],
+            usage: None,
+        })
     }
 }
 
