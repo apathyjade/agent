@@ -4,13 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::api::types::{ChatRequest, ChatResponse, StreamPayload};
-use crate::config::{AppConfig, BackendKind, ModelConfig, ModelProvider};
+use crate::config::AppConfig;
 use crate::error::{AppError, Result};
-use crate::keychain;
 
-use super::anthropic::AnthropicProvider;
-use super::openai::OpenAIProvider;
-use super::rig::RigProvider;
+use super::rig::create_rig_provider;
 
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
@@ -19,90 +16,34 @@ pub trait LLMProvider: Send + Sync {
 }
 
 pub struct ProviderRegistry {
-    openai_compatible: HashMap<String, Arc<OpenAIProvider>>,
-    anthropic: HashMap<String, Arc<AnthropicProvider>>,
-    rig: HashMap<String, Arc<dyn LLMProvider>>,
+    providers: HashMap<String, Arc<dyn LLMProvider>>,
     default_model_id: Option<String>,
 }
 
 impl ProviderRegistry {
-    fn requires_api_key(provider: &ModelProvider) -> bool {
-        !matches!(provider, ModelProvider::Ollama | ModelProvider::LMStudio)
-    }
-
     pub fn new(config: &AppConfig) -> Self {
-        let mut openai_compatible = HashMap::new();
-        let mut anthropic = HashMap::new();
-        let mut rig = HashMap::new();
+        let mut providers = HashMap::new();
 
         for model in &config.models {
             if !model.enabled {
                 continue;
             }
 
-            // Resolve API key: keychain first, config fallback
-            let resolved_key = keychain::resolve_api_key(&model.id, &model.api_key);
-            let has_key = !resolved_key.is_empty();
-            let needs_key = Self::requires_api_key(&model.provider);
-
-            // -- Rig backend branch --
-            if model.backend == BackendKind::Rig {
-                if !has_key && needs_key {
+            match create_rig_provider(model) {
+                Ok(provider) => {
+                    providers.insert(model.id.clone(), Arc::from(provider));
+                }
+                Err(e) => {
+                    log::warn!("Failed to create Rig provider for '{}' ({}): {}",
+                        model.id, model.provider, e);
                     continue;
                 }
-                let resolved = if has_key { resolved_key.clone() } else { model.api_key.clone() };
-                // Build a config clone with resolved key for the Rig constructor
-                let mut model_clone = model.clone();
-                model_clone.api_key = resolved;
-                let provider: Result<Arc<dyn LLMProvider>> = match model.provider {
-                    ModelProvider::OpenAI => {
-                        RigProvider::new_openai(&model_clone).map(|p| Arc::new(p) as Arc<dyn LLMProvider>)
-                    }
-                    ModelProvider::Anthropic => {
-                        RigProvider::new_anthropic(&model_clone).map(|p| Arc::new(p) as Arc<dyn LLMProvider>)
-                    }
-                    _ if model.is_compatible_with_openai_api() => {
-                        RigProvider::new_openai(&model_clone).map(|p| Arc::new(p) as Arc<dyn LLMProvider>)
-                    }
-                    _ => continue,
-                };
-                match provider {
-                    Ok(p) => { rig.insert(model.id.clone(), p); }
-                    Err(e) => {
-                        log::warn!("Failed to create Rig provider for '{}': {}", model.id, e);
-                        continue;
-                    }
-                }
-                continue;
-            }
-
-            if model.is_compatible_with_openai_api() && (!needs_key || has_key) {
-                let mut cfg = model.clone();
-                cfg.api_key = resolved_key;
-                let provider = OpenAIProvider::new(cfg);
-                openai_compatible.insert(model.id.clone(), Arc::new(provider));
-            } else if matches!(model.provider, ModelProvider::Anthropic) && has_key {
-                let mut cfg = model.clone();
-                cfg.api_key = resolved_key;
-                let provider = AnthropicProvider::new(cfg);
-                anthropic.insert(model.id.clone(), Arc::new(provider));
             }
         }
 
         let default_id = config.get_default_model().map(|m| m.id.clone());
 
-        Self {
-            openai_compatible,
-            anthropic,
-            rig,
-            default_model_id: default_id,
-        }
-    }
-
-    pub fn resolve_api_key_in_model(model: &mut ModelConfig) {
-        if model.api_key.is_empty() {
-            model.api_key = keychain::resolve_api_key(&model.id, "");
-        }
+        Self { providers, default_model_id: default_id }
     }
 
     pub fn default_model_id(&self) -> &str {
@@ -110,90 +51,39 @@ impl ProviderRegistry {
     }
 
     pub fn get(&self, model_id: &str) -> Result<Arc<dyn LLMProvider>> {
-        if let Some(provider) = self.openai_compatible.get(model_id) {
-            return Ok(provider.clone());
-        }
-        if let Some(provider) = self.anthropic.get(model_id) {
-            return Ok(provider.clone());
-        }
-        if let Some(provider) = self.rig.get(model_id) {
-            return Ok(provider.clone());
-        }
-        Err(AppError::Provider(format!("Model '{}' not found or not configured", model_id)))
+        self.providers.get(model_id)
+            .cloned()
+            .ok_or_else(|| AppError::Provider(format!("Model '{}' not found or not configured", model_id)))
     }
 
     pub fn list_models(&self) -> Vec<String> {
-        let mut models = Vec::new();
-        models.extend(self.openai_compatible.keys().cloned());
-        models.extend(self.anthropic.keys().cloned());
-        models.extend(self.rig.keys().cloned());
-        models
+        self.providers.keys().cloned().collect()
     }
 
-    pub fn add_model(&mut self, model: ModelConfig) {
+    pub fn add_model(&mut self, model: crate::config::ModelConfig) {
         if !model.enabled {
             return;
         }
 
-        let resolved_key = keychain::resolve_api_key(&model.id, &model.api_key);
-        let has_key = !resolved_key.is_empty();
-        let needs_key = Self::requires_api_key(&model.provider);
-
-        // Rig backend
-        if model.backend == BackendKind::Rig {
-            if !has_key && needs_key {
-                return;
+        match create_rig_provider(&model) {
+            Ok(provider) => {
+                self.providers.insert(model.id.clone(), Arc::from(provider));
             }
-            let mut model_clone = model.clone();
-            model_clone.api_key = resolved_key;
-            let provider = match model.provider {
-                ModelProvider::OpenAI => {
-                    RigProvider::new_openai(&model_clone).map(|p| Arc::new(p) as Arc<dyn LLMProvider>)
-                }
-                ModelProvider::Anthropic => {
-                    RigProvider::new_anthropic(&model_clone).map(|p| Arc::new(p) as Arc<dyn LLMProvider>)
-                }
-                _ if model.is_compatible_with_openai_api() => {
-                    RigProvider::new_openai(&model_clone).map(|p| Arc::new(p) as Arc<dyn LLMProvider>)
-                }
-                _ => return,
-            };
-            if let Ok(p) = provider {
-                self.rig.insert(model.id.clone(), p);
+            Err(e) => {
+                log::warn!("Failed to create Rig provider for '{}': {}", model.id, e);
             }
-            return;
-        }
-
-        // Native backend
-        if model.is_compatible_with_openai_api() && (!needs_key || has_key) {
-            let mut cfg = model.clone();
-            cfg.api_key = resolved_key;
-            let provider = OpenAIProvider::new(cfg);
-            self.openai_compatible.insert(model.id.clone(), Arc::new(provider));
-        } else if matches!(model.provider, ModelProvider::Anthropic) && has_key {
-            let mut cfg = model.clone();
-            cfg.api_key = resolved_key;
-            let provider = AnthropicProvider::new(cfg);
-            self.anthropic.insert(model.id.clone(), Arc::new(provider));
         }
     }
 
     pub fn remove_model(&mut self, model_id: &str) {
-        self.openai_compatible.remove(model_id);
-        self.anthropic.remove(model_id);
-        self.rig.remove(model_id);
+        self.providers.remove(model_id);
     }
 
     pub fn is_registered(&self, model_id: &str) -> bool {
-        self.openai_compatible.contains_key(model_id)
-            || self.anthropic.contains_key(model_id)
-            || self.rig.contains_key(model_id)
+        self.providers.contains_key(model_id)
     }
 
     pub fn get_registered_model_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.openai_compatible.keys().cloned().collect();
-        ids.extend(self.anthropic.keys().cloned());
-        ids.extend(self.rig.keys().cloned());
-        ids
+        self.providers.keys().cloned().collect()
     }
 }

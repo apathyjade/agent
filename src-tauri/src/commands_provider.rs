@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::config::{BackendKind, ModelConfig, ModelProvider};
+use crate::config::{ModelConfig, ModelProvider};
 use crate::error::{AppError, Result};
 use crate::keychain;
 use crate::state::AppState;
@@ -105,7 +105,6 @@ pub async fn setup_provider(
                 enabled: true,
                 context_window: None,
                 max_tokens: None,
-                backend: BackendKind::Native,
             };
             config.add_model(model);
         }
