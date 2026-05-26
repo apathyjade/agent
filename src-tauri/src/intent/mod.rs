@@ -1,6 +1,7 @@
 pub mod classifier;
 pub mod router;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Serializable config for one intent's behavior.
@@ -20,7 +21,7 @@ pub struct IntentConfig {
 }
 
 /// Result from LLM classification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClassificationResult {
     pub intent: String,
     #[serde(default)]

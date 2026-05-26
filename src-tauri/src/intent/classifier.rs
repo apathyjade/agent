@@ -3,53 +3,83 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
+use crate::api::rig::extract_structured;
 use crate::api::types::{ChatRequest, Message as ApiMessage, MessageRole};
 use crate::intent::ClassificationResult;
 
-const CLASSIFIER_PROMPT: &str = r#"You are an intent classifier for an AI coding assistant. Classify the user's message into exactly one category:
+/// System prompt for the intent classifier.
+const CLASSIFIER_PROMPT: &str = r#"You are an intent classifier for an AI coding assistant.
+Classify the user's message into exactly one category:
 
-- "chat": Simple conversation, greetings, questions needing only a direct answer. No tools needed.
-- "code": Coding tasks: implement, refactor, fix, debug, analyze, test, build. May need tools.
-- "research": Information seeking: search docs, explain concepts, compare approaches. May need web search.
-- "auto": Complex multi-step tasks requiring planning and autonomous execution with multiple tool calls.
-
-Respond with valid JSON only, no other text:
-{"intent": "...", "reason": "...", "auto_escalate": true/false, "max_iterations": number}
+- "chat": Simple conversation, greetings, questions needing only a direct answer.
+- "code": Coding tasks: implement, refactor, fix, debug, analyze, test, build.
+- "research": Information seeking: search docs, explain concepts, compare approaches.
+- "auto": Complex multi-step tasks requiring planning and autonomous execution.
 
 Rules:
-- Simple message=chat, needs-code-change=code, needs-info=research, complex-task=auto
+- Simple message → chat, needs-code-change → code, needs-info → research, complex-task → auto
 - auto_escalate: false for chat, true for everything else
 - max_iterations: simple=5, moderate=10, complex=15
-- Chinese: "你好"=chat, "重构这个模块"=code, "Rust和Go的区别"=research, "分析项目结构并生成文档"=auto
 - If unsure between chat and work, prefer work (code/research/auto)"#;
 
 pub struct LlmClassifier {
     providers: Arc<Mutex<ProviderRegistry>>,
     model_id: String,
+    openai_api_key: String,
 }
 
 impl LlmClassifier {
     pub fn new(providers: Arc<Mutex<ProviderRegistry>>, model_id: String) -> Self {
-        Self { providers, model_id }
+        let openai_api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+        Self { providers, model_id, openai_api_key }
     }
 
     /// Classify a user message into an intent.
-    /// Falls back to keyword heuristic if LLM call fails.
+    /// Tries Rig structured extraction first, then LLM chat, then keyword fallback.
     pub async fn classify(&self, message: &str) -> ClassificationResult {
-        // 1. Try LLM classification
+        // 1. Try Rig extractor (type-safe, no JSON parsing needed)
+        if !self.openai_api_key.is_empty() {
+            match self.rig_classify(message).await {
+                Ok(result) => {
+                    log::info!("Rig classify: intent={}, reason={}", result.intent, result.reason);
+                    return result;
+                }
+                Err(e) => {
+                    log::warn!("Rig classify failed, trying LLM chat: {}", e);
+                }
+            }
+        }
+
+        // 2. Try LLM chat-based classification (fallback)
         match self.llm_classify(message).await {
             Ok(result) => {
                 log::info!("LLM classify: intent={}, reason={}", result.intent, result.reason);
                 return result;
             }
             Err(e) => {
-                log::warn!("LLM classify failed, using fallback: {}", e);
+                log::warn!("LLM classify failed, using keyword fallback: {}", e);
             }
         }
-        // 2. Fallback keyword heuristic
+
+        // 3. Fallback keyword heuristic
         fallback_classify(message)
     }
 
+    /// Use Rig's structured extractor for type-safe classification.
+    async fn rig_classify(&self, message: &str) -> Result<ClassificationResult, String> {
+        let result: ClassificationResult = extract_structured(
+            &self.openai_api_key,
+            "gpt-4o",
+            CLASSIFIER_PROMPT,
+            message,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        Ok(result)
+    }
+
+    /// Fallback: use LLM chat with manual JSON parsing.
     async fn llm_classify(&self, message: &str) -> Result<ClassificationResult, String> {
         let providers = self.providers.lock().await;
         let mid = if self.model_id.is_empty() {
@@ -97,7 +127,6 @@ impl LlmClassifier {
             .unwrap_or_default();
 
         let trimmed = content.trim();
-        // Extract JSON from possible ```json ... ``` wrapping
         let json_str = if let Some(start) = trimmed.find('{') {
             let end = trimmed.rfind('}').unwrap_or(trimmed.len());
             &trimmed[start..=end]
@@ -106,7 +135,7 @@ impl LlmClassifier {
         };
 
         serde_json::from_str::<ClassificationResult>(json_str)
-            .map_err(|e| format!("Failed to parse classifier response: {}, raw: {}", e, json_str.chars().take(100).collect::<String>()))
+            .map_err(|e| format!("Failed to parse classifier response: {}, raw: {}", e, &json_str.chars().take(100).collect::<String>()))
     }
 }
 
@@ -143,7 +172,6 @@ fn fallback_classify(message: &str) -> ClassificationResult {
             max_iterations: 10,
         }
     } else if message.chars().count() > 20 {
-        // Long message with no clear keywords → treat as auto
         ClassificationResult {
             intent: "auto".to_string(),
             reason: "fallback: long message".to_string(),

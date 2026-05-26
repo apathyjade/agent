@@ -25,6 +25,7 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::types::{
@@ -265,4 +266,43 @@ pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn LLMProvider>> 
             Ok(Box::new(RigProvider::new(client, model.name.clone())))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Structured extraction (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Extract structured data from text using Rig's [`Extractor`].
+///
+/// The generic parameter `T` is the target struct.  It must derive
+/// [`Serialize`], [`Deserialize`], and [`JsonSchema`].
+///
+/// This is used by the intent classifier and execution planner to
+/// replace brittle manual JSON parsing.
+pub async fn extract_structured<T>(
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    user_input: &str,
+) -> Result<T>
+where
+    T: Serialize + for<'de> Deserialize<'de> + schemars::JsonSchema + Send + Sync + 'static,
+{
+    let client = rig::providers::openai::Client::new(api_key)
+        .map_err(|e| AppError::Provider(format!("Extract client init: {}", e)))?;
+
+    // Combine system prompt and user input, since the extractor
+    // doesn't have a separate preamble method.
+    let combined = format!("{}\n\n{}", system_prompt, user_input);
+
+    let extractor = client
+        .extractor::<T>(model)
+        .build();
+
+    let response = extractor
+        .extract_with_usage(&combined)
+        .await
+        .map_err(|e| AppError::Provider(format!("Extraction failed: {}", e)))?;
+
+    Ok(response.data)
 }
