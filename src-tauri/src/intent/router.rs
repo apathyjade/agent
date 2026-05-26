@@ -163,12 +163,20 @@ impl IntentRouter {
         self.enabled
     }
 
-    /// 根据 intent name 判断是否应自动升级到 autonomous 模式
-    pub fn should_auto_escalate(&self, intent_name: &str) -> bool {
-        self.configs
-            .get(intent_name)
-            .map(|cfg| cfg.auto_escalate)
-            .unwrap_or(false)
+    /// 根据 intent name 和消息内容判断是否应自动升级到 autonomous 模式
+    pub fn should_auto_escalate(&self, intent_name: &str, message: &str) -> bool {
+        // 如果 intent 配置了 auto_escalate，直接触发
+        if let Some(cfg) = self.configs.get(intent_name) {
+            if cfg.auto_escalate {
+                return true;
+            }
+        }
+        // 降级策略：general 意图 + 消息超过 15 字符 → 也触发自主模式
+        // 这样即使 config 文件中的规则被旧版本保存覆盖，中文消息仍能触发
+        if intent_name == "general" && message.chars().count() > 15 {
+            return true;
+        }
+        false
     }
 }
 
@@ -334,5 +342,36 @@ mod tests {
         let session = Some(vec!["calculator".to_string(), "web_search".to_string()]);
         let result = router.resolve_tools(session, None);
         assert_eq!(result, Some(vec!["calculator".to_string(), "web_search".to_string()]));
+    }
+
+    #[test]
+    fn test_classify_chinese_default_rules() {
+        // Use IntentRouterConfig::default() which uses default_rules() = with Chinese keywords
+        let cfg = crate::intent::IntentRouterConfig::default();
+        let router = IntentRouter::new(&cfg);
+
+        let result = router.classify("帮我分析一下这个项目的结构");
+        assert_eq!(result.name, "code", "Chinese '分析' should match code intent with default rules. Got: {}", result.name);
+
+        let result = router.classify("重构src目录下的代码");
+        assert_eq!(result.name, "code", "Chinese '重构' should match code intent. Got: {}", result.name);
+
+        let result = router.classify("实现一个排序函数");
+        assert_eq!(result.name, "code", "Chinese '实现' should match code intent. Got: {}", result.name);
+
+        let result = router.classify("为什么这个功能不能正常工作");
+        assert_eq!(result.name, "research", "Chinese '为什么' should match research intent. Got: {}", result.name);
+    }
+
+    #[test]
+    fn test_classify_simple_greeting() {
+        let cfg = crate::intent::IntentRouterConfig::default();
+        let router = IntentRouter::new(&cfg);
+
+        let result = router.classify("你好");
+        assert_eq!(result.name, "general", "Simple Chinese greeting should be general. Got: {}", result.name);
+
+        let result = router.classify("hello");
+        assert_eq!(result.name, "general", "Simple English greeting should be general. Got: {}", result.name);
     }
 }

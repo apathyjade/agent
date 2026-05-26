@@ -369,10 +369,11 @@ pub async fn send_message_stream(
     // ── Intent Routing: classify user message ──
     let _intent_result: crate::intent::IntentResult = state.intent_router.classify(&content);
     let _current_intent = std::sync::Arc::new(std::sync::Mutex::new(_intent_result.name.clone()));
+    let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name, &content);
     log::info!(
         "Intent classified: name={}, should_escalate={}",
         _intent_result.name,
-        state.intent_router.should_auto_escalate(&_intent_result.name)
+        should_escalate
     );
 
     // Emit execution log for debugging
@@ -380,11 +381,10 @@ pub async fn send_message_stream(
         let entry = ExecutionLogEntry::new(level, step, message);
         let _ = app_handle.emit("execution_log", entry);
     };
-    emit_log(&app_handle, "info", "intent", format!("意图分类: name={}", _intent_result.name));
+    emit_log(&app_handle, "info", "intent", format!("意图分类: name={}, msg_len={}", _intent_result.name, content.chars().count()));
 
     // ── Autonomous mode: check if this intent should auto-escalate ──
-    let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name);
-    emit_log(&app_handle, "info", "intent", format!("自动升级检查: should_escalate={}", should_escalate));
+    emit_log(&app_handle, "info", "intent", format!("自动升级检查: should_escalate={}, msg_len={}", should_escalate, content.chars().count()));
 
     if should_escalate {
         emit_log(&app_handle, "info", "planner", "开始生成执行计划...".to_string());
