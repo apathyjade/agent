@@ -210,9 +210,22 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
 
   setPlanProgress: (progress) => set({ planProgress: progress }),
 
-  addExecutionLog: (entry) => set((state: any) => ({
-    executionLogs: [...state.executionLogs, entry].slice(-200), // keep last 200
-  })),
+  addExecutionLog: (entry) => {
+    // Add execution log as a visible message in the chat
+    const sessionId = get().currentSession?.id;
+    if (!sessionId) return;
+    const logMsg: Message = {
+      id: `exec-log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      session_id: sessionId,
+      role: 'tool',
+      content: `[${entry.step}] ${entry.message}`,
+      created_at: entry.timestamp,
+    };
+    set((state: any) => ({
+      executionLogs: [...state.executionLogs, entry].slice(-200),
+      messages: [...state.messages, logMsg],
+    }));
+  },
 
   clearExecutionLogs: () => set({ executionLogs: [] }),
 

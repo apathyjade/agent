@@ -16,7 +16,6 @@ import { SettingsPage } from './components/SettingsPage';
 import { WorkflowManagerPage } from './components/WorkflowManagerPage';
 import { ToastContainer } from './components/Toast';
 import { PlanConfirmDialog } from './components/PlanConfirmDialog';
-import { ExecutionLogPanel } from './components/ExecutionLogPanel';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
 import type { PlanProgressEvent, ExecutionLogEntry } from './types';
@@ -232,7 +231,6 @@ function App() {
 
       <ToastContainer />
       <PlanConfirmDialog />
-      <ExecutionLogPanel />
     </Col>
   );
 }
