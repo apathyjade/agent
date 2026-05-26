@@ -25,6 +25,7 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -40,6 +41,11 @@ use super::provider::LLMProvider;
 use rig::client::CompletionClient;
 use rig::completion::Chat;
 use rig::completion::Completion;
+
+// Streaming support
+use rig::agent::MultiTurnStreamItem;
+
+use rig::streaming::{StreamedAssistantContent, StreamingChat};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -177,7 +183,7 @@ impl<C: CompletionClient + Send + Sync + 'static> LLMProvider for RigProvider<C>
         let has_tools = request.tools.as_ref().map_or(false, |t| !t.is_empty());
 
         if has_tools {
-            // For streaming with tools, fall back to non-streaming for now.
+            // For streaming with tools, fall back to non-streaming wrapper.
             let response = self.chat_with_tools(request).await?;
             let content = response.choices.first()
                 .map(|c| c.message.content.clone())
@@ -191,18 +197,65 @@ impl<C: CompletionClient + Send + Sync + 'static> LLMProvider for RigProvider<C>
                     finish_reason: Some("stop".into()),
                 })
             });
-            Ok(Box::pin(stream))
+            return Ok(Box::pin(stream));
+        }
+
+        // True streaming via Rig's StreamingChat trait.
+        let system = extract_system_prompt(&request.messages);
+        let last_user = extract_last_user_content(&request.messages);
+
+        if last_user.is_empty() {
+            return Err(AppError::Provider(
+                "No user message found in request".into(),
+            ));
+        }
+
+        let history = build_rig_history(&request.messages);
+
+        let agent_builder = self.client.agent(&self.model)
+            .preamble(&system)
+            .temperature(request.temperature.unwrap_or(0.7) as f64);
+
+        let agent_builder = if let Some(max_tokens) = request.max_tokens {
+            agent_builder.max_tokens(max_tokens as u64)
         } else {
-            let content = self.do_chat(&request).await?;
-            let stream = futures::stream::once(async move {
-                Ok(StreamPayload {
-                    content: Some(content),
+            agent_builder
+        };
+
+        let agent = agent_builder.build();
+
+        let stream = agent.stream_chat(&last_user, &history).await;
+
+        let boxed = stream
+            .map(|item| match item {
+                Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
+                    match content {
+                        StreamedAssistantContent::Text(text) => Ok(StreamPayload {
+                            content: Some(text.text),
+                            tool_calls: None,
+                            finish_reason: None,
+                        }),
+                        _ => Ok(StreamPayload {
+                            content: None,
+                            tool_calls: None,
+                            finish_reason: None,
+                        }),
+                    }
+                }
+                Ok(MultiTurnStreamItem::FinalResponse(_fin)) => Ok(StreamPayload {
+                    content: None,
                     tool_calls: None,
                     finish_reason: Some("stop".into()),
-                })
+                }),
+                Ok(_) => Ok(StreamPayload {
+                    content: None,
+                    tool_calls: None,
+                    finish_reason: None,
+                }),
+                Err(e) => Err(AppError::Provider(format!("Rig stream error: {}", e))),
             });
-            Ok(Box::pin(stream))
-        }
+
+        Ok(Box::pin(boxed))
     }
 }
 
