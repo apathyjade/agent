@@ -171,8 +171,9 @@ impl OrchestratorAgent {
                 match self.execute_node(graph, node_id).await {
                     Ok(content) => {
                         let duration = start.elapsed().as_millis() as u64;
-                        let summary = if content.len() > 120 {
-                            format!("{}…", &content[..120])
+                        // Safe UTF-8 char boundary slicing: take first 120 chars, not bytes
+                        let summary = if content.chars().count() > 120 {
+                            format!("{}…", content.chars().take(120).collect::<String>())
                         } else {
                             content.clone()
                         };
