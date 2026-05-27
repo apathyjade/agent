@@ -15,6 +15,7 @@ import {
   Save,
   Check,
   AlertTriangle,
+  Sparkles,
 } from 'lucide-react';
 import { useStore } from '../store';
 import { ManagerPageLayout } from './ManagerPageLayout';
@@ -99,15 +100,15 @@ function MemoryCard({
               )}
             </div>
           </div>
-          {/* Relevance indicator */}
-          <div className="flex-shrink-0 flex items-center gap-1">
+          {/* Relevance indicator — powered by Rig semantic search when available */}
+          <div className="flex-shrink-0 flex items-center gap-1.5">
             <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
-                className="h-full rounded-full bg-purple-500 transition-all"
+                className="h-full rounded-full bg-gradient-to-r from-purple-400 to-indigo-500 transition-all"
                 style={{ width: `${Math.round(memory.relevance * 100)}%` }}
               />
             </div>
-            <span className="text-[11px] text-gray-400 w-7 text-right">{Math.round(memory.relevance * 100)}%</span>
+            <span className="text-[11px] text-gray-400 w-7 text-right font-mono">{Math.round(memory.relevance * 100)}%</span>
           </div>
         </div>
 
@@ -481,6 +482,15 @@ export function MemoryManagerPage() {
             placeholder="搜索记忆内容..."
             className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
           />
+          {/* Semantic search indicator */}
+          {memorySearchQuery && (
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+              <span className="flex items-center gap-1 text-[11px] font-medium text-purple-500 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 px-2 py-0.5 rounded-full">
+                <Sparkles size={11} />
+                语义
+              </span>
+            </div>
+          )}
         </div>
         <select
           value={memoryFilterType}

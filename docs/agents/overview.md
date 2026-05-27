@@ -6,6 +6,7 @@
 |----|------|
 | 框架 | Tauri 2.x |
 | 后端 | Rust（Tokio、reqwest、rusqlite） |
+| AI 框架 | **Rig v0.37**（LLM provider、agent、embeddings、extraction） |
 | 前端 | React 18 + TypeScript + Vite |
 | 状态管理 | Zustand |
 | 样式 | TailwindCSS + 自定义紫色主题 |
@@ -47,14 +48,85 @@ agent/
 └── docs/                            # 项目文档
 ```
 
-## Provider 系统
+## AI 基础设施 — Rig Framework
 
-支持 11 个 LLM Provider，模型配置按模型独立存储（`api_key`、`base_url`、`context_window`、`max_tokens`），非全局共享：
+### 核心依赖
 
-| 类型 | Provider |
-|------|----------|
-| OpenAI 兼容（10） | openai, google, groq, deepseek, zhipu, moonshot, siliconflow, ollama, lmstudio, custom |
-| Anthropic（1） | anthropic（独立客户端实现） |
+项目基于 **[Rig](https://rig.rs/) v0.37** 作为统一的 AI 基础设施层，涵盖 LLM 通信、embeddings、结构化提取等所有 AI 能力。Rig 抽象了 20+ 模型 provider 的差异，提供一致的 `CompletionClient` / `EmbeddingModel` / `Extractor` 接口。
+
+**关键 Cargo 依赖：**
+
+```toml
+rig = "0.37"        # 完整 Rig 框架（core + 所有 provider）
+schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
+```
+
+### 架构分层
+
+```
+┌─────────────────────────────────────────────────────┐
+│   AgentLoop / Lifecycle / Intent / Execution        │  ← AI 消费者模块
+├─────────────────────────────────────────────────────┤
+│               LLMProvider trait                      │  ← 统一适配层
+│    chat() → ChatResponse                            │
+│    chat_stream() → BoxStream<StreamPayload>         │
+│    chat_with_tools() → ChatResponse (+ tool_calls)  │
+├─────────────────────────────────────────────────────┤
+│           RigProvider<C: CompletionClient>           │  ← Rig 泛型适配器
+│    do_chat() / chat_with_tools() / stream_chat()    │
+├─────────────────────────────────────────────────────┤
+│    rig::providers::openai / anthropic / gemini / …  │  ← Rig provider 客户端
+│    rig::completion::{Chat, Completion, CompletionModel} │
+│    rig::embeddings::EmbeddingModel                  │
+│    rig::streaming::StreamingChat                    │
+│    rig::extractor::Extractor                        │
+└─────────────────────────────────────────────────────┘
+```
+
+### Provider 映射
+
+所有 11 个模型 provider 统一通过 Rig 驱动。每个 provider 对应一个 `rig-providers` 下的客户端：
+
+| Config 标识 | Rig 客户端 | 说明 |
+|------------|-----------|------|
+| `openai` | `rig::providers::openai` | 直接映射 |
+| `anthropic` | `rig::providers::anthropic` | 直接映射 |
+| `google` | `rig::providers::gemini` | Google Gemini |
+| `groq` | `rig::providers::groq` | Groq 高速推理 |
+| `deepseek` | `rig::providers::deepseek` | DeepSeek |
+| `ollama` | `rig::providers::ollama` | 本地模型，无需 API key |
+| `moonshot` | `rig::providers::moonshot` | 月之暗面 Kimi |
+| `zhipu` | `rig::providers::openai`（兼容） | 通过 base_url 切换 |
+| `siliconflow` | `rig::providers::openai`（兼容） | 通过 base_url 切换 |
+| `lmstudio` | `rig::providers::openai`（兼容） | 本地，无需 API key |
+| `custom` | `rig::providers::openai`（兼容） | 任意 OpenAI 兼容 API |
+
+### 核心能力
+
+| 能力 | Rust API | 实现位置 |
+|------|----------|----------|
+| **LLM 对话** | `LLMProvider::chat()` / `chat_stream()` | `api/rig.rs` — `RigProvider` |
+| **工具调用** | `chat_with_tools()` — 通过 Rig Completion API 返回原始 tool_calls | `api/rig.rs` — `chat_with_tools()` |
+| **流式传输** | `StreamingChat::stream_chat()` — 真正的增量 SSE | `api/rig.rs` — `chat_stream()` |
+| **语义搜索** | `rig::embeddings::EmbeddingModel` + `InMemoryVectorIndex` | `memory/mod.rs` — `retrieve_relevant()` |
+| **结构化提取** | `rig::extractor::Extractor<T>` — 编译期类型安全 | `api/rig.rs` — `extract_structured::<T>()` |
+| **工具执行** | `agent/loop.rs` + `ToolRegistry` — AgentLoop 执行 tool_calls | `agent/loop.rs` — `run()` / `run_stream()` |
+
+### 关键设计决策
+
+- **适配器而非替换**：通过 `RigProvider<C: CompletionClient>` 泛型包装器适配到内部 `LLMProvider` trait，而非直接暴露 Rig 类型到消费者模块
+- **泛型工厂**：`create_rig_provider()` 根据 `ModelConfig.provider` 映射到正确的 Rig 客户端
+- **构建时单态化**：Rig 使用编译期泛型，通过 `Arc<dyn LLMProvider>` 桥接到运行时多态
+- **降级策略**：embedding 不可用时 → LIKE 搜索；extraction 失败时 → 回退到 chat JSON 解析
+
+### 进程启动
+
+应用启动时，`AppState::new()` 按以下顺序初始化 AI 基础设施：
+
+1. `config.json` → `ProviderRegistry::new()` → 为每个启用的 model 创建 `RigProvider`
+2. `MemoryManager::new()` — 传入 OpenAI API key → 可选初始化 `EmbeddingModel`
+3. `IntentRouter::new()` — 创建 `LlmClassifier`（Rig extraction 优先）
+4. `seed_defaults()` / `reconcile_skills()` — 预先注入内置记忆和技能
 
 ## IPC 通信
 
@@ -79,13 +151,23 @@ agent/
 | `code_executor` | ✅ | 代码执行沙箱 |
 | 动态脚本工具 | 按需 | 由 SkillManager 注册 |
 
+## 记忆系统
+
+由 `MemoryManager` 管理，支持语义搜索和关键词搜索双模式。
+
+| 模式 | 原理 | 依赖 |
+|------|------|------|
+| **语义搜索**（优先） | Rig `EmbeddingModel` → 余弦相似度 top-k | OpenAI API key |
+| **关键词搜索**（降级） | SQLite `LIKE '%keyword%'` | 无条件 |
+
+**数据流**：
+```
+存入记忆 → SQLite 存储 + (可选) Rig embedding → InMemoryVectorIndex
+检索记忆 → Rig embedding → VectorIndex.search() → 取 SQLite 完整记录
+         → (不可用时) SQLite LIKE 搜索
+```
+
 ## 数据库
-
-- **位置**：`dirs::data_dir()/agent/agent.db`
-- **迁移**：`migrate_tables()` 增量执行（添加列/重命名）
-- **表**：conversations, messages, settings, system_prompts, skills, memories, workflow_runs, runtime_version_cache, bound_projects
-
-## 更多
 
 - [开发流程](workflow.md) — 了解如何开始编码
 - [OpenSpec 工作流](openspec-workflow.md) — 功能开发的标准化流程

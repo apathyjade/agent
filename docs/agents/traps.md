@@ -1,5 +1,14 @@
 # 常见陷阱
 
+## Rig AI 框架
+
+- **Rig 版本兼容**：项目当前使用 `rig = "0.37"`，Rig 在 0.3x 系列中有 breaking changes（如 `max_depth` → `max_turns`），升级时需检查 changelog
+- **Provider 非 feature-gated**：Rig v0.37 中所有 provider 是内置在 rig-core 中的，**没有** `openai`/`anthropic` 等 feature flag。`features = ["openai", "anthropic"]` 会导致构建失败——正确方式：`rig = "0.37"`
+- **schemars 版本匹配**：`extract_structured<T>()` 要求 T 实现 `schemars::JsonSchema`。Rig 内部使用 `schemars v1.2.x`，项目中需使用相同版本，否则 trait bound 不满足（错误："trait `schemars::JsonSchema` is not satisfied"）
+- **Client::new() 返回 Result**：所有 Rig provider 的 `Client::new(&api_key)` 返回 `Result`，不是直接返回结构体——构造时需处理错误
+- **流式传输不携带工具调用**：当前 `StreamingChat::stream_chat()` 仅发送文本 delta。工具调用走 `chat_with_tools()` 的非流式路径，通过 `AgentLoop` 的输出通道推送 ToolCall/ToolResult 事件
+- **记忆语义搜索依赖 OpenAI API**：`MemoryManager` 的语义搜索需要 OpenAI API key（`OPENAI_API_KEY` 环境变量或 config 中第一个 OpenAI 模型的 key）。无 key 时自动降级到关键词 LIKE 搜索
+
 ## 项目配置
 
 - **CSP 限制**：`connect-src` 白名单在 `src-tauri/tauri.conf.json` 中——新增 provider 或修改 base URL 需同步添加
@@ -31,5 +40,7 @@
 ## 记忆系统
 
 - **种子记忆**：首次启动自动填充 17 条内置记忆。已是"已填充"状态后不再重复填充
-- **检索机制**：基于关键词 OR 匹配（content/tags），按 relevance × access_count × recency 排序取 top 5
+- **检索机制**（语义优先）：有 OpenAI API key 时使用 Rig `EmbeddingModel` 进行余弦相似度语义搜索；降级到 SQLite 关键词 LIKE
+- **向量索引重建**：应用启动时 `MemoryManager` 从 SQLite 批量重建内存向量索引，首次 `retrieve_relevant()` 调用触发
 - **上下文注入**：每次发送消息时自动检索相关记忆，注入为 `<remembered_context>` system message
+- **API key 获取**：`MemoryManager` 从 config 中第一个 OpenAI 模型的 api_key 获取；其次尝试 `OPENAI_API_KEY` 环境变量

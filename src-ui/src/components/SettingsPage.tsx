@@ -144,18 +144,33 @@ export function SettingsPage() {
 
   const getProviderColor = (providerId: string) => {
     const colors: Record<string, string> = {
-      openai: 'bg-green-100 text-green-700',
-      anthropic: 'bg-orange-100 text-orange-700',
-      google: 'bg-blue-100 text-blue-700',
-      groq: 'bg-yellow-100 text-yellow-700',
-      deepseek: 'bg-purple-100 text-purple-700',
-      zhipu: 'bg-cyan-100 text-cyan-700',
-      moonshot: 'bg-rose-100 text-rose-700',
-      siliconflow: 'bg-indigo-100 text-indigo-700',
-      ollama: 'bg-gray-100 text-gray-700',
-      lmstudio: 'bg-pink-100 text-pink-700',
+      openai: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+      anthropic: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
+      google: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+      groq: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+      deepseek: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+      zhipu: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
+      moonshot: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400',
+      siliconflow: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
+      ollama: 'bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-300',
+      lmstudio: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
     };
-    return colors[providerId] || 'bg-gray-100 text-gray-700';
+    return colors[providerId] || 'bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-300';
+  };
+
+  // Provider metadata for Rig-backed configuration hints
+  const providerHints: Record<string, { hint: string; docs?: string }> = {
+    openai: { hint: '使用 OPENAI_API_KEY 环境变量或手动输入密钥' },
+    anthropic: { hint: '使用 ANTHROPIC_API_KEY 环境变量或手动输入密钥' },
+    google: { hint: '使用 GEMINI_API_KEY 环境变量或手动输入密钥' },
+    groq: { hint: '使用 GROQ_API_KEY 环境变量或手动输入密钥' },
+    deepseek: { hint: '使用 DEEPSEEK_API_KEY 环境变量或手动输入密钥' },
+    zhipu: { hint: '智谱开放平台 API Key，如使用自定义网关请修改 Base URL' },
+    moonshot: { hint: '月之暗面开放平台 API Key' },
+    siliconflow: { hint: '硅基流动 API Key，支持多种开源模型' },
+    ollama: { hint: '本地 Ollama 服务，无需 API Key', docs: 'http://localhost:11434' },
+    lmstudio: { hint: '本地 LM Studio 服务，无需 API Key', docs: 'http://localhost:1234' },
+    custom: { hint: '自定义 OpenAI 兼容 API，可设置任意 Base URL' },
   };
 
   const tabs = [
@@ -238,7 +253,7 @@ export function SettingsPage() {
           <Row.Item $scale={1}>
             {selected && !showAddForm && !isEditing && (
               <div className="space-y-4">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className={`text-sm px-3 py-1 rounded-full ${getProviderColor(selected.id)}`}>
                     {selected.name}
                   </span>
@@ -247,7 +262,20 @@ export function SettingsPage() {
                   ) : (
                     <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">未配置</span>
                   )}
+                  {/* Rig backend badge */}
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
+                    <Sparkles size={11} />
+                    Rig
+                  </span>
                 </div>
+
+                {/* Provider-specific hint */}
+                {providerHints[selected.id] && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 flex items-start gap-1.5">
+                    <span className="text-gray-300 dark:text-gray-600 mt-0.5">ℹ</span>
+                    {providerHints[selected.id].hint}
+                  </p>
+                )}
 
                 {selected.configured && (
                   <>
@@ -301,7 +329,19 @@ export function SettingsPage() {
 
             {selected && showAddForm && (
               <div className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">配置 {selected.name}</h3>
+                <div className="flex items-center gap-2 mb-1">
+                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">配置 {selected.name}</h3>
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
+                    <Sparkles size={11} />
+                    Rig
+                  </span>
+                </div>
+
+                {/* Provider hint */}
+                {providerHints[selected.id] && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{providerHints[selected.id].hint}</p>
+                )}
+
                 {selected.requires_api_key && (
                   <div>
                     <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">API Key</label>
@@ -323,14 +363,19 @@ export function SettingsPage() {
                   </div>
                 )}
                 <div>
-                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Base URL (可选)</label>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Base URL</label>
                   <input
                     type="text"
                     value={newBaseUrl}
                     onChange={(e) => setNewBaseUrl(e.target.value)}
-                    placeholder={selected.base_url || '使用默认地址'}
-                    className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
+                    placeholder={selected.base_url || 'https://api.openai.com/v1/chat/completions'}
+                    className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
+                  {selected.base_url && (
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                      默认: <span className="font-mono">{selected.base_url}</span>
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">选择模型</label>
@@ -372,7 +417,13 @@ export function SettingsPage() {
 
             {selected && isEditing && (
               <div className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">编辑 {selected.name}</h3>
+                <div className="flex items-center gap-2 mb-1">
+                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">编辑 {selected.name}</h3>
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
+                    <Sparkles size={11} />
+                    Rig
+                  </span>
+                </div>
                 {selected.requires_api_key && (
                   <div>
                     <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">API Key (留空保持不变)</label>
@@ -393,14 +444,19 @@ export function SettingsPage() {
                   </div>
                 )}
                 <div>
-                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Base URL (可选)</label>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Base URL</label>
                   <input
                     type="text"
                     value={newBaseUrl}
                     onChange={(e) => setNewBaseUrl(e.target.value)}
-                    placeholder="使用默认地址"
-                    className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-400"
+                    placeholder={selected.base_url || '使用默认地址'}
+                    className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
+                  {selected.base_url && (
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                      默认: <span className="font-mono">{selected.base_url}</span>
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">选择模型</label>

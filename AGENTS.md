@@ -1,11 +1,24 @@
 # AGENTS.md — Agent（Tauri AI 客户端）
 
 > 详细文档见 `docs/agents/`：
-> - [项目概览](docs/agents/overview.md) — 技术栈、目录结构、Provider、工具系统
+> - [项目概览](docs/agents/overview.md) — 技术栈、目录结构、**Rig AI 框架**、工具系统
 > - [开发流程](docs/agents/workflow.md) — branch-per-session + OpenSpec 双流程
 > - [OpenSpec 工作流](docs/agents/openspec-workflow.md) — 功能开发标准化流程
 > - [常见陷阱](docs/agents/traps.md) — 项目配置、消息流、MCP 等注意事项
 > - [安全编码与依赖管理](docs/agents/safety.md) — 安全红线、第三方依赖规范
+
+---
+
+## 核心依赖
+
+| 依赖 | 用途 | 说明 |
+|------|------|------|
+| **Rig v0.37** | AI 基础设施 | LLM provider、embeddings、extraction、streaming — 统一 AI 框架 |
+| Tauri 2.x | 桌面框架 | Rust 后端 + React 前端 |
+| SQLite | 持久化 | 消息、记忆、配置存储 |
+
+> Rig 是项目的 AI 基础框架。所有 LLM 通信（chat、stream、tool calling、embeddings、structured output）统一通过 Rig 驱动。
+> 详见 `docs/agents/overview.md` → AI 基础设施 — Rig Framework。
 
 ---
 
