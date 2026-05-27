@@ -12,6 +12,7 @@ pub mod keychain;
 pub mod lifecycle;
 pub mod mcp;
 pub mod memory;
+pub mod orchestrator;
 pub mod persona;
 pub mod pipeline;
 pub mod skills;
