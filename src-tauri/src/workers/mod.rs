@@ -1,3 +1,4 @@
+pub mod code_editor;
 pub mod code_explorer;
 pub mod thinker;
 
