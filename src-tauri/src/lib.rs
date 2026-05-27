@@ -19,6 +19,7 @@ pub mod skills;
 pub mod state;
 pub mod tools;
 pub mod workers;
+pub mod workspace;
 
 use tauri::Manager;
 
