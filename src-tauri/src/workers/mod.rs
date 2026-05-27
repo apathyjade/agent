@@ -1,3 +1,4 @@
+pub mod code_explorer;
 pub mod thinker;
 
 use async_trait::async_trait;
