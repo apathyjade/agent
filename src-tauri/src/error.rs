@@ -35,6 +35,18 @@ pub enum AppError {
 
     #[error("Execution error: {0}")]
     Execution(String),
+
+    #[error("Orchestrator error: {0}")]
+    Orchestrator(String),
+
+    #[error("Worker error: {0}")]
+    Worker(String),
+
+    #[error("Critic error: {0}")]
+    Critic(String),
+
+    #[error("Workspace error: {0}")]
+    Workspace(String),
 }
 
 impl serde::Serialize for AppError {
@@ -74,6 +86,10 @@ impl AppError {
             AppError::Skill(_) => false,
             AppError::SkillValidation(_) => false,
             AppError::Execution(_) => false,
+            AppError::Orchestrator(_) => false,
+            AppError::Worker(_) => false,
+            AppError::Critic(_) => false,
+            AppError::Workspace(_) => false,
         }
     }
 }

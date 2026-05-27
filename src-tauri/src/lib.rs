@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod skills;
 pub mod state;
 pub mod tools;
+pub mod workers;
 
 use tauri::Manager;
 
