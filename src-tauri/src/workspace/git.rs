@@ -56,10 +56,6 @@ impl GitIntegration {
             let flags = entry.status();
             let path = entry.path().unwrap_or("").to_string();
 
-            if flags.contains(git2::Status::CURRENT) {
-                continue;
-            }
-
             let staged = flags.intersects(
                 git2::Status::INDEX_NEW | git2::Status::INDEX_MODIFIED |
                 git2::Status::INDEX_DELETED | git2::Status::INDEX_RENAMED |
@@ -236,6 +232,7 @@ mod tests {
         fs::write(dir.path().join("README.md"), "# Test\n").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap(); // persist index to .git/index
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let signature = git2::Signature::now("test", "test@test.com").unwrap();
@@ -248,28 +245,6 @@ mod tests {
         fs::write(dir.path().join("new.rs"), "fn main() {}\n").unwrap();
 
         dir
-    }
-
-    #[test]
-    fn debug_repo_status() {
-        let dir = init_test_repo();
-        let git = GitIntegration::open(dir.path()).unwrap();
-        eprintln!("DEBUG: is_repo={}", git.is_repo());
-        eprintln!("DEBUG: dir={:?}", dir.path());
-
-        // Check git2 directly
-        let repo = git2::Repository::open(dir.path()).unwrap();
-        let statuses = repo.statuses(None).unwrap();
-        eprintln!("DEBUG: direct statuses count={}", statuses.len());
-        for entry in statuses.iter() {
-            eprintln!("DEBUG:   entry path={:?} flags={:?}", entry.path(), entry.status());
-        }
-
-        let statuses = git.status().unwrap();
-        eprintln!("DEBUG: our statuses count={}", statuses.len());
-        for s in &statuses {
-            eprintln!("DEBUG:   our s={:?}", s);
-        }
     }
 
     #[test]
