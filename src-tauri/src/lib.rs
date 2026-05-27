@@ -3,6 +3,7 @@ pub mod agent;
 pub mod commands;
 pub mod commands_provider;
 pub mod config;
+pub mod critic;
 pub mod db;
 pub mod environment;
 pub mod error;
