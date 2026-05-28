@@ -7,12 +7,15 @@ export function WelcomePage() {
   const createSession = useStore((state) => state.createSession);
   const sendMessageStream = useStore((state) => state.sendMessageStream);
   const defaultModel = useStore((state) => state.defaultModel);
+  const pendingProjectId = useStore((state) => state.pendingProjectId);
+  const setPendingProjectId = useStore((state) => state.setPendingProjectId);
 
   const handleQuickStart = async (prompt: string) => {
     const modelId = defaultModel || '';
     if (!modelId) return;
-    // Create session with defaults directly, no config panel
-    await createSession('New Chat', modelId);
+    const projectId = pendingProjectId ?? undefined;
+    await createSession('New Chat', modelId, undefined, undefined, projectId);
+    setPendingProjectId(null);
     setTimeout(() => sendMessageStream(prompt), 100);
   };
 
@@ -34,6 +37,9 @@ export function WelcomePage() {
           </div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">你好，我是 Agent</h1>
           <p className="text-gray-500 dark:text-gray-400">你的 AI 智能助手，随时为你提供帮助</p>
+          {pendingProjectId && (
+            <p className="text-xs text-purple-500 dark:text-purple-400 mt-2">会话将创建在当前项目下</p>
+          )}
         </div>
 
         <div className="mb-8">

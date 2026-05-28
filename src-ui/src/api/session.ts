@@ -7,12 +7,13 @@ export async function createSession(
   modelId: string,
   systemPrompt?: string,
   personaId?: string,
+  projectId?: string,
 ): Promise<Session> {
-  return invoke('create_session', { title, modelId, systemPrompt, personaId });
+  return invoke('create_session', { title, modelId, systemPrompt, personaId, projectId });
 }
 
-export async function listSessions(includeArchived?: boolean): Promise<Session[]> {
-  return invoke('list_sessions', { includeArchived });
+export async function listSessions(includeArchived?: boolean, projectId?: string): Promise<Session[]> {
+  return invoke('list_sessions', { includeArchived, projectId });
 }
 
 export async function getSession(id: string): Promise<Session | null> {

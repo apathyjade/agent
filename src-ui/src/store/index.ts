@@ -26,6 +26,8 @@ export type AppState = UISlice & SessionSlice & ModelSlice & SkillSlice & McpSli
   activePersonaId: string | null;
   activePersonaInfo: PersonaInfo | null;
   setActivePersona: (info: PersonaInfo | null) => void;
+  pendingProjectId: string | null;
+  setPendingProjectId: (id: string | null) => void;
 };
 
 export const useStore = create<AppState>()((set, get, store) => ({
@@ -58,6 +60,11 @@ export const useStore = create<AppState>()((set, get, store) => ({
       activePersonaId: info?.id ?? null,
       activePersonaInfo: info,
     });
+  },
+
+  pendingProjectId: null,
+  setPendingProjectId: (id: string | null) => {
+    set({ pendingProjectId: id });
   },
 
   // sendMessageStream spans both conversation and UI state

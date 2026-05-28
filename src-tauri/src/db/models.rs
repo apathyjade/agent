@@ -18,6 +18,16 @@ pub struct PersonaRecord {
     pub updated_at: String,
 }
 
+/// A project — a named directory on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// A session — a series of messages with a title, model, and optional system prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -44,6 +54,9 @@ pub struct Session {
     /// Active execution plan ID (if any)
     #[serde(default)]
     pub active_plan_id: Option<String>,
+    /// Optional project this session belongs to
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// A summary of a range of messages within a session.

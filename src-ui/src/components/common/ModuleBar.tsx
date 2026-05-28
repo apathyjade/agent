@@ -1,4 +1,4 @@
-import { MessageSquare, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen, Users } from 'lucide-react';
+import { Kanban, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen, Users } from 'lucide-react';
 import { Tooltip } from 'antd';
 import { Col } from '@jelper/component';
 import { useStore } from '../../store';
@@ -66,10 +66,10 @@ export function ModuleBar() {
         {/* Module icons */}
         <Col.Item $scale={1}>
           <div className="flex flex-col items-center gap-1 py-3">
-            <Tooltip title="对话" placement="right">
+            <Tooltip title="项目" placement="right">
               <button onClick={handleChatClick} className={btnClass(currentView === 'chat')}>
                 {activeIndicator(currentView === 'chat')}
-                <MessageSquare size={18} />
+                <Kanban size={18} />
               </button>
             </Tooltip>
             <Tooltip title="技能管理" placement="right">

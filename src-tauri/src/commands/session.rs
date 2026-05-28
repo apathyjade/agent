@@ -29,6 +29,7 @@ pub async fn create_session(
     model_id: String,
     system_prompt: Option<String>,
     persona_id: Option<String>,
+    project_id: Option<String>,
 ) -> Result<DbSession> {
     let now = Utc::now().to_rfc3339();
     let sess = DbSession {
@@ -45,6 +46,7 @@ pub async fn create_session(
         mode: "chat".to_string(),
         execution_status: r#"{"type":"idle"}"#.to_string(),
         active_plan_id: None,
+        project_id,
     };
 
     let db = state.db.lock().await;
@@ -57,9 +59,14 @@ pub async fn create_session(
 pub async fn list_sessions(
     state: State<'_, AppState>,
     include_archived: Option<bool>,
+    project_id: Option<String>,
 ) -> Result<Vec<DbSession>> {
     let db = state.db.lock().await;
-    let all = db.list_sessions()?;
+    let all = if let Some(pid) = project_id {
+        db.get_sessions_by_project(&pid)?
+    } else {
+        db.list_sessions()?
+    };
     if include_archived.unwrap_or(false) {
         Ok(all)
     } else {

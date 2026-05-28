@@ -15,7 +15,7 @@ export interface SessionSlice {
   executionLogs: ExecutionLogEntry[];
 
   fetchSessions: () => Promise<void>;
-  createSession: (title: string, modelId: string, systemPrompt?: string, personaId?: string) => Promise<void>;
+  createSession: (title: string, modelId: string, systemPrompt?: string, personaId?: string, projectId?: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   updateSessionTitle: (id: string, title: string) => Promise<void>;
@@ -73,22 +73,10 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
     }
   },
 
-  createSession: async (title, modelId, systemPrompt, personaId) => {
+  createSession: async (title, modelId, systemPrompt, personaId, projectId) => {
     get().setLoading(true);
     try {
-      const conv = await api.createSession(title, modelId, systemPrompt, personaId);
-
-      // Apply default workspace setting if present
-      try {
-        const settings = await api.getSettings();
-        const ws = settings['default_workspace'];
-        if (ws) {
-          const config = { workspace_path: ws };
-          const configStr = JSON.stringify(config);
-          await api.updateSessionConfig(conv.id, configStr);
-          conv.config = configStr;
-        }
-      } catch { /* ignore settings errors */ }
+      const conv = await api.createSession(title, modelId, systemPrompt, personaId, projectId);
 
       set((state: any) => ({
         sessions: [conv, ...state.sessions],

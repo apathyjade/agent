@@ -9,6 +9,7 @@ import type {
   DiskUsageItem, VersionManager,
   MemoryInfo, CreateMemoryParams, UpdateMemoryParams,
   PersonaInfo, CreatePersonaParams, UpdatePersonaParams, ResolveResult,
+  Project, Session,
 } from '../types';
 
 // ── Skill Commands ──
@@ -367,4 +368,22 @@ export async function updateMemory(id: string, params: UpdateMemoryParams): Prom
 
 export async function deleteMemory(id: string): Promise<void> {
   return invoke('delete_memory', { id });
+}
+
+// ── Project Commands ──
+
+export async function listProjects(): Promise<Project[]> {
+  return invoke('list_projects');
+}
+
+export async function createProject(name: string, path: string): Promise<Project> {
+  return invoke('create_project', { name, path });
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  return invoke('delete_project', { id });
+}
+
+export async function getProjectSessions(projectId: string): Promise<Session[]> {
+  return invoke('get_project_sessions', { projectId });
 }

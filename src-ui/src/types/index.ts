@@ -12,6 +12,15 @@
   mode?: string;
   execution_status?: string;
   active_plan_id?: string | null;
+  project_id?: string | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Message {

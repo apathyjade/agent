@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{BoundProjectModel, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
+use crate::db::models::{BoundProjectModel, Project, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
 use crate::orchestrator::plan_types::{ExecutionPlanRecord, PlanStepRecord};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
@@ -48,13 +48,22 @@ impl Database {
             "
             PRAGMA foreign_keys = OFF;
 
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 model_id TEXT NOT NULL,
                 system_prompt TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                project_id TEXT REFERENCES projects(id)
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -422,6 +431,19 @@ impl Database {
             )?;
         }
 
+        // Migration v10: add project_id column to sessions table
+        let has_project_id = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='project_id'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_project_id == 0 {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id);",
+            )?;
+        }
+
         // Migration v5: rebuild FTS5 index if existing memories haven't been indexed yet.
         // The FTS table was just created in init_tables (or already existed from a prior run).
         // Check if the FTS index is empty while the memories table has rows.
@@ -442,16 +464,16 @@ impl Database {
 
     pub fn create_session(&self, sess: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at, sess.mode, sess.execution_status, sess.active_plan_id],
+            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at, sess.mode, sess.execution_status, sess.active_plan_id, sess.project_id],
         )?;
         Ok(())
     }
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id FROM sessions ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map([], |row| {
             Ok(Session {
@@ -468,6 +490,7 @@ impl Database {
                 mode: row.get(10)?,
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
+                project_id: row.get(13)?,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
@@ -475,7 +498,7 @@ impl Database {
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id FROM sessions WHERE id = ?1",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id FROM sessions WHERE id = ?1",
         )?;
         let sess = stmt.query_row(params![id], |row| {
             Ok(Session {
@@ -492,6 +515,7 @@ impl Database {
                 mode: row.get(10)?,
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
+                project_id: row.get(13)?,
             })
         }).optional()?;
         Ok(sess)
@@ -1001,6 +1025,90 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    // ── Projects CRUD ──
+
+    pub fn create_project(&self, project: &Project) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO projects (id, name, path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![project.id, project.name, project.path, project.created_at, project.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, path, created_at, updated_at
+             FROM projects ORDER BY updated_at DESC",
+        )?;
+        let projects = stmt.query_map([], |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(projects)
+    }
+
+    pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, path, created_at, updated_at
+             FROM projects WHERE id = ?1",
+        )?;
+        let project = stmt.query_row(params![id], |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        }).optional()?;
+        Ok(project)
+    }
+
+    pub fn delete_project(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn set_sessions_project_null(&self, project_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_sessions_by_project(&self, project_id: &str) -> Result<Vec<Session>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id
+             FROM sessions WHERE project_id = ?1 ORDER BY updated_at DESC",
+        )?;
+        let sessions = stmt.query_map(params![project_id], |row| {
+            Ok(Session {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_id: row.get(2)?,
+                system_prompt: row.get(3)?,
+                persona_id: row.get(4)?,
+                config: row.get(5)?,
+                title_source: row.get(6)?,
+                archived: row.get::<_, i32>(7)? != 0,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                mode: row.get(10)?,
+                execution_status: row.get(11)?,
+                active_plan_id: row.get(12)?,
+                project_id: row.get(13)?,
+            })
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(sessions)
     }
 
     pub fn skill_exists(&self, id: &str) -> Result<bool> {

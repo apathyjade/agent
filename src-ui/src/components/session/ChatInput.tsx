@@ -1,17 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Loader2, X, Sparkles, FolderOpen } from 'lucide-react';
+import { Send, Loader2, X, Sparkles } from 'lucide-react';
 import { Dropdown, Select } from 'antd';
 import { useStore } from '../../store';
-import { getSettings } from '../../api/config';
 import type { PersonaInfo } from '../../types';
-
-// OS-specific default workspace path (same logic as SettingsPage)
-function getDefaultWorkspacePath(): string {
-  const ua = navigator.platform.toLowerCase();
-  if (ua.includes('win')) return '%USERPROFILE%\\Code';
-  if (ua.includes('mac')) return '~/Code';
-  return '~/Code';
-}
 
 interface ChatInputProps {
   onSend: (content: string) => void | Promise<void>;
@@ -30,17 +21,12 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
   const activePersonaInfo = useStore((s) => s.activePersonaInfo);
   const setActivePersona = useStore((s) => s.setActivePersona);
 
-  // Model & workspace state
+  // Model state
   const currentSession = useStore((s) => s.currentSession);
   const models = useStore((s) => s.models);
   const defaultModel = useStore((s) => s.defaultModel);
   const updateSessionModel = useStore((s) => s.updateSessionModel);
-  const updateSessionWorkspace = useStore((s) => s.updateSessionWorkspace);
   const [selectedModel, setSelectedModel] = useState(defaultModel || '');
-  const [systemWorkspace, setSystemWorkspace] = useState<string>(
-    // localStorage cache → OS default (instant, no async wait)
-    (() => { try { return localStorage.getItem('agent_default_workspace') || getDefaultWorkspacePath(); } catch { return getDefaultWorkspacePath(); } })()
-  );
 
   useEffect(() => {
     if (personas.length === 0) fetchPersonas();
@@ -52,22 +38,6 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
       setSelectedModel(currentSession.model_id);
     }
   }, [currentSession?.model_id]);
-
-  // Load system default workspace
-  useEffect(() => {
-    (async () => {
-      try {
-        const settings = await getSettings();
-        const ws = settings['default_workspace'] || getDefaultWorkspacePath();
-        setSystemWorkspace(ws);
-        localStorage.setItem('agent_default_workspace', ws);
-      } catch {
-        const fallback = getDefaultWorkspacePath();
-        setSystemWorkspace(fallback);
-        localStorage.setItem('agent_default_workspace', fallback);
-      }
-    })();
-  }, []);
 
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
@@ -120,31 +90,6 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
       await updateSessionModel(currentSession.id, value);
     }
   }, [currentSession, updateSessionModel]);
-
-  const handlePickWorkspace = useCallback(async () => {
-    try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const selected = await open({ directory: true, multiple: false, title: '选择工作空间目录' });
-      if (selected && currentSession) {
-        await updateSessionWorkspace(currentSession.id, selected as string);
-      }
-    } catch {
-      // Not running in Tauri
-    }
-  }, [currentSession, updateSessionWorkspace]);
-
-  // Resolve workspace display: session config → system default
-  const getWorkspacePath = (): string => {
-    if (!currentSession?.config) return systemWorkspace;
-    try {
-      const cfg = JSON.parse(currentSession.config);
-      return cfg.workspace_path || systemWorkspace;
-    } catch {
-      return systemWorkspace;
-    }
-  };
-
-  const effectiveWorkspace = getWorkspacePath();
 
   const enabledModels = models.filter(m => m.enabled);
 
@@ -214,7 +159,7 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
         </div>
       </Dropdown>
 
-      {/* Bottom toolbar — model + workspace */}
+      {/* Bottom toolbar — model selector */}
       <div className="flex items-center justify-start gap-2.5 pt-2 mt-2 border-t border-gray-100 dark:border-gray-700/50">
         {/* Model selector pill */}
         <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-50 dark:bg-gray-800/60 border border-gray-150 dark:border-gray-700/50 rounded-full">
@@ -241,20 +186,6 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
             notFoundContent="没有可用模型"
           />
         </div>
-
-        {/* Workspace selector pill */}
-        {effectiveWorkspace ? (
-          <button onClick={handlePickWorkspace} className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50/70 dark:bg-amber-900/20 border border-amber-200/70 dark:border-amber-800/50 rounded-full group hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors cursor-pointer">
-            <FolderOpen size={11} className="text-amber-500 flex-shrink-0" />
-            <span className="text-[11px] text-amber-700 dark:text-amber-300">{effectiveWorkspace}</span>
-            <svg className="w-2.5 h-2.5 text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-          </button>
-        ) : (
-          <button onClick={handlePickWorkspace} className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50/50 dark:hover:bg-amber-900/20 border border-transparent hover:border-amber-200/70 dark:hover:border-amber-800/50 rounded-full transition-all">
-            <FolderOpen size={11} />
-            <span>工作空间</span>
-          </button>
-        )}
       </div>
     </div>
   );

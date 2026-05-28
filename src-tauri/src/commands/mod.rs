@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod session;
+pub mod project;
 pub mod orchestrator;
 pub mod environment;
 pub mod execution;
@@ -18,6 +19,7 @@ pub mod tool;
 pub mod window;
 
 pub use session::*;
+pub use project::*;
 pub use environment::*;
 pub use execution::*;
 pub use provider::*;
