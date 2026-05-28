@@ -180,7 +180,7 @@ pub async fn generate_workflow(
     description: String,
 ) -> Result<String> {
     // Get the default provider to call LLM
-    let response = {
+    let yaml = {
         let providers = state.providers.lock().await;
         let mid = providers.default_model_id();
         if mid.is_empty() {
@@ -212,38 +212,8 @@ steps:
 
 Only output the YAML, nothing else.";
 
-        let request = crate::api::types::ChatRequest {
-            messages: vec![
-                crate::api::types::Message {
-                    id: None,
-                    role: crate::api::types::MessageRole::System,
-                    content: system_prompt.to_string(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-                crate::api::types::Message {
-                    id: None,
-                    role: crate::api::types::MessageRole::User,
-                    content: description,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-            ],
-            model: mid.to_string(),
-            tools: None,
-            stream: Some(false),
-            max_tokens: Some(2000),
-            temperature: Some(0.3),
-        };
-
-        provider.chat(request).await
+        provider.prompt(system_prompt, &description).await
     }?;
-
-    let yaml = response
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_default();
 
     // Save to workflows directory
     if let Some(home) = dirs::home_dir() {

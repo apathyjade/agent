@@ -1,14 +1,16 @@
-use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
-use crate::error::{AppError, Result};
+use crate::error::AppError;
 
-use super::r#trait::Tool;
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
 
 pub struct ScriptTool {
     #[allow(dead_code)]
@@ -73,38 +75,60 @@ impl ScriptTool {
     }
 }
 
-#[async_trait]
-impl Tool for ScriptTool {
-    fn name(&self) -> &str {
-        &self.name
+impl ToolDyn for ScriptTool {
+    fn name(&self) -> String {
+        self.name.clone()
     }
 
-    fn description(&self) -> &str {
-        &self.description
+    fn definition<'a>(
+        &'a self,
+        _prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        let name = self.name.clone();
+        let description = self.description.clone();
+        let parameters = self.parameters.clone();
+        Box::pin(async move {
+            ToolDefinition {
+                name,
+                description,
+                parameters,
+            }
+        })
     }
 
-    fn parameters(&self) -> Value {
-        self.parameters.clone()
-    }
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let input: Value = serde_json::from_str(&args)
+                .map_err(|e| ToolError::JsonError(e))?;
 
-    async fn execute(&self, input: Value) -> Result<Value> {
-        let config = self.config.lock().await;
+            let config = self.config.lock().await;
 
-        // Build the stdin payload
-        let payload = json!({
-            "params": input,
-            "config": *config,
-        });
+            // Build the stdin payload
+            let payload = json!({
+                "params": input,
+                "config": *config,
+            });
 
-        drop(config); // release lock before spawning process
+            drop(config); // release lock before spawning process
 
-        let script = self.script_path.clone();
+            let script = self.script_path.clone();
 
-        // Run the subprocess
-        let result =
-            run_script(&self.interpreter, &script, &payload.to_string(), self.timeout_secs).await?;
+            // Run the subprocess
+            let result = run_script(
+                &self.interpreter,
+                &script,
+                &payload.to_string(),
+                self.timeout_secs,
+            )
+            .await
+            .map_err(|e| ToolError::ToolCallError(e.into()))?;
 
-        Ok(result)
+            serde_json::to_string(&result).map_err(|e| ToolError::JsonError(e))
+        })
     }
 }
 
@@ -113,7 +137,7 @@ async fn run_script(
     script: &str,
     stdin_data: &str,
     timeout_secs: u64,
-) -> Result<Value> {
+) -> std::result::Result<Value, AppError> {
     let mut cmd = Command::new(interpreter);
     cmd.arg(script)
         .stdin(std::process::Stdio::piped())

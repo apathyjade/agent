@@ -1,23 +1,72 @@
-﻿use async_trait::async_trait;
-use futures::stream::BoxStream;
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-use crate::api::types::{ChatRequest, ChatResponse, Message, MessageRole, StreamPayload};
+use async_trait::async_trait;
+use futures::stream::BoxStream;
+use rig::completion::Message;
+use rig::tool::ToolSet;
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
 
 use super::rig::create_rig_provider;
 
+// ---------------------------------------------------------------------------
+// Object-safe trait — wraps any Rig CompletionClient behind a single
+// interface so we can store heterogeneous providers in the registry.
+// ---------------------------------------------------------------------------
+
+/// Object-safe provider interface for type-erased access to Rig clients.
+///
+/// Every concrete [`RigProvider<C>`](super::rig::RigProvider) implements this
+/// trait, allowing [`ProviderRegistry`] to store providers built from
+/// different backends (OpenAI, Anthropic, …) in a single map.
 #[async_trait]
-pub trait LLMProvider: Send + Sync {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse>;
-    async fn chat_stream(&self, request: ChatRequest) -> Result<BoxStream<'static, Result<StreamPayload>>>;
+pub trait ProviderBox: Send + Sync {
+    /// The model identifier (e.g. `"gpt-4o"`, `"claude-3-opus"`).
+    fn model_id(&self) -> &str;
+
+    /// One-shot prompt — system preamble + user text → assistant text.
+    async fn prompt(&self, preamble: &str, prompt: &str) -> Result<String>;
+
+    /// Multi-turn chat with conversation history.
+    async fn chat(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        history: &mut Vec<Message>,
+    ) -> Result<String>;
+
+    /// One-shot prompt with tool support.
+    /// Rig's Agent handles multi-turn tool execution internally.
+    async fn prompt_with_tools(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        tool_set: ToolSet,
+    ) -> Result<String>;
+
+    /// Streamed one-shot prompt (no tools).
+    async fn stream_prompt(
+        &self,
+        preamble: &str,
+        prompt: &str,
+    ) -> Result<BoxStream<'static, Result<String>>>;
+
+    /// Streamed prompt with tool support.
+    async fn stream_with_tools(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        tool_set: ToolSet,
+    ) -> Result<BoxStream<'static, Result<String>>>;
 }
 
+// ---------------------------------------------------------------------------
+// ProviderRegistry
+// ---------------------------------------------------------------------------
+
 pub struct ProviderRegistry {
-    providers: HashMap<String, Arc<dyn LLMProvider>>,
+    providers: HashMap<String, Arc<dyn ProviderBox>>,
     default_model_id: Option<String>,
 }
 
@@ -35,8 +84,10 @@ impl ProviderRegistry {
                     providers.insert(model.id.clone(), Arc::from(provider));
                 }
                 Err(e) => {
-                    log::warn!("Failed to create Rig provider for '{}' ({}): {}",
-                        model.id, model.provider, e);
+                    log::warn!(
+                        "Failed to create Rig provider for '{}' ({}): {}",
+                        model.id, model.provider, e
+                    );
                     continue;
                 }
             }
@@ -44,21 +95,30 @@ impl ProviderRegistry {
 
         let default_id = config.get_default_model().map(|m| m.id.clone());
 
-        Self { providers, default_model_id: default_id }
+        Self {
+            providers,
+            default_model_id: default_id,
+        }
     }
 
     pub fn default_model_id(&self) -> &str {
         self.default_model_id.as_deref().unwrap_or("")
     }
 
-    pub fn get(&self, model_id: &str) -> Result<Arc<dyn LLMProvider>> {
-        self.providers.get(model_id)
+    pub fn get(&self, model_id: &str) -> Result<Arc<dyn ProviderBox>> {
+        self.providers
+            .get(model_id)
             .cloned()
-            .ok_or_else(|| AppError::Provider(format!("Model '{}' not found or not configured", model_id)))
+            .ok_or_else(|| {
+                AppError::Provider(format!(
+                    "Model '{}' not found or not configured",
+                    model_id
+                ))
+            })
     }
 
     /// Resolve a provider by model_id, falling back to the default if `None`.
-    pub fn resolve(&self, model_id: Option<&str>) -> Result<Arc<dyn LLMProvider>> {
+    pub fn resolve(&self, model_id: Option<&str>) -> Result<Arc<dyn ProviderBox>> {
         let mid = model_id.unwrap_or_else(|| self.default_model_id());
         if mid.is_empty() {
             return Err(AppError::Provider("No model configured".into()));
@@ -96,61 +156,4 @@ impl ProviderRegistry {
     pub fn get_registered_model_ids(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Convenience: simple system + user chat that returns text content.
-// ---------------------------------------------------------------------------
-
-/// Perform a simple system-prompt + user-message chat and return the text content.
-///
-/// This is a convenience wrapper around the common pattern of:
-/// 1. Resolving the model from the registry (locked briefly, then released)
-/// 2. Building a `ChatRequest` with system + user messages
-/// 3. Extracting the response text
-///
-/// When `model_id` is `None`, the registry's default model is used.
-pub async fn chat_text(
-    providers: &Arc<Mutex<ProviderRegistry>>,
-    model_id: Option<&str>,
-    system_prompt: &str,
-    user_message: &str,
-    max_tokens: Option<usize>,
-    temperature: Option<f32>,
-) -> Result<String> {
-    let provider = {
-        let registry = providers.lock().await;
-        registry.resolve(model_id)?
-    };
-
-    let request = ChatRequest {
-        messages: vec![
-            Message {
-                id: None,
-                role: MessageRole::System,
-                content: system_prompt.to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            Message {
-                id: None,
-                role: MessageRole::User,
-                content: user_message.to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        ],
-        model: String::new(),
-        tools: None,
-        stream: Some(false),
-        max_tokens,
-        temperature,
-    };
-
-    let response = provider.chat(request).await?;
-    Ok(response
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_default())
 }

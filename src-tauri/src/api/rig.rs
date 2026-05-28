@@ -1,8 +1,8 @@
 //! Rig AI framework — unified LLM provider.
 //!
-//! Provides the single [`RigProvider`] type that wraps all supported
-//! model providers (OpenAI, Anthropic, Gemini, Groq, …) behind the
-//! project's [`LLMProvider`] trait.
+//! Provides the [`RigProvider`] wrapper that adapts any Rig [`CompletionClient`]
+//! to the project's [`ProviderBox`] trait, plus the [`create_rig_provider`]
+//! factory function.
 //!
 //! # Provider mapping
 //!
@@ -27,86 +27,19 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::api::types::{
-    ChatRequest, ChatResponse, Choice, Message, MessageRole, StreamPayload, ToolCall as OurToolCall,
-};
+use rig::agent::MultiTurnStreamItem;
+use rig::client::CompletionClient;
+use rig::completion::{Chat, Message, Prompt};
+use rig::streaming::{StreamedAssistantContent, StreamingChat};
+use rig::tool::ToolSet;
+
 use crate::config::{ModelConfig, ModelProvider};
 use crate::error::{AppError, Result};
-
-use super::provider::LLMProvider;
-
-// Rig traits needed by every provider client
-use rig::client::CompletionClient;
-use rig::completion::Chat;
-use rig::completion::Completion;
-
-// Streaming support
-use rig::agent::MultiTurnStreamItem;
-
-use rig::streaming::{StreamedAssistantContent, StreamingChat};
+use crate::api::provider::ProviderBox;
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn extract_system_prompt(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .find(|m| m.role == MessageRole::System)
-        .map(|m| m.content.clone())
-        .unwrap_or_default()
-}
-
-fn extract_last_user_content(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find(|m| m.role == MessageRole::User)
-        .map(|m| m.content.clone())
-        .unwrap_or_default()
-}
-
-fn build_rig_history(messages: &[Message]) -> Vec<rig::completion::Message> {
-    let last_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
-
-    messages
-        .iter()
-        .enumerate()
-        .filter(|(i, m)| {
-            if m.role == MessageRole::System { return false; }
-            if m.role == MessageRole::Tool { return false; }
-            if Some(*i) == last_user_idx { return false; }
-            true
-        })
-        .map(|(_, m)| match m.role {
-            MessageRole::User => rig::completion::Message::user(&m.content),
-            MessageRole::Assistant => rig::completion::Message::assistant(&m.content),
-            _ => unreachable!(), // System / Tool filtered above
-        })
-        .collect()
-}
-
-fn map_response(content: String) -> ChatResponse {
-    ChatResponse {
-        id: Uuid::new_v4().to_string(),
-        choices: vec![Choice {
-            message: Message {
-                id: None,
-                role: MessageRole::Assistant,
-                content,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            finish_reason: Some("stop".into()),
-        }],
-        usage: None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RigProvider
+// RigProvider — generic wrapper around a Rig CompletionClient
 // ---------------------------------------------------------------------------
 
 /// A generic LLM provider backed by a Rig [`CompletionClient`].
@@ -128,239 +61,131 @@ impl<C: CompletionClient + Send + Sync + 'static> RigProvider<C> {
     pub fn new(client: C, model: String) -> Self {
         Self { client, model }
     }
-
-    /// Shared implementation used by both `chat()` and `chat_stream()`.
-    async fn do_chat(&self, request: &ChatRequest) -> Result<String> {
-        let system = extract_system_prompt(&request.messages);
-        let last_user = extract_last_user_content(&request.messages);
-
-        if last_user.is_empty() {
-            return Err(AppError::Provider(
-                "No user message found in request".into(),
-            ));
-        }
-
-        let mut history = build_rig_history(&request.messages);
-
-        let agent = self.client.agent(&self.model)
-            .preamble(&system)
-            .temperature(request.temperature.unwrap_or(0.7) as f64);
-
-        let agent = if let Some(max_tokens) = request.max_tokens {
-            agent.max_tokens(max_tokens as u64)
-        } else {
-            agent
-        };
-
-        let agent = agent.build();
-
-        let response = agent
-            .chat(&last_user, &mut history)
-            .await
-            .map_err(|e| AppError::Provider(format!("Rig error: {}", e)))?;
-
-        Ok(response)
-    }
 }
 
 #[async_trait]
-impl<C: CompletionClient + Send + Sync + 'static> LLMProvider for RigProvider<C> {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let has_tools = request.tools.as_ref().map_or(false, |t| !t.is_empty());
-
-        if has_tools {
-            self.chat_with_tools(request).await
-        } else {
-            let content = self.do_chat(&request).await?;
-            Ok(map_response(content))
-        }
+impl<C: CompletionClient + Send + Sync + 'static> ProviderBox for RigProvider<C> {
+    fn model_id(&self) -> &str {
+        &self.model
     }
 
-    async fn chat_stream(
+    async fn prompt(&self, preamble: &str, prompt: &str) -> Result<String> {
+        let agent = self
+            .client
+            .agent(&self.model)
+            .preamble(preamble)
+            .build();
+
+        agent
+            .prompt(prompt)
+            .await
+            .map_err(|e| AppError::Provider(format!("Rig prompt error: {}", e)))
+    }
+
+    async fn chat(
         &self,
-        request: ChatRequest,
-    ) -> Result<BoxStream<'static, Result<StreamPayload>>> {
-        let has_tools = request.tools.as_ref().map_or(false, |t| !t.is_empty());
+        preamble: &str,
+        prompt: &str,
+        history: &mut Vec<Message>,
+    ) -> Result<String> {
+        let agent = self
+            .client
+            .agent(&self.model)
+            .preamble(preamble)
+            .build();
 
-        if has_tools {
-            // For streaming with tools, fall back to non-streaming wrapper.
-            let response = self.chat_with_tools(request).await?;
-            let content = response.choices.first()
-                .map(|c| c.message.content.clone())
-                .unwrap_or_default();
-            let tool_calls = response.choices.first()
-                .and_then(|c| c.message.tool_calls.clone());
-            let stream = futures::stream::once(async move {
-                Ok(StreamPayload {
-                    content: Some(content),
-                    tool_calls,
-                    finish_reason: Some("stop".into()),
-                })
-            });
-            return Ok(Box::pin(stream));
-        }
-
-        // True streaming via Rig's StreamingChat trait.
-        let system = extract_system_prompt(&request.messages);
-        let last_user = extract_last_user_content(&request.messages);
-
-        if last_user.is_empty() {
-            return Err(AppError::Provider(
-                "No user message found in request".into(),
-            ));
-        }
-
-        let history = build_rig_history(&request.messages);
-
-        let agent_builder = self.client.agent(&self.model)
-            .preamble(&system)
-            .temperature(request.temperature.unwrap_or(0.7) as f64);
-
-        let agent_builder = if let Some(max_tokens) = request.max_tokens {
-            agent_builder.max_tokens(max_tokens as u64)
-        } else {
-            agent_builder
-        };
-
-        let agent = agent_builder.build();
-
-        let stream = agent.stream_chat(&last_user, &history).await;
-
-        let boxed = stream
-            .map(|item| match item {
-                Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
-                    match content {
-                        StreamedAssistantContent::Text(text) => Ok(StreamPayload {
-                            content: Some(text.text),
-                            tool_calls: None,
-                            finish_reason: None,
-                        }),
-                        _ => Ok(StreamPayload {
-                            content: None,
-                            tool_calls: None,
-                            finish_reason: None,
-                        }),
-                    }
-                }
-                Ok(MultiTurnStreamItem::FinalResponse(_fin)) => Ok(StreamPayload {
-                    content: None,
-                    tool_calls: None,
-                    finish_reason: Some("stop".into()),
-                }),
-                Ok(_) => Ok(StreamPayload {
-                    content: None,
-                    tool_calls: None,
-                    finish_reason: None,
-                }),
-                Err(e) => Err(AppError::Provider(format!("Rig stream error: {}", e))),
-            });
-
-        Ok(Box::pin(boxed))
+        agent
+            .chat(prompt, history)
+            .await
+            .map_err(|e| AppError::Provider(format!("Rig chat error: {}", e)))
     }
-}
 
-impl<C: CompletionClient + Send + Sync + 'static> RigProvider<C> {
-    /// Chat with tool definitions — uses Rig's lower-level completion API
-    /// to return raw tool_calls that our AgentLoop can execute.
-    async fn chat_with_tools(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let system = extract_system_prompt(&request.messages);
-        let last_user = extract_last_user_content(&request.messages);
+    async fn prompt_with_tools(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        tool_set: ToolSet,
+    ) -> Result<String> {
+        let agent = self
+            .client
+            .agent(&self.model)
+            .preamble(preamble)
+            .build();
 
-        if last_user.is_empty() {
-            return Err(AppError::Provider(
-                "No user message found in request".into(),
-            ));
-        }
-
-        let history = build_rig_history(&request.messages);
-
-        let agent_builder = self.client.agent(&self.model)
-            .preamble(&system)
-            .temperature(request.temperature.unwrap_or(0.7) as f64);
-
-        let agent_builder = if let Some(max_tokens) = request.max_tokens {
-            agent_builder.max_tokens(max_tokens as u64)
-        } else {
-            agent_builder
-        };
-
-        let agent = agent_builder.build();
-
-        // Convert our ToolDefinition to Rig's ToolDefinition
-        let rig_tools: Vec<rig::completion::ToolDefinition> = request
-            .tools
-            .unwrap_or_default()
-            .iter()
-            .map(|t| rig::completion::ToolDefinition {
-                name: t.function.name.clone(),
-                description: t.function.description.clone(),
-                parameters: t.function.parameters.clone(),
-            })
-            .collect();
-
-        // Use the Completion trait which returns raw tool_calls
-        let builder = agent
-            .completion(&last_user, history)
+        // Add tools after building the agent via ToolServerHandle
+        agent
+            .tool_server_handle
+            .append_toolset(tool_set)
             .await
-            .map_err(|e| AppError::Provider(format!("Rig completion builder: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Rig tool init error: {}", e)))?;
 
-        let builder = builder.tools(rig_tools);
-
-        let response = builder
-            .send()
+        agent
+            .prompt(prompt)
             .await
-            .map_err(|e| AppError::Provider(format!("Rig completion send: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Rig agent error: {}", e)))
+    }
 
-        // Parse response for text and tool_calls
-        let mut content = String::new();
-        let mut tool_calls: Vec<OurToolCall> = Vec::new();
+    async fn stream_prompt(
+        &self,
+        preamble: &str,
+        prompt: &str,
+    ) -> Result<BoxStream<'static, Result<String>>> {
+        let agent = self
+            .client
+            .agent(&self.model)
+            .preamble(preamble)
+            .build();
 
-        for item in response.choice.iter() {
-            match item {
-                rig::completion::AssistantContent::Text(text) => {
-                    content.push_str(&text.text);
-                }
-                rig::completion::AssistantContent::ToolCall(tc) => {
-                    tool_calls.push(OurToolCall {
-                        id: tc.id.clone(),
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                    });
-                }
-                _ => {} // Skip Reasoning, Image, etc.
+        let chat_history: Vec<Message> = Vec::new();
+        let stream = agent.stream_chat(prompt, chat_history).await;
+
+        Ok(Box::pin(stream.map(|item| match item {
+            Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
+                StreamedAssistantContent::Text(text) => Ok(text.text),
+                _ => Ok(String::new()),
+            },
+            Ok(MultiTurnStreamItem::FinalResponse(response)) => {
+                Ok(response.response().to_string())
             }
-        }
+            Err(e) => Ok(format!("[Stream Error: {}]", e)),
+            _ => Ok(String::new()),
+        })))
+    }
 
-        Ok(ChatResponse {
-            id: response
-                .message_id
-                .unwrap_or_else(|| Uuid::new_v4().to_string()),
-            choices: vec![Choice {
-                message: Message {
-                    id: None,
-                    role: MessageRole::Assistant,
-                    content,
-                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
-                    tool_call_id: None,
-                },
-                finish_reason: Some("stop".into()),
-            }],
-            usage: None,
-        })
+    async fn stream_with_tools(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        tool_set: ToolSet,
+    ) -> Result<BoxStream<'static, Result<String>>> {
+        let agent = self
+            .client
+            .agent(&self.model)
+            .preamble(preamble)
+            .build();
+
+        agent
+            .tool_server_handle
+            .append_toolset(tool_set)
+            .await
+            .map_err(|e| AppError::Provider(format!("Rig tool init error: {}", e)))?;
+
+        let chat_history: Vec<Message> = Vec::new();
+        let stream = agent.stream_chat(prompt, chat_history).await;
+
+        Ok(Box::pin(stream.map(|item| match item {
+            Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => match content {
+                StreamedAssistantContent::Text(text) => Ok(text.text),
+                _ => Ok(String::new()),
+            },
+            Ok(MultiTurnStreamItem::FinalResponse(response)) => {
+                Ok(response.response().to_string())
+            }
+            Err(e) => Ok(format!("[Stream Error: {}]", e)),
+            _ => Ok(String::new()),
+        })))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Concrete type aliases
-// ---------------------------------------------------------------------------
-
-pub type RigOpenAI = RigProvider<rig::providers::openai::Client>;
-pub type RigAnthropic = RigProvider<rig::providers::anthropic::Client>;
-pub type RigGemini = RigProvider<rig::providers::gemini::Client>;
-pub type RigGroq = RigProvider<rig::providers::groq::Client>;
-pub type RigDeepSeek = RigProvider<rig::providers::deepseek::Client>;
-pub type RigOllama = RigProvider<rig::providers::ollama::Client>;
-pub type RigMoonshot = RigProvider<rig::providers::moonshot::Client>;
 
 // ---------------------------------------------------------------------------
 // Helper: strip known API path suffixes from a base URL so Rig can append
@@ -386,7 +211,7 @@ fn strip_api_suffix(url: &str) -> &str {
 /// Create a [`RigProvider`] trait-object for the given model configuration.
 ///
 /// This is the single entry-point used by [`ProviderRegistry`].
-pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn LLMProvider>> {
+pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn ProviderBox>> {
     match model.provider {
         ModelProvider::OpenAI => {
             let client = rig::providers::openai::Client::new(&model.api_key)

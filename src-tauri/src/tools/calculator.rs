@@ -1,9 +1,11 @@
-﻿use async_trait::async_trait;
-use serde_json::{json, Value};
+﻿use serde_json::{json, Value};
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::error::{AppError, Result};
 
-use super::r#trait::Tool;
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
 
 pub struct CalculatorTool;
 
@@ -13,40 +15,57 @@ impl CalculatorTool {
     }
 }
 
-#[async_trait]
-impl Tool for CalculatorTool {
-    fn name(&self) -> &str {
-        "calculator"
+impl ToolDyn for CalculatorTool {
+    fn name(&self) -> String {
+        "calculator".to_string()
     }
 
-    fn description(&self) -> &str {
-        "Evaluate mathematical expressions. Supports basic arithmetic (+, -, *, /), parentheses, and common functions (sqrt, pow, sin, cos, tan, log, abs)."
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "expression": {
-                    "type": "string",
-                    "description": "The mathematical expression to evaluate"
-                }
-            },
-            "required": ["expression"]
+    fn definition<'a>(
+        &'a self,
+        _prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        Box::pin(async move {
+            ToolDefinition {
+                name: "calculator".to_string(),
+                description: "Evaluate mathematical expressions. Supports basic arithmetic (+, -, *, /), parentheses, and common functions (sqrt, pow, sin, cos, tan, log, abs).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "description": "The mathematical expression to evaluate"
+                        }
+                    },
+                    "required": ["expression"]
+                }),
+            }
         })
     }
 
-    async fn execute(&self, input: Value) -> Result<Value> {
-        let expression = input["expression"]
-            .as_str()
-            .ok_or_else(|| AppError::InvalidInput("Missing 'expression' parameter".to_string()))?;
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let input: Value = serde_json::from_str(&args)
+                .map_err(|e| ToolError::JsonError(e))?;
 
-        let result = Self::evaluate(expression)?;
+            let expression = input["expression"]
+                .as_str()
+                .ok_or_else(|| {
+                    ToolError::ToolCallError("Missing 'expression' parameter".to_string().into())
+                })?;
 
-        Ok(json!({
-            "expression": expression,
-            "result": result
-        }))
+            let result = Self::evaluate(expression)
+                .map_err(|e| ToolError::ToolCallError(e.into()))?;
+
+            serde_json::to_string(&json!({
+                "expression": expression,
+                "result": result
+            }))
+            .map_err(|e| ToolError::JsonError(e))
+        })
     }
 }
 
@@ -62,7 +81,9 @@ impl CalculatorTool {
         let result = Self::parse_expression(&mut chars)?;
 
         if chars.next().is_some() {
-            return Err(AppError::InvalidInput("Unexpected characters after expression".to_string()));
+            return Err(AppError::InvalidInput(
+                "Unexpected characters after expression".to_string(),
+            ));
         }
 
         Ok(result)
@@ -128,7 +149,9 @@ impl CalculatorTool {
                 let result = Self::parse_expression(chars)?;
                 Self::skip_whitespace(chars);
                 if chars.next() != Some(')') {
-                    return Err(AppError::InvalidInput("Missing closing parenthesis".to_string()));
+                    return Err(AppError::InvalidInput(
+                        "Missing closing parenthesis".to_string(),
+                    ));
                 }
                 Ok(result)
             }

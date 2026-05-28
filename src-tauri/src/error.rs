@@ -18,6 +18,9 @@ pub enum AppError {
     #[error("Provider error: {0}")]
     Provider(String),
 
+    #[error("Rig error: {0}")]
+    RigError(String),
+
     #[error("Tool error: {0}")]
     Tool(String),
 
@@ -77,6 +80,7 @@ impl AppError {
             }
             AppError::Io(_) => true,
             AppError::Provider(_) => false, // auth/validation errors should not retry
+            AppError::RigError(_) => false,
             AppError::Database(_) => false,
             AppError::Serialization(_) => false,
             AppError::Config(_) => false,

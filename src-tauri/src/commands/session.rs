@@ -2,8 +2,8 @@ use chrono::Utc;
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::agent::r#loop::AgentLoop;
-use crate::api::types::{Message, MessageRole, ToolCall};
+use crate::agent::r#loop::ToolLoop;
+use rig::completion::Message;
 use crate::commands::{StreamChunk, ToolCallEvent};
 use crate::db::models::{Session as DbSession, Message as DbMessage};
 use crate::error::{AppError, Result};
@@ -194,13 +194,7 @@ pub async fn send_message(
         .filter(|s| !s.is_empty())
         .map(|s| s.as_str())
         .unwrap_or(DEFAULT_SYSTEM_PROMPT);
-    api_messages.push(Message {
-        id: None,
-        role: MessageRole::System,
-        content: system_content.to_string(),
-        tool_calls: None,
-        tool_call_id: None,
-    });
+    api_messages.push(Message::system(system_content.to_string()));
 
     // Resolve persona: explicit active_persona_id > session's persona_id > auto-detect
     let effective_persona_id = active_persona_id.clone()
@@ -230,44 +224,28 @@ pub async fn send_message(
             PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => p,
             _ => unreachable!(),
         };
-        api_messages.push(Message {
-            id: None,
-            role: MessageRole::System,
-            content: format!(
-                "Your current role: {} {}\n{}",
-                persona.emoji, persona.title, persona.system_prompt
-            ),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        api_messages.push(Message::system(format!(
+            "Your current role: {} {}\n{}",
+            persona.emoji, persona.title, persona.system_prompt
+        )));
     }
 
     // Inject relevant memories from the memory system
     if let Ok(Some(memory_prompt)) = state.memory.build_context_prompt(&content, 5).await {
-        api_messages.push(Message {
-            id: None,
-            role: MessageRole::System,
-            content: memory_prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        api_messages.push(Message::system(memory_prompt));
     }
 
     api_messages.extend(messages.iter().map(|m| {
-        let tool_calls: Option<Vec<ToolCall>> = m.tool_calls.as_ref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Message {
-            id: Some(m.id.clone()),
-            role: match m.role.as_str() {
-                "user" => MessageRole::User,
-                "assistant" => MessageRole::Assistant,
-                "system" => MessageRole::System,
-                "tool" => MessageRole::Tool,
-                _ => MessageRole::User,
-            },
-            content: m.content.clone(),
-            tool_calls,
-            tool_call_id: m.tool_call_id.clone(),
+        match m.role.as_str() {
+            "system" => Message::system(m.content.clone()),
+            "user" => Message::user(m.content.clone()),
+            "assistant" => Message::assistant(m.content.clone()),
+            "tool" => Message::tool_result_with_call_id(
+                m.tool_call_id.clone().unwrap_or_default(),
+                m.tool_call_id.clone(),
+                m.content.clone(),
+            ),
+            _ => Message::user(m.content.clone()),
         }
     }));
 
@@ -291,50 +269,43 @@ pub async fn send_message(
             .and_then(|v| serde_json::from_value(v).ok())
     });
 
-    let mut agent = AgentLoop::new(state.providers.clone(), state.tools.clone());
-    if let Some(ctx) = context_window {
-        agent = agent.with_context_limit(ctx);
-    }
-    let response = agent.run(&effective_model_id, api_messages, tools_enabled.unwrap_or(true), allowed_tools.clone()).await?;
+    let agent = ToolLoop::new(state.providers.clone(), state.tools.clone());
+    let content = agent.run(&effective_model_id, api_messages, tools_enabled.unwrap_or(true), allowed_tools.clone()).await?;
 
     let db = state.db.lock().await;
-    if let Some(choice) = response.choices.first() {
-        let assistant_msg = DbMessage {
-            id: Uuid::new_v4().to_string(),
-            session_id: session_id.clone(),
-            role: "assistant".to_string(),
-            content: choice.message.content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-            tokens: response.usage.as_ref().map(|u| u.completion_tokens as i32),
-            created_at: Utc::now().to_rfc3339(),
-        };
+    let assistant_msg = DbMessage {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.clone(),
+        role: "assistant".to_string(),
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+        tokens: None,
+        created_at: Utc::now().to_rfc3339(),
+    };
 
-        db.insert_message(&assistant_msg)?;
+    db.insert_message(&assistant_msg)?;
 
-        // Fire-and-forget lifecycle hooks
-        let lifecycle = state.lifecycle.clone();
-        let sid = session_id.clone();
-        let mid = sess.model_id.clone();
-        tokio::spawn(async move {
-            let _ = crate::lifecycle::titler::maybe_generate_title(
-                &lifecycle, &sid, &mid,
-            ).await;
-        });
+    // Fire-and-forget lifecycle hooks
+    let lifecycle = state.lifecycle.clone();
+    let sid = session_id.clone();
+    let mid = sess.model_id.clone();
+    tokio::spawn(async move {
+        let _ = crate::lifecycle::titler::maybe_generate_title(
+            &lifecycle, &sid, &mid,
+        ).await;
+    });
 
-        let lifecycle2 = state.lifecycle.clone();
-        let sid2 = session_id.clone();
-        let mid2 = sess.model_id.clone();
-        tokio::spawn(async move {
-            let _ = crate::lifecycle::summarizer::maybe_generate_summary(
-                &lifecycle2, &sid2, &mid2,
-            ).await;
-        });
+    let lifecycle2 = state.lifecycle.clone();
+    let sid2 = session_id.clone();
+    let mid2 = sess.model_id.clone();
+    tokio::spawn(async move {
+        let _ = crate::lifecycle::summarizer::maybe_generate_summary(
+            &lifecycle2, &sid2, &mid2,
+        ).await;
+    });
 
-        Ok(assistant_msg)
-    } else {
-        Err(AppError::Provider("No response from LLM".to_string()))
-    }
+    Ok(assistant_msg)
 }
 
 #[tauri::command]
@@ -541,13 +512,7 @@ pub async fn send_message_stream(
         .filter(|s| !s.is_empty())
         .map(|s| s.as_str())
         .unwrap_or(DEFAULT_SYSTEM_PROMPT);
-    api_messages.push(Message {
-        id: None,
-        role: MessageRole::System,
-        content: system_content.to_string(),
-        tool_calls: None,
-        tool_call_id: None,
-    });
+    api_messages.push(Message::system(system_content.to_string()));
 
     // Resolve persona: explicit active_persona_id > session's persona_id > auto-detect
     let effective_persona_id = active_persona_id.clone()
@@ -577,55 +542,36 @@ pub async fn send_message_stream(
             PersonaResolution::Manual(p) | PersonaResolution::Auto(p) | PersonaResolution::Default(p) => p,
             _ => unreachable!(),
         };
-        api_messages.push(Message {
-            id: None,
-            role: MessageRole::System,
-            content: format!(
-                "Your current role: {} {}\n{}",
-                persona.emoji, persona.title, persona.system_prompt
-            ),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        api_messages.push(Message::system(format!(
+            "Your current role: {} {}\n{}",
+            persona.emoji, persona.title, persona.system_prompt
+        )));
     }
 
     // ── Intent Routing: append intent system prompt appendix ──
     if let Some(appendix) = &_intent_result.config.system_prompt_appendix {
-        api_messages.push(Message {
-            id: None,
-            role: MessageRole::System,
-            content: format!("[Intent: {}]\n{}", _intent_result.name, appendix),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        api_messages.push(Message::system(format!(
+            "[Intent: {}]\n{}",
+            _intent_result.name, appendix
+        )));
     }
 
     // Inject relevant memories from the memory system
     if let Ok(Some(memory_prompt)) = state.memory.build_context_prompt(&content, 5).await {
-        api_messages.push(Message {
-            id: None,
-            role: MessageRole::System,
-            content: memory_prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        api_messages.push(Message::system(memory_prompt));
     }
 
     api_messages.extend(messages.iter().map(|m| {
-        let tool_calls: Option<Vec<ToolCall>> = m.tool_calls.as_ref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        Message {
-            id: Some(m.id.clone()),
-            role: match m.role.as_str() {
-                "user" => MessageRole::User,
-                "assistant" => MessageRole::Assistant,
-                "system" => MessageRole::System,
-                "tool" => MessageRole::Tool,
-                _ => MessageRole::User,
-            },
-            content: m.content.clone(),
-            tool_calls,
-            tool_call_id: m.tool_call_id.clone(),
+        match m.role.as_str() {
+            "system" => Message::system(m.content.clone()),
+            "user" => Message::user(m.content.clone()),
+            "assistant" => Message::assistant(m.content.clone()),
+            "tool" => Message::tool_result_with_call_id(
+                m.tool_call_id.clone().unwrap_or_default(),
+                m.tool_call_id.clone(),
+                m.content.clone(),
+            ),
+            _ => Message::user(m.content.clone()),
         }
     }));
 
@@ -663,10 +609,7 @@ pub async fn send_message_stream(
         _intent_result.config.enabled_tools.as_ref(),
     );
 
-    let mut agent = AgentLoop::new(state.providers.clone(), state.tools.clone());
-    if let Some(ctx) = context_window {
-        agent = agent.with_context_limit(ctx);
-    }
+    let mut agent = ToolLoop::new(state.providers.clone(), state.tools.clone());
     // ── Intent Routing: apply max_iterations if configured ──
     if let Some(max_iter) = _intent_result.config.max_iterations {
         agent = agent.with_max_iterations(max_iter);

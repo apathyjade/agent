@@ -6,9 +6,9 @@ use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::agent::r#loop::AgentLoop;
+use crate::agent::r#loop::ToolLoop;
 use crate::api::provider::ProviderRegistry;
-use crate::api::types::{ChatRequest, Message as ApiMessage, MessageRole};
+use rig::completion::Message;
 use crate::db::repository::Database;
 use crate::orchestrator::plan_error::ExecutionError;
 use crate::orchestrator::plan_types::*;
@@ -468,7 +468,7 @@ impl ExecutionRuntime {
         tool: &str,
         params: &std::collections::HashMap<String, Value>,
         retry: &Option<RetryConfig>,
-        timeout_seconds: Option<u64>,
+        _timeout_seconds: Option<u64>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
         let max_retries = retry.as_ref().map(|r| r.max).unwrap_or(1);
@@ -527,47 +527,15 @@ impl ExecutionRuntime {
             ExecutionError::Internal(format!("Failed to get provider for '{}': {}", mid, e))
         })?;
 
-        let mut messages = Vec::new();
-        if let Some(sys) = system_prompt {
-            if !sys.is_empty() {
-                messages.push(ApiMessage {
-                    id: None,
-                    role: MessageRole::System,
-                    content: sys.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-            }
-        }
-        messages.push(ApiMessage {
-            id: None,
-            role: MessageRole::User,
-            content: prompt.to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        let _ = (temperature, max_tokens); // reserved for future ProviderBox API
 
-        let request = ChatRequest {
-            messages,
-            model: mid.to_string(),
-            tools: None,
-            stream: Some(false),
-            max_tokens: max_tokens.map(|t| t as usize),
-            temperature,
-        };
-
-        let response = provider.chat(request).await.map_err(|e| {
+        let preamble = system_prompt.as_deref().unwrap_or("");
+        let content = provider.prompt(preamble, prompt).await.map_err(|e| {
             ExecutionError::StepFailed {
                 step: 0,
                 message: format!("LLM call failed: {}", e),
             }
         })?;
-
-        let content = response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .unwrap_or_default();
 
         Ok(Value::String(content))
     }
@@ -578,10 +546,10 @@ impl ExecutionRuntime {
         model_id: &Option<String>,
         max_iterations: Option<usize>,
         allowed_tools: &Option<Vec<String>>,
-        temperature: Option<f32>,
+        _temperature: Option<f32>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
-        self.run_agent(instruction, None, model_id, max_iterations, allowed_tools, temperature, cancel_flag)
+        self.run_agent(instruction, None, model_id, max_iterations, allowed_tools, _temperature, cancel_flag)
             .await
     }
 
@@ -593,9 +561,11 @@ impl ExecutionRuntime {
         model_id: &Option<String>,
         max_iterations: Option<usize>,
         allowed_tools: &Option<Vec<String>>,
-        temperature: Option<f32>,
+        _temperature: Option<f32>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
+        let _ = _temperature; // reserved for future use
+
         // Retry loop: attempt 1, then retry once on failure
         let mut last_error: Option<String> = prev_error.map(|s| s.to_string());
         let max_attempts: usize = if prev_error.is_some() { 1 } else { 2 };
@@ -629,34 +599,21 @@ impl ExecutionRuntime {
                 When you are done, provide a clear summary of what you accomplished.";
 
             let messages = vec![
-                ApiMessage {
-                    id: None,
-                    role: MessageRole::System,
-                    content: system_msg.to_string(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-                ApiMessage {
-                    id: None,
-                    role: MessageRole::User,
-                    content: final_instruction,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
+                Message::system(system_msg.to_string()),
+                Message::user(final_instruction),
             ];
 
-            let mut agent = AgentLoop::new(self.providers.clone(), self.tools.clone());
-            if let Some(max_iter) = max_iterations {
-                agent = agent.with_max_iterations(max_iter);
-            }
+            let agent = ToolLoop::new(self.providers.clone(), self.tools.clone());
+            let agent = if let Some(max_iter) = max_iterations {
+                agent.with_max_iterations(max_iter)
+            } else {
+                agent
+            };
 
             let tools_enabled = allowed_tools.is_some() || last_error.is_some();
 
             match agent.run(&mid, messages, tools_enabled, allowed_tools.clone()).await {
-                Ok(response) => {
-                    let content = response.choices.first()
-                        .map(|c| c.message.content.clone())
-                        .unwrap_or_default();
+                Ok(content) => {
                     return Ok(Value::String(content));
                 }
                 Err(e) if attempt < max_attempts - 1 => {

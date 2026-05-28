@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::api::provider::{ProviderRegistry, chat_text};
+use crate::api::provider::ProviderRegistry;
 use crate::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
@@ -252,14 +252,11 @@ impl WorkerAgent for CodeEditorWorker {
             }
         );
 
-        let content = chat_text(
-            &self.providers,
-            task.model_id.as_deref(),
-            &system_prompt,
-            &task.instruction,
-            task.max_tokens.map(|t| t as usize),
-            task.temperature,
-        ).await?;
+        let content = {
+            let registry = self.providers.lock().await;
+            let provider = registry.resolve(task.model_id.as_deref())?;
+            provider.prompt(&system_prompt, &task.instruction).await?
+        };
 
         drop(root);
 

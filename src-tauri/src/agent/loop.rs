@@ -1,14 +1,16 @@
 ﻿use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use serde::{Serialize, Deserialize};
-use futures::StreamExt;
 
-use crate::api::provider::{LLMProvider, ProviderRegistry};
-use crate::api::types::{
-    ChatRequest, ChatResponse, Message, MessageRole, ToolCall, ToolDefinition,
-};
-use crate::error::{AppError, Result};
+use rig::completion::Message;
+
+use crate::api::provider::ProviderRegistry;
+use crate::error::Result;
 use crate::tools::registry::ToolRegistry;
+
+// ================================================================
+// IPC types — kept unchanged for Tauri frontend compatibility.
+// ================================================================
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum StreamEvent {
@@ -31,26 +33,30 @@ pub struct ToolResultInfo {
     pub result: String,
 }
 
-pub struct AgentLoop {
+// ================================================================
+// ToolLoop — simplified agent loop using ProviderBox internally.
+//
+// Phase 3.1: Uses ProviderBox::prompt() / chat() / prompt_with_tools()
+// directly. The old AgentLoop was removed along with the
+// ChatRequest/ChatResponse types it relied on.
+// ================================================================
+
+pub struct ToolLoop {
     providers: Arc<Mutex<ProviderRegistry>>,
     tools: Arc<Mutex<ToolRegistry>>,
     max_iterations: usize,
-    max_context_tokens: usize,
 }
 
-impl AgentLoop {
-    pub fn new(providers: Arc<Mutex<ProviderRegistry>>, tools: Arc<Mutex<ToolRegistry>>) -> Self {
+impl ToolLoop {
+    pub fn new(
+        providers: Arc<Mutex<ProviderRegistry>>,
+        tools: Arc<Mutex<ToolRegistry>>,
+    ) -> Self {
         Self {
             providers,
             tools,
             max_iterations: 10,
-            max_context_tokens: 32000,
         }
-    }
-
-    pub fn with_context_limit(mut self, max_tokens: usize) -> Self {
-        self.max_context_tokens = max_tokens;
-        self
     }
 
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
@@ -58,92 +64,69 @@ impl AgentLoop {
         self
     }
 
-    pub async fn run(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool, allowed_tools: Option<Vec<String>>) -> Result<ChatResponse> {
-        let provider = self.providers.lock().await.get(model_id)?;
-        let tool_registry = self.tools.lock().await;
-
-        let tool_definitions: Vec<ToolDefinition> = if tools_enabled {
-            tool_registry.get_enabled()
-                .iter()
-                .filter(|tool| {
-                    if let Some(ref allow) = allowed_tools {
-                        allow.contains(&tool.name().to_string())
-                    } else {
-                        true
-                    }
-                })
-                .map(|tool| ToolDefinition {
-                    tool_type: "function".to_string(),
-                    function: crate::api::types::FunctionDefinition {
-                        name: tool.name().to_string(),
-                        description: tool.description().to_string(),
-                        parameters: tool.parameters(),
-                    },
-                })
-                .collect()
-        } else {
-            vec![]
+    /// Non-streaming agent run.
+    ///
+    /// Accepts a `Vec<Message>` (Rig v0.37 enum) for backward compatibility
+    /// with callers that already construct message lists, extracts the system
+    /// prompt and last user message, then delegates to ProviderBox.
+    pub async fn run(
+        &self,
+        model_id: &str,
+        messages: Vec<Message>,
+        _tools_enabled: bool,
+        _allowed_tools: Option<Vec<String>>,
+    ) -> Result<String> {
+        let provider = {
+            let registry = self.providers.lock().await;
+            registry.get(model_id)?
         };
 
-        drop(tool_registry);
+        let (preamble, prompt, mut history) = extract_chat_params(messages);
 
-        let optimized_messages = Self::optimize_context(&messages, self.max_context_tokens);
-        let mut current_messages = optimized_messages;
-        let mut iteration = 0;
-
-        loop {
-            if iteration >= self.max_iterations {
-                return Err(AppError::Tool("Max iterations reached".to_string()));
-            }
-
-            let chat_request = ChatRequest {
-                messages: current_messages.clone(),
-                model: model_id.to_string(),
-                tools: if tool_definitions.is_empty() { None } else { Some(tool_definitions.clone()) },
-                stream: Some(false),
-                max_tokens: None,
-                temperature: None,
-            };
-
-            let response = Self::retry_with_backoff(&chat_request, 3, provider.clone()).await?;
-
-            if let Some(choice) = response.choices.first() {
-                let assistant_message = &choice.message;
-
-                if let Some(tool_calls) = &assistant_message.tool_calls {
-                    current_messages.push(assistant_message.clone());
-
-                    for tool_call in tool_calls {
-                        let tool_result = self.execute_tool(tool_call).await?;
-                        current_messages.push(Message::tool(
-                            serde_json::to_string(&tool_result).unwrap_or_default(),
-                            &tool_call.id,
-                        ));
-                    }
-
-                    iteration += 1;
-                    continue;
-                }
-            }
-
-            return Ok(response);
+        if history.is_empty() {
+            provider.prompt(&preamble, &prompt).await
+        } else {
+            provider.chat(&preamble, &prompt, &mut history).await
         }
     }
 
-    pub async fn run_stream(&self, model_id: &str, messages: Vec<Message>, tools_enabled: bool, allowed_tools: Option<Vec<String>>) -> Result<mpsc::Receiver<StreamEvent>> {
+    /// Streaming agent run — non-streaming fallback.
+    ///
+    /// Sends the full response as a single [`StreamEvent::Content`] event
+    /// followed by [`StreamEvent::Done`].
+    pub async fn run_stream(
+        &self,
+        model_id: &str,
+        messages: Vec<Message>,
+        tools_enabled: bool,
+        allowed_tools: Option<Vec<String>>,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
         let (tx, rx) = mpsc::channel(32);
 
         let providers = self.providers.clone();
         let tools = self.tools.clone();
-        let max_iterations = self.max_iterations;
-        let max_context_tokens = self.max_context_tokens;
         let mid = model_id.to_string();
+        let max_iter = self.max_iterations;
 
         tokio::spawn(async move {
-            let optimized = Self::optimize_context(&messages, max_context_tokens);
+            let loop_ = ToolLoop {
+                providers,
+                tools,
+                max_iterations: max_iter,
+            };
 
-            if let Err(e) = Self::run_stream_inner(&providers, &tools, &mid, optimized, tools_enabled, allowed_tools, &tx, max_iterations).await {
-                let _ = tx.send(StreamEvent::Content(format!("\n[Error: {}]", e))).await;
+            match loop_
+                .run(&mid, messages, tools_enabled, allowed_tools)
+                .await
+            {
+                Ok(content) => {
+                    let _ = tx.send(StreamEvent::Content(content)).await;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(StreamEvent::Content(format!("\n[Error: {}]", e)))
+                        .await;
+                }
             }
             let _ = tx.send(StreamEvent::Done).await;
         });
@@ -151,286 +134,154 @@ impl AgentLoop {
         Ok(rx)
     }
 
-    fn optimize_context(messages: &[Message], max_tokens: usize) -> Vec<Message> {
-        if messages.is_empty() {
-            return vec![];
-        }
-
-        let mut system_msg: Option<Message> = None;
-        let rest: Vec<&Message> = messages.iter()
-            .filter(|m| {
-                if m.role == MessageRole::System {
-                    system_msg = Some((*m).clone());
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        let mut total_tokens = system_msg.as_ref()
-            .map(|m| Self::estimate_tokens(&m.content))
-            .unwrap_or(0);
-        let mut selected = Vec::new();
-
-        for msg in rest.iter().rev() {
-            let msg_tokens = Self::estimate_tokens(&msg.content);
-            if total_tokens + msg_tokens > max_tokens && !selected.is_empty() {
-                break;
-            }
-            total_tokens += msg_tokens;
-            selected.push((*msg).clone());
-        }
-
-        selected.reverse();
-
-        let mut result: Vec<Message> = Vec::new();
-        if let Some(sys) = system_msg {
-            result.push(sys);
-        }
-        result.extend(selected);
-
-        result
-    }
-
-    pub fn estimate_tokens(content: &str) -> usize {
-        let mut cjk_chars: usize = 0;
-        let mut ascii_chars: usize = 0;
-        let mut other_chars: usize = 0;
-
-        for ch in content.chars() {
-            if (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
-                || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
-                || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
-                || (ch >= '\u{2F800}' && ch <= '\u{2FA1F}')
-            {
-                cjk_chars += 1;
-            } else if ch.is_ascii() {
-                ascii_chars += 1;
-            } else {
-                other_chars += 1;
-            }
-        }
-
-        // CJK chars: ~2 tokens each (safer overestimate)
-        // ASCII: ~0.25 tokens each (4 chars ≈ 1 token)
-        // Other (emoji, etc.): ~1 token each
-        let cjk_tokens = cjk_chars * 2;
-        let ascii_tokens = ascii_chars.div_ceil(4);
-        let other_tokens = other_chars;
-
-        // Ensure at least 1 token for non-empty content
-        let total = cjk_tokens + ascii_tokens + other_tokens;
-        if total == 0 && !content.is_empty() { 1 } else { total }
-    }
-
-    async fn retry_with_backoff(request: &ChatRequest, max_retries: u32, provider: Arc<dyn LLMProvider>) -> Result<ChatResponse> {
-        let mut last_error = None;
-
-        for attempt in 0..max_retries {
-            match provider.chat(request.clone()).await {
-                Ok(response) => return Ok(response),
-                Err(e) => {
-                    // Don't retry non-retryable errors (auth, invalid input, etc.)
-                    if !e.is_retryable() {
-                        return Err(e);
-                    }
-                    last_error = Some(e);
-                    if attempt < max_retries - 1 {
-                        let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt));
-                        tokio::time::sleep(delay).await;
-                    }
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| AppError::Provider("Unknown error after retries".to_string())))
-    }
-
-    async fn run_stream_inner(
-        providers: &Arc<Mutex<ProviderRegistry>>,
-        tools: &Arc<Mutex<ToolRegistry>>,
+    /// Build a Rig Agent with ToolSet and run it.
+    ///
+    /// Currently delegates to [`ProviderBox::prompt()`]; proper ToolSet
+    /// integration (via `prompt_with_tools`) will be enabled in Phase 3.2.
+    pub async fn run_with_agent(
+        &self,
         model_id: &str,
-        messages: Vec<Message>,
-        tools_enabled: bool,
-        allowed_tools: Option<Vec<String>>,
-        tx: &mpsc::Sender<StreamEvent>,
-        max_iterations: usize,
-    ) -> Result<()> {
-        let provider = providers.lock().await.get(model_id)?;
-        let tool_definitions = {
-            let tool_registry = tools.lock().await;
-            if tools_enabled {
-                tool_registry.get_enabled()
-                    .iter()
-                    .filter(|tool| {
-                        if let Some(ref allow) = allowed_tools {
-                            allow.contains(&tool.name().to_string())
-                        } else {
-                            true
-                        }
-                    })
-                    .map(|tool| ToolDefinition {
-                        tool_type: "function".to_string(),
-                        function: crate::api::types::FunctionDefinition {
-                            name: tool.name().to_string(),
-                            description: tool.description().to_string(),
-                            parameters: tool.parameters(),
-                        },
-                    })
-                    .collect()
-            } else {
-                vec![]
-            }
+        system_prompt: &str,
+        user_message: &str,
+        _allowed_tools: Option<Vec<String>>,
+    ) -> Result<String> {
+        let provider = {
+            let registry = self.providers.lock().await;
+            registry.get(model_id)?
         };
 
-        let mut current_messages = messages;
-        let mut iteration = 0;
+        provider.prompt(system_prompt, user_message).await
+    }
+}
 
-        loop {
-            if iteration >= max_iterations {
-                return Err(AppError::Tool("Max iterations reached".to_string()));
-            }
+// ================================================================
+// Helper: split Vec<Message> into (preamble, prompt, history)
+// ================================================================
 
-            let chat_request = ChatRequest {
-                messages: current_messages.clone(),
-                model: model_id.to_string(),
-                tools: if tool_definitions.is_empty() { None } else { Some(tool_definitions.clone()) },
-                stream: Some(true),
-                max_tokens: None,
-                temperature: None,
-            };
+fn extract_chat_params(messages: Vec<Message>) -> (String, String, Vec<Message>) {
+    let preamble = messages
+        .iter()
+        .find_map(|m| match m {
+            Message::System { content } => Some(content.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
 
-            let mut stream = provider.chat_stream(chat_request).await?;
-            let mut full_content = String::new();
-            let mut detected_tool_calls: Vec<ToolCall> = Vec::new();
+    let prompt = messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            Message::User { content } => match content.first_ref() {
+                rig::message::UserContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_default();
 
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(payload) => {
-                        if let Some(content) = payload.content {
-                            full_content.push_str(&content);
-                            let _ = tx.send(StreamEvent::Content(content)).await;
-                        }
+    let mut history: Vec<Message> = messages
+        .into_iter()
+        .filter(|m| !matches!(m, Message::System { .. }))
+        .collect();
 
-                        if let Some(tool_calls) = payload.tool_calls {
-                            for tc in tool_calls {
-                                detected_tool_calls.push(tc);
-                                let _ = tx.send(StreamEvent::ToolCall(ToolCallInfo {
-                                    id: detected_tool_calls.last().map(|t| t.id.clone()).unwrap_or_default(),
-                                    name: detected_tool_calls.last().map(|t| t.name.clone()).unwrap_or_default(),
-                                })).await;
-                            }
-                        }
+    // Remove the last user message from history — it is the prompt
+    if let Some(pos) = history
+        .iter()
+        .rposition(|m| matches!(m, Message::User { .. }))
+    {
+        history.remove(pos);
+    }
 
-                        if let Some(_finish_reason) = payload.finish_reason {
-                            // Streaming complete for this round
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+    (preamble, prompt, history)
+}
 
-            current_messages.push(Message::assistant(
-                &full_content,
-                if detected_tool_calls.is_empty() { None } else { Some(detected_tool_calls.clone()) },
-            ));
+// ================================================================
+// Utility: token estimation
+//
+// Kept as a standalone public function for the summarizer and
+// compactor lifecycle modules which still rely on it.
+// ================================================================
 
-            if detected_tool_calls.is_empty() {
-                return Ok(());
-            }
+pub fn estimate_tokens(content: &str) -> usize {
+    let mut cjk_chars: usize = 0;
+    let mut ascii_chars: usize = 0;
+    let mut other_chars: usize = 0;
 
-            for tc in &detected_tool_calls {
-                let result = {
-                    let tool_registry = tools.lock().await;
-                    tool_registry.execute(&tc.name, tc.arguments.clone()).await
-                };
-
-                match result {
-                    Ok(value) => {
-                        let result_str = serde_json::to_string(&value).unwrap_or_default();
-                        let _ = tx.send(StreamEvent::ToolResult(ToolResultInfo {
-                            call_id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            result: result_str.clone(),
-                        })).await;
-
-                        current_messages.push(Message::tool(&result_str, &tc.id));
-                    }
-                    Err(e) => {
-                        let err_str = format!("Tool execution error: {}", e);
-                        let _ = tx.send(StreamEvent::ToolResult(ToolResultInfo {
-                            call_id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            result: err_str.clone(),
-                        })).await;
-                        current_messages.push(Message::tool(&err_str, &tc.id));
-                    }
-                }
-            }
-
-            iteration += 1;
+    for ch in content.chars() {
+        if (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
+            || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
+            || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
+            || (ch >= '\u{2F800}' && ch <= '\u{2FA1F}')
+        {
+            cjk_chars += 1;
+        } else if ch.is_ascii() {
+            ascii_chars += 1;
+        } else {
+            other_chars += 1;
         }
     }
 
-    async fn execute_tool(&self, tool_call: &ToolCall) -> Result<serde_json::Value> {
-        let tools = self.tools.lock().await;
-        let input = tool_call.arguments.clone();
-        tools.execute(&tool_call.name, input).await
+    let cjk_tokens = cjk_chars * 2;
+    let ascii_tokens = ascii_chars.div_ceil(4);
+    let other_tokens = other_chars;
+
+    let total = cjk_tokens + ascii_tokens + other_tokens;
+    if total == 0 && !content.is_empty() {
+        1
+    } else {
+        total
     }
 }
+
+// ================================================================
+// Tests
+// ================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_optimize_context_preserves_system_message() {
-        let msgs = vec![
-            Message::system("You are a helpful assistant"),
-            Message::user("Hello"),
-            Message::assistant("Hi there!", None),
-        ];
-        let result = AgentLoop::optimize_context(&msgs, 4000);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].role, MessageRole::System);
-        assert_eq!(result[0].content, "You are a helpful assistant");
-    }
-
-    #[test]
-    fn test_optimize_context_empty_input() {
-        let result = AgentLoop::optimize_context(&[], 4000);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_optimize_context_no_system_message() {
-        let msgs = vec![Message::user("Hello")];
-        let result = AgentLoop::optimize_context(&msgs, 4000);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "Hello");
-    }
-
-    #[test]
-    fn test_optimize_context_respects_token_limit() {
-        let long_content = "A".repeat(200);
-        let msgs = vec![
-            Message::user("short"),
-            Message::assistant(&long_content, None),
-            Message::user("latest"),
-        ];
-        let result = AgentLoop::optimize_context(&msgs, 10);
-        assert!(result.len() < 3);
-        assert!(!result.is_empty());
-        assert_eq!(result.last().unwrap().content, "latest");
-    }
-
-    #[test]
     fn test_estimate_tokens() {
-        assert_eq!(AgentLoop::estimate_tokens("hello"), 2);
-        assert_eq!(AgentLoop::estimate_tokens("a"), 1);
-        assert_eq!(AgentLoop::estimate_tokens(""), 0);
-        assert_eq!(AgentLoop::estimate_tokens("abcd"), 1);
-        assert_eq!(AgentLoop::estimate_tokens("abcde"), 2);
+        assert_eq!(estimate_tokens("hello"), 2);
+        assert_eq!(estimate_tokens("a"), 1);
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn test_extract_chat_params_system_and_user() {
+        let msgs = vec![
+            Message::system("You are a helpful assistant."),
+            Message::user("Hello!"),
+        ];
+        let (preamble, prompt, history) = extract_chat_params(msgs);
+        assert_eq!(preamble, "You are a helpful assistant.");
+        assert_eq!(prompt, "Hello!");
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_extract_chat_params_multi_turn() {
+        let msgs = vec![
+            Message::system("Be concise."),
+            Message::user("What is Rust?"),
+            Message::assistant("A systems language."),
+            Message::user("Show me an example."),
+        ];
+        let (preamble, prompt, history) = extract_chat_params(msgs);
+        assert_eq!(preamble, "Be concise.");
+        assert_eq!(prompt, "Show me an example.");
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_chat_params_no_system() {
+        let msgs = vec![Message::user("Hi")];
+        let (preamble, prompt, history) = extract_chat_params(msgs);
+        assert_eq!(preamble, "");
+        assert_eq!(prompt, "Hi");
+        assert!(history.is_empty());
     }
 }

@@ -1,10 +1,11 @@
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::r#trait::Tool;
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
 
-/// A tool exposed by an MCP server, wrapped to implement our Tool trait.
+/// A tool exposed by an MCP server, wrapped to implement ToolDyn.
 pub struct McpToolBridge {
     connection_id: String,
     tool_name: String,
@@ -32,25 +33,38 @@ impl McpToolBridge {
     }
 }
 
-#[async_trait]
-impl Tool for McpToolBridge {
-    fn name(&self) -> &str {
-        &self.tool_name
+impl ToolDyn for McpToolBridge {
+    fn name(&self) -> String {
+        self.tool_name.clone()
     }
 
-    fn description(&self) -> &str {
-        &self.tool_description
+    fn definition<'a>(
+        &'a self,
+        _prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        Box::pin(async move {
+            ToolDefinition {
+                name: self.tool_name.clone(),
+                description: self.tool_description.clone(),
+                parameters: self.input_schema.clone(),
+            }
+        })
     }
 
-    fn parameters(&self) -> Value {
-        self.input_schema.clone()
-    }
-
-    async fn execute(&self, _input: Value) -> Result<Value> {
-        Err(crate::error::AppError::Tool(format!(
-            "MCP tool '{}' on connection '{}' executed without connection context. \
-             This bridge is for metadata only.",
-            self.tool_name, self.connection_id
-        )))
+    fn call<'a>(
+        &'a self,
+        _args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            Err(ToolError::ToolCallError(
+                format!(
+                    "MCP tool '{}' on connection '{}' executed without connection context. \
+                     This bridge is for metadata only.",
+                    self.tool_name, self.connection_id
+                )
+                .into(),
+            ))
+        })
     }
 }

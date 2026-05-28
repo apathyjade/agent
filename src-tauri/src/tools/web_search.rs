@@ -1,10 +1,10 @@
-﻿use async_trait::async_trait;
-use serde_json::{json, Value};
+﻿use serde_json::{json, Value};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
-use crate::error::{AppError, Result};
-
-use super::r#trait::Tool;
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
 
 pub struct WebSearchTool;
 
@@ -14,80 +14,107 @@ impl WebSearchTool {
     }
 }
 
-#[async_trait]
-impl Tool for WebSearchTool {
-    fn name(&self) -> &str {
-        "web_search"
+impl ToolDyn for WebSearchTool {
+    fn name(&self) -> String {
+        "web_search".to_string()
     }
 
-    fn description(&self) -> &str {
-        "Search the web for information. Returns relevant results based on the query."
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
-                },
-                "num_results": {
-                    "type": "integer",
-                    "description": "Number of results to return (default: 5, max: 10)"
-                }
-            },
-            "required": ["query"]
+    fn definition<'a>(
+        &'a self,
+        _prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        Box::pin(async move {
+            ToolDefinition {
+                name: "web_search".to_string(),
+                description: "Search the web for information. Returns relevant results based on the query."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query"
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "Number of results to return (default: 5, max: 10)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            }
         })
     }
 
-    async fn execute(&self, input: Value) -> Result<Value> {
-        let query = input["query"]
-            .as_str()
-            .ok_or_else(|| AppError::InvalidInput("Missing 'query' parameter".to_string()))?;
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let input: Value = serde_json::from_str(&args)
+                .map_err(|e| ToolError::JsonError(e))?;
 
-        let num_results = input["num_results"]
-            .as_u64()
-            .unwrap_or(5)
-            .min(10) as usize;
+            let query = input["query"]
+                .as_str()
+                .ok_or_else(|| {
+                    ToolError::ToolCallError("Missing 'query' parameter".to_string().into())
+                })?;
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| AppError::Tool(format!("Failed to create HTTP client: {}", e)))?;
+            let num_results = input["num_results"]
+                .as_u64()
+                .unwrap_or(5)
+                .min(10) as usize;
 
-        let url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            urlencoding::encode(query)
-        );
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|e| {
+                    ToolError::ToolCallError(
+                        format!("Failed to create HTTP client: {}", e).into(),
+                    )
+                })?;
 
-        let response = client
-            .get(&url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .header("Accept", "text/html,application/xhtml+xml")
-            .send()
-            .await
-            .map_err(|e| AppError::Tool(format!("Search request failed: {}", e)))?;
+            let url = format!(
+                "https://html.duckduckgo.com/html/?q={}",
+                urlencoding::encode(query)
+            );
 
-        if !response.status().is_success() {
-            return Err(AppError::Tool(format!(
-                "Search engine returned status {}",
-                response.status()
-            )));
-        }
+            let response = client
+                .get(&url)
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
+                .header("Accept", "text/html,application/xhtml+xml")
+                .send()
+                .await
+                .map_err(|e| {
+                    ToolError::ToolCallError(format!("Search request failed: {}", e).into())
+                })?;
 
-        let html = response
-            .text()
-            .await
-            .map_err(|e| AppError::Tool(format!("Failed to read response: {}", e)))?;
+            if !response.status().is_success() {
+                return Err(ToolError::ToolCallError(
+                    format!("Search engine returned status {}", response.status()).into(),
+                ));
+            }
 
-        let results = Self::parse_results(&html, num_results);
+            let html = response
+                .text()
+                .await
+                .map_err(|e| {
+                    ToolError::ToolCallError(format!("Failed to read response: {}", e).into())
+                })?;
 
-        Ok(json!({
-            "query": query,
-            "results": results,
-            "count": results.len()
-        }))
+            let results = Self::parse_results(&html, num_results);
+
+            serde_json::to_string(&json!({
+                "query": query,
+                "results": results,
+                "count": results.len()
+            }))
+            .map_err(|e| ToolError::JsonError(e))
+        })
     }
 }
 
@@ -143,7 +170,11 @@ impl WebSearchTool {
                 _ => {}
             }
         }
-        if result.is_empty() { None } else { Some(result) }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Resolve redirect URLs from DuckDuckGo.

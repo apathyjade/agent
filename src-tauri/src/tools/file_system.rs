@@ -1,11 +1,13 @@
-﻿use async_trait::async_trait;
-use serde_json::{json, Value};
+﻿use serde_json::{json, Value};
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
-use crate::error::{AppError, Result};
+use crate::error::AppError;
 
-use super::r#trait::Tool;
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
 
 pub struct FileSystemTool;
 
@@ -38,7 +40,7 @@ impl FileSystemTool {
         dirs
     }
 
-    fn resolve_path(&self, path: &str) -> Result<PathBuf> {
+    fn resolve_path(&self, path: &str) -> std::result::Result<PathBuf, AppError> {
         let resolved = if path.starts_with("~/") {
             if let Some(home) = dirs::home_dir() {
                 home.join(&path[2..])
@@ -83,127 +85,181 @@ impl FileSystemTool {
     }
 }
 
-#[async_trait]
-impl Tool for FileSystemTool {
-    fn name(&self) -> &str {
-        "file_system"
+impl ToolDyn for FileSystemTool {
+    fn name(&self) -> String {
+        "file_system".to_string()
     }
 
-    fn description(&self) -> &str {
-        "Read, write, and manage files and directories. Supports reading files, writing files, listing directory contents, creating directories, and deleting files."
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["read", "write", "list", "mkdir", "delete"],
-                    "description": "The action to perform"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "The file or directory path"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Content to write (for write action)"
-                }
-            },
-            "required": ["action", "path"]
+    fn definition<'a>(
+        &'a self,
+        _prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        Box::pin(async move {
+            ToolDefinition {
+                name: "file_system".to_string(),
+                description: "Read, write, and manage files and directories. Supports reading files, writing files, listing directory contents, creating directories, and deleting files.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["read", "write", "list", "mkdir", "delete"],
+                            "description": "The action to perform"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "The file or directory path"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Content to write (for write action)"
+                        }
+                    },
+                    "required": ["action", "path"]
+                }),
+            }
         })
     }
 
-    async fn execute(&self, input: Value) -> Result<Value> {
-        let action = input["action"]
-            .as_str()
-            .ok_or_else(|| AppError::InvalidInput("Missing 'action' parameter".to_string()))?;
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let input: Value = serde_json::from_str(&args)
+                .map_err(|e| ToolError::JsonError(e))?;
 
-        let path = input["path"]
-            .as_str()
-            .ok_or_else(|| AppError::InvalidInput("Missing 'path' parameter".to_string()))?;
+            let action = input["action"]
+                .as_str()
+                .ok_or_else(|| {
+                    ToolError::ToolCallError("Missing 'action' parameter".to_string().into())
+                })?;
 
-        let resolved = self.resolve_path(path)?;
+            let path = input["path"]
+                .as_str()
+                .ok_or_else(|| {
+                    ToolError::ToolCallError("Missing 'path' parameter".to_string().into())
+                })?;
 
-        match action {
-            "read" => {
-                let content = fs::read_to_string(&resolved)
-                    .map_err(|e| AppError::Tool(format!("Failed to read file: {}", e)))?;
-                Ok(json!({
-                    "action": "read",
-                    "path": path,
-                    "content": content,
-                    "size": content.len()
-                }))
-            }
-            "write" => {
-                let content = input["content"]
-                    .as_str()
-                    .ok_or_else(|| AppError::InvalidInput("Missing 'content' parameter for write action".to_string()))?;
+            let resolved = self.resolve_path(path)
+                .map_err(|e| ToolError::ToolCallError(e.into()))?;
 
-                if let Some(parent) = resolved.parent() {
-                    fs::create_dir_all(parent)?;
+            match action {
+                "read" => {
+                    let content = fs::read_to_string(&resolved)
+                        .map_err(|e| {
+                            ToolError::ToolCallError(format!("Failed to read file: {}", e).into())
+                        })?;
+                    serde_json::to_string(&json!({
+                        "action": "read",
+                        "path": path,
+                        "content": content,
+                        "size": content.len()
+                    }))
+                    .map_err(|e| ToolError::JsonError(e))
                 }
+                "write" => {
+                    let content = input["content"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            ToolError::ToolCallError(
+                                "Missing 'content' parameter for write action".to_string().into(),
+                            )
+                        })?;
 
-                fs::write(&resolved, content)
-                    .map_err(|e| AppError::Tool(format!("Failed to write file: {}", e)))?;
+                    if let Some(parent) = resolved.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|e| {
+                                ToolError::ToolCallError(
+                                    format!("Failed to create directories: {}", e).into(),
+                                )
+                            })?;
+                    }
 
-                Ok(json!({
-                    "action": "write",
-                    "path": path,
-                    "bytes_written": content.len()
-                }))
-            }
-            "list" => {
-                let entries = fs::read_dir(&resolved)
-                    .map_err(|e| AppError::Tool(format!("Failed to list directory: {}", e)))?;
+                    fs::write(&resolved, content)
+                        .map_err(|e| {
+                            ToolError::ToolCallError(format!("Failed to write file: {}", e).into())
+                        })?;
 
-                let mut files = Vec::new();
-                let mut dirs = Vec::new();
+                    serde_json::to_string(&json!({
+                        "action": "write",
+                        "path": path,
+                        "bytes_written": content.len()
+                    }))
+                    .map_err(|e| ToolError::JsonError(e))
+                }
+                "list" => {
+                    let entries = fs::read_dir(&resolved)
+                        .map_err(|e| {
+                            ToolError::ToolCallError(
+                                format!("Failed to list directory: {}", e).into(),
+                            )
+                        })?;
 
-                for entry in entries {
-                    if let Ok(entry) = entry {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                            dirs.push(name);
-                        } else {
-                            files.push(name);
+                    let mut files = Vec::new();
+                    let mut dirs = Vec::new();
+
+                    for entry in entries {
+                        if let Ok(entry) = entry {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                                dirs.push(name);
+                            } else {
+                                files.push(name);
+                            }
                         }
                     }
-                }
 
-                Ok(json!({
-                    "action": "list",
-                    "path": path,
-                    "directories": dirs,
-                    "files": files
-                }))
-            }
-            "mkdir" => {
-                fs::create_dir_all(&resolved)
-                    .map_err(|e| AppError::Tool(format!("Failed to create directory: {}", e)))?;
-                Ok(json!({
-                    "action": "mkdir",
-                    "path": path,
-                    "created": true
-                }))
-            }
-            "delete" => {
-                if resolved.is_dir() {
-                    fs::remove_dir_all(&resolved)
-                        .map_err(|e| AppError::Tool(format!("Failed to delete directory: {}", e)))?;
-                } else {
-                    fs::remove_file(&resolved)
-                        .map_err(|e| AppError::Tool(format!("Failed to delete file: {}", e)))?;
+                    serde_json::to_string(&json!({
+                        "action": "list",
+                        "path": path,
+                        "directories": dirs,
+                        "files": files
+                    }))
+                    .map_err(|e| ToolError::JsonError(e))
                 }
-                Ok(json!({
-                    "action": "delete",
-                    "path": path,
-                    "deleted": true
-                }))
+                "mkdir" => {
+                    fs::create_dir_all(&resolved)
+                        .map_err(|e| {
+                            ToolError::ToolCallError(
+                                format!("Failed to create directory: {}", e).into(),
+                            )
+                        })?;
+                    serde_json::to_string(&json!({
+                        "action": "mkdir",
+                        "path": path,
+                        "created": true
+                    }))
+                    .map_err(|e| ToolError::JsonError(e))
+                }
+                "delete" => {
+                    if resolved.is_dir() {
+                        fs::remove_dir_all(&resolved)
+                            .map_err(|e| {
+                                ToolError::ToolCallError(
+                                    format!("Failed to delete directory: {}", e).into(),
+                                )
+                            })?;
+                    } else {
+                        fs::remove_file(&resolved)
+                            .map_err(|e| {
+                                ToolError::ToolCallError(
+                                    format!("Failed to delete file: {}", e).into(),
+                                )
+                            })?;
+                    }
+                    serde_json::to_string(&json!({
+                        "action": "delete",
+                        "path": path,
+                        "deleted": true
+                    }))
+                    .map_err(|e| ToolError::JsonError(e))
+                }
+                _ => Err(ToolError::ToolCallError(
+                    format!("Unknown action: {}", action).into(),
+                )),
             }
-            _ => Err(AppError::InvalidInput(format!("Unknown action: {}", action))),
-        }
+        })
     }
 }

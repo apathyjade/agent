@@ -13,17 +13,9 @@ pub struct IntentRouter {
 }
 
 impl IntentRouter {
-    /// Build an IntentRouter from config + provider registry.
-    pub fn new(
-        config: &IntentRouterConfig,
-        providers: std::sync::Arc<tokio::sync::Mutex<crate::api::provider::ProviderRegistry>>,
-    ) -> Self {
-        let model_id = config
-            .classifier_model_id
-            .clone()
-            .unwrap_or_default();
-
-        let classifier = LlmClassifier::new(providers, model_id);
+    /// Build an IntentRouter from config.
+    pub fn new(config: &IntentRouterConfig) -> Self {
+        let classifier = LlmClassifier::new();
 
         // Merge default intents with user-configured intents
         let mut configs = super::default_intents();
@@ -139,12 +131,7 @@ mod tests {
     #[test]
     fn test_resolve_tools_intersection() {
         let cfg = make_config(true);
-        let providers = std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
-        ));
-        let router = IntentRouter::new(&cfg, providers);
+        let router = IntentRouter::new(&cfg);
 
         let session = Some(vec![
             "calculator".to_string(),
@@ -159,12 +146,7 @@ mod tests {
     #[test]
     fn test_resolve_tools_no_intent_restriction() {
         let cfg = make_config(true);
-        let providers = std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
-        ));
-        let router = IntentRouter::new(&cfg, providers);
+        let router = IntentRouter::new(&cfg);
         let session = Some(vec!["calculator".to_string(), "web_search".to_string()]);
         let result = router.resolve_tools(session, None);
         assert_eq!(result, Some(vec!["calculator".to_string(), "web_search".to_string()]));

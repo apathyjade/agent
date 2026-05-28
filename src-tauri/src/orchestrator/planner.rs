@@ -4,7 +4,6 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::api::types::{ChatRequest, Message as ApiMessage, MessageRole};
 use crate::api::util::extract_json;
 use crate::orchestrator::plan_error::ExecutionError;
 use crate::orchestrator::plan_types::*;
@@ -34,19 +33,15 @@ impl LlmPlanner {
         // 获取工具列表（在获取 providers 锁之前）
         let tools_list = {
             let registry = self.tools.lock().await;
-            registry
-                .get_enabled()
-                .iter()
-                .map(|t| {
-                    format!(
-                        "- `{}`: {} — params: {}",
-                        t.name(),
-                        t.description(),
-                        t.parameters()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            let mut entries = Vec::new();
+            for tool in registry.get_enabled() {
+                let def = tool.definition(String::new()).await;
+                entries.push(format!(
+                    "- `{}`: {} — params: {}",
+                    def.name, def.description, def.parameters
+                ));
+            }
+            entries.join("\n")
         };
 
         // 获取模型
@@ -113,44 +108,13 @@ Respond with a JSON object ONLY, no other text:
             goal
         );
 
-        let messages = vec![
-            ApiMessage {
-                id: None,
-                role: MessageRole::System,
-                content: planner_system,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ApiMessage {
-                id: None,
-                role: MessageRole::User,
-                content: user_message,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        ];
-
-        let request = ChatRequest {
-            messages,
-            model: mid.to_string(),
-            tools: None,
-            stream: Some(false),
-            max_tokens: Some(4096),
-            temperature: Some(0.3),
-        };
-
-        let response = provider.chat(request).await.map_err(|e| {
-            ExecutionError::StepFailed {
-                step: 0,
-                message: format!("Planner LLM call failed: {}", e),
-            }
-        })?;
-
-        let content = response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .unwrap_or_default();
+        let content = provider.prompt(&planner_system, &user_message).await
+            .map_err(|e| {
+                ExecutionError::StepFailed {
+                    step: 0,
+                    message: format!("Planner LLM call failed: {}", e),
+                }
+            })?;
 
         // Extract JSON from response (may be wrapped in ```json ... ```)
         let json_str = extract_json(&content);

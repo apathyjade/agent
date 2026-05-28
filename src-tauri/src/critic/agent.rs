@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::api::types::{ChatRequest, Message, MessageRole};
 use crate::api::util::extract_json;
 use crate::error::Result;
 use crate::workers::{SubTask, WorkerResult};
@@ -91,30 +90,6 @@ Evaluate the worker output against the instruction and provide your critique."#,
             content = worker_result.content,
         );
 
-        let request = ChatRequest {
-            messages: vec![
-                Message {
-                    id: None,
-                    role: MessageRole::System,
-                    content: CRITIC_SYSTEM_PROMPT.to_string(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-                Message {
-                    id: None,
-                    role: MessageRole::User,
-                    content: prompt,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-            ],
-            model: "".to_string(),
-            tools: None,
-            stream: Some(false),
-            max_tokens: Some(1024),
-            temperature: Some(0.2),
-        };
-
         let provider = match { let registry = self.providers.lock().await; registry.get(&mid) } {
             Ok(p) => p,
             Err(e) => {
@@ -123,19 +98,13 @@ Evaluate the worker output against the instruction and provide your critique."#,
             }
         };
 
-        let response = match provider.chat(request).await {
+        let raw = match provider.prompt(CRITIC_SYSTEM_PROMPT, &prompt).await {
             Ok(r) => r,
             Err(e) => {
                 log::warn!("Critic LLM call failed ({}), returning default Go", e);
                 return Ok(self.default_go_critique());
             }
         };
-
-        let raw = response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .unwrap_or_default();
 
         let extracted = extract_json(&raw);
 

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::api::types::{ChatRequest, Message, MessageRole};
 use crate::error::Result;
 use crate::tools::registry::ToolRegistry;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
@@ -172,36 +171,9 @@ impl WorkerAgent for MCPBridgeWorker {
             }
         );
 
-        let request = ChatRequest {
-            messages: vec![
-                Message {
-                    id: None,
-                    role: MessageRole::System,
-                    content: system_prompt,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-                Message {
-                    id: None,
-                    role: MessageRole::User,
-                    content: task.instruction.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-            ],
-            model: String::new(),
-            tools: None,
-            stream: Some(false),
-            max_tokens: task.max_tokens.map(|t| t as usize),
-            temperature: task.temperature,
-        };
-
-        let response = provider.chat(request).await?;
-        let content = response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .unwrap_or_default();
+        let content = provider
+            .prompt(&system_prompt, &task.instruction)
+            .await?;
 
         Ok(WorkerResult {
             worker: WorkerKind::McpBridge,

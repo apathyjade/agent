@@ -6,7 +6,6 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::api::types::{ChatRequest, Message, MessageRole};
 use crate::error::{AppError, Result};
 use crate::pipeline::models::{
     StepDef, StepProgress, TriggerDef, WorkflowDef, WorkflowRunRecord,
@@ -160,8 +159,8 @@ impl PipelineEngine {
                     prompt,
                     model_id,
                     system_prompt,
-                    max_tokens,
-                    temperature,
+                    max_tokens: _max_tokens,
+                    temperature: _temperature,
                     retry,
                     on_error,
                     timeout_seconds,
@@ -179,8 +178,6 @@ impl PipelineEngine {
                                 let prompt = rendered.clone();
                                 let sys = system_prompt.clone();
                                 let m_id = model_id.clone();
-                                let m_tokens = *max_tokens;
-                                let temp = *temperature;
                                 async move {
                                     let providers = providers.lock().await;
                                     let mid = m_id.as_deref().unwrap_or_else(|| providers.default_model_id());
@@ -190,35 +187,8 @@ impl PipelineEngine {
                                         ));
                                     }
                                     let provider = providers.get(mid)?;
-                                    let request = ChatRequest {
-                                        messages: vec![
-                                            Message {
-                                                id: None,
-                                                role: MessageRole::System,
-                                                content: sys.unwrap_or_default(),
-                                                tool_calls: None,
-                                                tool_call_id: None,
-                                            },
-                                            Message {
-                                                id: None,
-                                                role: MessageRole::User,
-                                                content: prompt,
-                                                tool_calls: None,
-                                                tool_call_id: None,
-                                            },
-                                        ],
-                                        model: mid.to_string(),
-                                        tools: None,
-                                        stream: Some(false),
-                                        max_tokens: m_tokens.map(|t| t as usize),
-                                        temperature: temp,
-                                    };
-                                    let response = provider.chat(request).await?;
-                                    let content = response
-                                        .choices
-                                        .first()
-                                        .map(|c| c.message.content.clone())
-                                        .unwrap_or_default();
+                                    let system = sys.as_deref().unwrap_or("");
+                                    let content = provider.prompt(system, &prompt).await?;
                                     Ok(Value::String(content))
                                 }
                             },

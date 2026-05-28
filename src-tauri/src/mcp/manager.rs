@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+
 use rmcp::model::Tool as McpTool;
 use rmcp::service::{RoleClient, RunningService, ServiceExt};
 use rmcp::transport::TokioChildProcess;
@@ -15,10 +17,12 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolError};
+
 use crate::environment::RuntimeManager;
 use crate::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
-use crate::tools::r#trait::Tool;
 use crate::tools::registry::ToolRegistry;
 
 // ── Public types ──
@@ -676,90 +680,120 @@ pub struct McpToolWrapper {
     last_error: Arc<std::sync::Mutex<Option<String>>>,
 }
 
-#[async_trait]
-impl Tool for McpToolWrapper {
-    fn name(&self) -> &str {
-        &self.inner_name
+impl ToolDyn for McpToolWrapper {
+    fn name(&self) -> String {
+        self.inner_name.clone()
     }
 
-    fn description(&self) -> &str {
-        &self.inner_description
-    }
-
-    fn parameters(&self) -> Value {
-        self.inner_parameters.clone()
-    }
-
-    async fn execute(&self, input: Value) -> crate::error::Result<Value> {
-        // Check confirmation mode — deny if configured
-        if matches!(self.confirmation, ConfirmationMode::Deny) {
-            return Err(AppError::Tool(format!(
-                "MCP tool '{}' execution denied by configuration",
-                self.inner_name
-            )));
-        }
-
-        let start = Instant::now();
-
-        // The arguments must be a JSON object (Map) for CallToolRequestParams
-        let arguments = match input {
-            Value::Object(map) => map,
-            other => {
-                let mut map = Map::new();
-                map.insert("value".to_string(), other);
-                map
+    fn definition<'a>(
+        &'a self,
+        _prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        Box::pin(async move {
+            ToolDefinition {
+                name: self.inner_name.clone(),
+                description: self.inner_description.clone(),
+                parameters: self.inner_parameters.clone(),
             }
-        };
+        })
+    }
 
-        let tool_name = self.inner_name.clone();
-        let params = rmcp::model::CallToolRequestParams::new(tool_name)
-            .with_arguments(arguments);
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            // Parse JSON args from string
+            let input: Value = serde_json::from_str(&args)
+                .map_err(|e| ToolError::JsonError(e))?;
 
-        let result = self.peer.call_tool(params).await.map_err(|e| {
-            self.error_count.fetch_add(1, Ordering::Relaxed);
-            {
-                if let Ok(mut last) = self.last_error.lock() {
-                    *last = Some(e.to_string());
+            // Check confirmation mode — deny if configured
+            if matches!(self.confirmation, ConfirmationMode::Deny) {
+                return Err(ToolError::ToolCallError(
+                    format!(
+                        "MCP tool '{}' execution denied by configuration",
+                        self.inner_name
+                    )
+                    .into(),
+                ));
+            }
+
+            let start = Instant::now();
+
+            // The arguments must be a JSON object (Map) for CallToolRequestParams
+            let arguments = match input {
+                Value::Object(map) => map,
+                other => {
+                    let mut map = Map::new();
+                    map.insert("value".to_string(), other);
+                    map
+                }
+            };
+
+            let tool_name = self.inner_name.clone();
+            let params = rmcp::model::CallToolRequestParams::new(tool_name)
+                .with_arguments(arguments);
+
+            let result = self.peer.call_tool(params).await.map_err(|e| {
+                self.error_count.fetch_add(1, Ordering::Relaxed);
+                {
+                    if let Ok(mut last) = self.last_error.lock() {
+                        *last = Some(e.to_string());
+                    }
+                }
+                ToolError::ToolCallError(
+                    format!("MCP tool '{}' error: {}", self.inner_name, e).into(),
+                )
+            })?;
+
+            // Track success metrics
+            self.total_calls.fetch_add(1, Ordering::Relaxed);
+            let elapsed_ns = start.elapsed().as_nanos() as u64;
+            if let Ok(mut samples) = self.latency_samples.lock() {
+                samples.push(elapsed_ns);
+                if samples.len() > 100 {
+                    samples.remove(0);
                 }
             }
-            AppError::Tool(format!("MCP tool '{}' error: {}", self.inner_name, e))
-        })?;
 
-        // Track success metrics
-        self.total_calls.fetch_add(1, Ordering::Relaxed);
-        let elapsed_ns = start.elapsed().as_nanos() as u64;
-        if let Ok(mut samples) = self.latency_samples.lock() {
-            samples.push(elapsed_ns);
-            if samples.len() > 100 {
-                samples.remove(0);
-            }
-        }
-
-        // Convert MCP content array to JSON value
-        if result.content.is_empty() {
-            return Ok(Value::Null);
-        }
-
-        // If single text result, return as string
-        if result.content.len() == 1 {
-            if let Some(text) = result.content[0].as_text() {
-                return Ok(Value::String(text.text.clone()));
-            }
-        }
-
-        // Multiple results or non-text: return as JSON array
-        let items: Vec<Value> = result
-            .content
-            .iter()
-            .map(|c| {
-                if let Some(text) = c.as_text() {
+            // Convert MCP content array to JSON value, then serialize to string
+            let result_value = if result.content.is_empty() {
+                Value::Null
+            } else if result.content.len() == 1 {
+                if let Some(text) = result.content[0].as_text() {
                     Value::String(text.text.clone())
                 } else {
-                    Value::String(format!("{:?}", c))
+                    let items: Vec<Value> = result
+                        .content
+                        .iter()
+                        .map(|c| {
+                            if let Some(text) = c.as_text() {
+                                Value::String(text.text.clone())
+                            } else {
+                                Value::String(format!("{:?}", c))
+                            }
+                        })
+                        .collect();
+                    Value::Array(items)
                 }
-            })
-            .collect();
+            } else {
+                let items: Vec<Value> = result
+                    .content
+                    .iter()
+                    .map(|c| {
+                        if let Some(text) = c.as_text() {
+                            Value::String(text.text.clone())
+                        } else {
+                            Value::String(format!("{:?}", c))
+                        }
+                    })
+                    .collect();
+                Value::Array(items)
+            };
 
-        Ok(Value::Array(items))
+            serde_json::to_string(&result_value)
+                .map_err(|e| ToolError::JsonError(e))
+        })
     }
 }

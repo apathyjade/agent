@@ -1,4 +1,3 @@
-use crate::api::types::{Message, MessageRole, ChatRequest};
 use crate::error::Result;
 use crate::lifecycle::LifecycleManager;
 
@@ -58,31 +57,13 @@ pub async fn maybe_generate_title(
         context
     );
 
-    let request = ChatRequest {
-        messages: vec![Message {
-            id: None,
-            role: MessageRole::User,
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        }],
-        model: actual_model.clone(),
-        tools: None,
-        stream: Some(false),
-        max_tokens: Some(30),
-        temperature: Some(0.3),
-    };
-
     let provider = lifecycle.providers.lock().await;
     let p = provider.get(&actual_model)?;
-    let response = p.chat(request).await?;
-
-    if let Some(choice) = response.choices.first() {
-        let title = choice.message.content.trim().trim_matches('"').to_string();
-        if !title.is_empty() {
-            let db = lifecycle.db.lock().await;
-            db.update_session_title_with_source(session_id, &title, "auto_generated")?;
-        }
+    let title = p.prompt("", &prompt).await?;
+    let title = title.trim().trim_matches('"').to_string();
+    if !title.is_empty() {
+        let db = lifecycle.db.lock().await;
+        db.update_session_title_with_source(session_id, &title, "auto_generated")?;
     }
 
     Ok(())

@@ -1,5 +1,11 @@
 ﻿use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+
+use rig::completion::ToolDefinition;
+use rig::tool::{ToolDyn, ToolSet};
+use serde_json::Value;
 
 use crate::error::{AppError, Result};
 use crate::tools::calculator::CalculatorTool;
@@ -7,7 +13,32 @@ use crate::tools::code_executor::CodeExecutorTool;
 use crate::tools::file_system::FileSystemTool;
 use crate::tools::run_workflow::RunWorkflowTool;
 use crate::tools::web_search::WebSearchTool;
-use crate::tools::r#trait::{Tool, ToolInfo};
+use crate::tools::r#trait::ToolInfo;
+
+/// Wrapper to allow Arc<dyn ToolDyn> to be used as a sized ToolDyn impl
+/// for building ToolSet.
+struct ArcToolDyn(Arc<dyn ToolDyn>);
+
+impl ToolDyn for ArcToolDyn {
+    fn name(&self) -> String {
+        self.0.name()
+    }
+
+    fn definition<'a>(
+        &'a self,
+        prompt: String,
+    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
+        self.0.definition(prompt)
+    }
+
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, rig::tool::ToolError>> + Send + 'a>>
+    {
+        self.0.call(args)
+    }
+}
 
 /// Aliases for tool names, mapping common alternative names to registered tool names
 fn tool_aliases() -> HashMap<&'static str, &'static str> {
@@ -34,7 +65,7 @@ fn tool_aliases() -> HashMap<&'static str, &'static str> {
 }
 
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn ToolDyn>>,
     enabled: HashMap<String, bool>,
     aliases: HashMap<String, String>,
 }
@@ -61,12 +92,12 @@ impl ToolRegistry {
         registry
     }
 
-    pub fn register(&mut self, name: &str, tool: Arc<dyn Tool>, enabled: bool) {
+    pub fn register(&mut self, name: &str, tool: Arc<dyn ToolDyn>, enabled: bool) {
         self.tools.insert(name.to_string(), tool);
         self.enabled.insert(name.to_string(), enabled);
     }
 
-    pub fn get(&self, name: &str) -> Result<Arc<dyn Tool>> {
+    pub fn get(&self, name: &str) -> Result<Arc<dyn ToolDyn>> {
         // Direct lookup first
         if let Some(tool) = self.tools.get(name) {
             return Ok(tool.clone());
@@ -87,7 +118,7 @@ impl ToolRegistry {
         Err(AppError::Tool(format!("Tool '{}' not found", name)))
     }
 
-    pub fn get_enabled(&self) -> Vec<Arc<dyn Tool>> {
+    pub fn get_enabled(&self) -> Vec<Arc<dyn ToolDyn>> {
         self.tools
             .iter()
             .filter(|(name, _)| self.enabled.get(name.as_str()).copied().unwrap_or(false))
@@ -95,19 +126,46 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Convert enabled tools to a Rig ToolSet for use with rig::agent::Agent.
+    pub fn to_rig_tool_set(&self, allowed: Option<&[String]>) -> ToolSet {
+        let mut builder = ToolSet::builder();
+        for (name, tool) in &self.tools {
+            let is_enabled = self.enabled.get(name).copied().unwrap_or(false);
+            let is_allowed = allowed.map_or(true, |a| a.contains(name));
+            if is_enabled && is_allowed {
+                builder = builder.static_tool(ArcToolDyn(tool.clone()));
+            }
+        }
+        builder.build()
+    }
+
+    pub fn execute(&self, name: &str, input: Value) -> impl Future<Output = Result<Value>> + Send + '_ {
+        let name_owned = name.to_string();
+        async move {
+            let tool = self.get(&name_owned)?;
+            let args = input.to_string();
+            let result = tool
+                .call(args)
+                .await
+                .map_err(|e| AppError::Tool(format!("Tool '{}' failed: {}", name_owned, e)))?;
+            serde_json::from_str(&result)
+                .map_err(|e| AppError::Tool(format!("Tool '{}' returned invalid JSON: {}", name_owned, e)))
+        }
+    }
+
     pub fn list(&self) -> Vec<ToolInfo> {
         self.tools
             .iter()
             .map(|(name, tool)| ToolInfo {
-                name: name.clone(),
-                description: tool.description().to_string(),
-                parameters: tool.parameters(),
+                name: tool.name(),
+                description: String::new(),
+                parameters: Value::Null,
                 enabled: self.enabled.get(name.as_str()).copied().unwrap_or(false),
             })
             .collect()
     }
 
-    pub fn register_dynamic(&mut self, name: &str, tool: Arc<dyn Tool>, enabled: bool) {
+    pub fn register_dynamic(&mut self, name: &str, tool: Arc<dyn ToolDyn>, enabled: bool) {
         self.tools.insert(name.to_string(), tool);
         self.enabled.insert(name.to_string(), enabled);
     }
@@ -128,10 +186,5 @@ impl ToolRegistry {
         } else {
             Err(AppError::Tool(format!("Tool '{}' not found", name)))
         }
-    }
-
-    pub async fn execute(&self, name: &str, input: serde_json::Value) -> Result<serde_json::Value> {
-        let tool = self.get(name)?;
-        tool.execute(input).await
     }
 }
