@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
 use crate::api::types::{ChatRequest, Message as ApiMessage, MessageRole};
+use crate::api::util::extract_json;
 use crate::orchestrator::plan_error::ExecutionError;
 use crate::orchestrator::plan_types::*;
 use crate::tools::registry::ToolRegistry;
@@ -292,28 +293,6 @@ Respond with a JSON object ONLY, no other text:
             finished_at: None,
         })
     }
-}
-
-/// 从 LLM 响应中提取 JSON（去除 markdown 代码块标记）
-fn extract_json(content: &str) -> &str {
-    let trimmed = content.trim();
-    // 处理 ```json ... ``` 包装
-    if let Some(start) = trimmed.find("```json") {
-        let after_start = &trimmed[start + 7..];
-        if let Some(end) = after_start.find("```") {
-            return after_start[..end].trim();
-        }
-        return after_start.trim();
-    }
-    // 处理 ``` ... ``` 包装（无语言标记）
-    if let Some(start) = trimmed.find("```") {
-        let after_start = &trimmed[start + 3..];
-        if let Some(end) = after_start.find("```") {
-            return after_start[..end].trim();
-        }
-        return after_start.trim();
-    }
-    trimmed
 }
 
 #[cfg(test)]

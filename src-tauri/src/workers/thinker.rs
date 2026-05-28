@@ -2,8 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
-use crate::api::types::{ChatRequest, Message, MessageRole};
+use crate::api::provider::{ProviderRegistry, chat_text};
 use crate::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
@@ -49,51 +48,20 @@ impl WorkerAgent for ThinkerWorker {
     async fn execute(&self, task: SubTask) -> Result<WorkerResult> {
         let start = std::time::Instant::now();
 
-        let provider = {
-            let registry = self.providers.lock().await;
-            let mid = task.model_id.as_deref().unwrap_or_else(|| registry.default_model_id());
-            if mid.is_empty() {
-                return Err(crate::error::AppError::Worker("No model configured for ThinkerWorker".into()));
-            }
-            registry.get(mid)?
-        };
-
-        let system_msg = if let Some(ctx) = &task.context {
+        let system_prompt = if let Some(ctx) = &task.context {
             format!("{}\n\nAdditional context:\n{}", COT_SYSTEM_PROMPT, serde_json::to_string_pretty(ctx).unwrap_or_default())
         } else {
             COT_SYSTEM_PROMPT.to_string()
         };
 
-        let request = ChatRequest {
-            messages: vec![
-                Message {
-                    id: None,
-                    role: MessageRole::System,
-                    content: system_msg,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-                Message {
-                    id: None,
-                    role: MessageRole::User,
-                    content: task.instruction.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-            ],
-            model: "".to_string(),
-            tools: None,
-            stream: Some(false),
-            max_tokens: task.max_tokens.map(|t| t as usize),
-            temperature: task.temperature,
-        };
-
-        let response = provider.chat(request).await?;
-        let content = response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .unwrap_or_default();
+        let content = chat_text(
+            &self.providers,
+            task.model_id.as_deref(),
+            &system_prompt,
+            &task.instruction,
+            task.max_tokens.map(|t| t as usize),
+            task.temperature,
+        ).await?;
 
         Ok(WorkerResult {
             worker: WorkerKind::Thinker,

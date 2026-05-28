@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
 use crate::api::types::{ChatRequest, Message, MessageRole};
+use crate::api::util::extract_json;
 use crate::error::Result;
 use crate::workers::{SubTask, WorkerResult};
 
@@ -221,50 +222,6 @@ Evaluate the worker output against the instruction and provide your critique."#,
             score: None,
         }
     }
-}
-
-/// Extract JSON from an LLM response string.
-///
-/// Handles:
-/// - Markdown code fences: ```json ... ```
-/// - Bare JSON objects: { ... }
-/// - Trims surrounding whitespace.
-pub fn extract_json(input: &str) -> String {
-    let trimmed = input.trim();
-
-    // Try to find a ```json ... ``` block
-    if let Some(start) = trimmed.find("```json") {
-        let after_fence = &trimmed[start + 7..]; // skip past ```json
-        if let Some(end) = after_fence.find("```") {
-            let json_block = after_fence[..end].trim();
-            if !json_block.is_empty() {
-                return json_block.to_string();
-            }
-        }
-    }
-
-    // Try to find a ``` ... ``` block (generic code fence)
-    if let Some(start) = trimmed.find("```") {
-        let after_fence = &trimmed[start + 3..];
-        if let Some(end) = after_fence.find("```") {
-            let json_block = after_fence[..end].trim();
-            if !json_block.is_empty() {
-                return json_block.to_string();
-            }
-        }
-    }
-
-    // Look for a bare JSON object — find first '{' and last '}'
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            if end > start {
-                return trimmed[start..=end].to_string();
-            }
-        }
-    }
-
-    // Fallback: return the whole input cleaned up
-    trimmed.to_string()
 }
 
 /// Trait for components that can review worker outputs.

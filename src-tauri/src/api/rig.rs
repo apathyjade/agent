@@ -363,6 +363,23 @@ pub type RigOllama = RigProvider<rig::providers::ollama::Client>;
 pub type RigMoonshot = RigProvider<rig::providers::moonshot::Client>;
 
 // ---------------------------------------------------------------------------
+// Helper: strip known API path suffixes from a base URL so Rig can append
+// its own path (e.g. "/chat/completions") without duplication.
+// ---------------------------------------------------------------------------
+
+/// Known API paths that config URLs may end with, which Rig appends itself.
+const KNOWN_API_PATHS: &[&str] = &["/chat/completions"];
+
+fn strip_api_suffix(url: &str) -> &str {
+    for suffix in KNOWN_API_PATHS {
+        if let Some(trimmed) = url.strip_suffix(suffix) {
+            return trimmed.trim_end_matches('/');
+        }
+    }
+    url.trim_end_matches('/')
+}
+
+// ---------------------------------------------------------------------------
 // Factory: create the appropriate RigProvider from a ModelConfig
 // ---------------------------------------------------------------------------
 
@@ -414,21 +431,37 @@ pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn LLMProvider>> 
         }
 
         // OpenAI-compatible providers: Zhipu, SiliconFlow, LMStudio, Custom
-        // These use the OpenAI client with a custom base_url.
+        //
+        // These use Rig's OpenAI **Completions** API client (Chat Completions,
+        // endpoint `/chat/completions`) instead of the newer Responses API,
+        // because that is what these third-party providers implement.
+        //
+        // When the user has set a custom `base_url` in their config, it often
+        // includes the full path (e.g. ".../v1/chat/completions").  Since Rig
+        // appends the path itself, we strip the known suffix first.
         ModelProvider::Zhipu
         | ModelProvider::SiliconFlow
         | ModelProvider::LMStudio
         | ModelProvider::Custom => {
-            let base_url = model.effective_base_url();
-            if model.base_url.is_some() {
+            let effective_base_url = model.effective_base_url();
+            let has_custom_base = model.base_url.is_some();
+
+            let mut builder = rig::providers::openai::CompletionsClient::builder()
+                .api_key(&model.api_key);
+
+            let api_base = strip_api_suffix(&effective_base_url);
+            if !api_base.is_empty() {
+                builder = builder.base_url(api_base);
+            }
+
+            if has_custom_base {
                 log::info!(
-                    "Using OpenAI-compatible Rig client for '{}' with base_url: {}",
-                    model.id, base_url
+                    "Using OpenAI-compatible Rig CompletionsClient for '{}' with base_url: {}",
+                    model.id, api_base
                 );
             }
-            // TODO: Some Rig OpenAI clients support a builder with custom URL.
-            // Fallback: use standard OpenAI client for now.
-            let client = rig::providers::openai::Client::new(&model.api_key)
+
+            let client = builder.build()
                 .map_err(|e| AppError::Provider(format!("OpenAI-compat init: {}", e)))?;
             Ok(Box::new(RigProvider::new(client, model.name.clone())))
         }

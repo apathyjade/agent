@@ -115,13 +115,10 @@ impl AgentLoop {
 
                     for tool_call in tool_calls {
                         let tool_result = self.execute_tool(tool_call).await?;
-                        current_messages.push(Message {
-                            id: None,
-                            role: MessageRole::Tool,
-                            content: serde_json::to_string(&tool_result).unwrap_or_default(),
-                            tool_calls: None,
-                            tool_call_id: Some(tool_call.id.clone()),
-                        });
+                        current_messages.push(Message::tool(
+                            serde_json::to_string(&tool_result).unwrap_or_default(),
+                            &tool_call.id,
+                        ));
                     }
 
                     iteration += 1;
@@ -334,13 +331,10 @@ impl AgentLoop {
                 }
             }
 
-            current_messages.push(Message {
-                id: None,
-                role: MessageRole::Assistant,
-                content: full_content.clone(),
-                tool_calls: if detected_tool_calls.is_empty() { None } else { Some(detected_tool_calls.clone()) },
-                tool_call_id: None,
-            });
+            current_messages.push(Message::assistant(
+                &full_content,
+                if detected_tool_calls.is_empty() { None } else { Some(detected_tool_calls.clone()) },
+            ));
 
             if detected_tool_calls.is_empty() {
                 return Ok(());
@@ -361,13 +355,7 @@ impl AgentLoop {
                             result: result_str.clone(),
                         })).await;
 
-                        current_messages.push(Message {
-                            id: None,
-                            role: MessageRole::Tool,
-                            content: result_str,
-                            tool_calls: None,
-                            tool_call_id: Some(tc.id.clone()),
-                        });
+                        current_messages.push(Message::tool(&result_str, &tc.id));
                     }
                     Err(e) => {
                         let err_str = format!("Tool execution error: {}", e);
@@ -376,13 +364,7 @@ impl AgentLoop {
                             name: tc.name.clone(),
                             result: err_str.clone(),
                         })).await;
-                        current_messages.push(Message {
-                            id: None,
-                            role: MessageRole::Tool,
-                            content: err_str,
-                            tool_calls: None,
-                            tool_call_id: Some(tc.id.clone()),
-                        });
+                        current_messages.push(Message::tool(&err_str, &tc.id));
                     }
                 }
             }
@@ -405,9 +387,9 @@ mod tests {
     #[test]
     fn test_optimize_context_preserves_system_message() {
         let msgs = vec![
-            Message { id: None, role: MessageRole::System, content: "You are a helpful assistant".to_string(), tool_calls: None, tool_call_id: None },
-            Message { id: None, role: MessageRole::User, content: "Hello".to_string(), tool_calls: None, tool_call_id: None },
-            Message { id: None, role: MessageRole::Assistant, content: "Hi there!".to_string(), tool_calls: None, tool_call_id: None },
+            Message::system("You are a helpful assistant"),
+            Message::user("Hello"),
+            Message::assistant("Hi there!", None),
         ];
         let result = AgentLoop::optimize_context(&msgs, 4000);
         assert_eq!(result.len(), 3);
@@ -423,9 +405,7 @@ mod tests {
 
     #[test]
     fn test_optimize_context_no_system_message() {
-        let msgs = vec![
-            Message { id: None, role: MessageRole::User, content: "Hello".to_string(), tool_calls: None, tool_call_id: None },
-        ];
+        let msgs = vec![Message::user("Hello")];
         let result = AgentLoop::optimize_context(&msgs, 4000);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "Hello");
@@ -435,9 +415,9 @@ mod tests {
     fn test_optimize_context_respects_token_limit() {
         let long_content = "A".repeat(200);
         let msgs = vec![
-            Message { id: None, role: MessageRole::User, content: "short".to_string(), tool_calls: None, tool_call_id: None },
-            Message { id: None, role: MessageRole::Assistant, content: long_content.clone(), tool_calls: None, tool_call_id: None },
-            Message { id: None, role: MessageRole::User, content: "latest".to_string(), tool_calls: None, tool_call_id: None },
+            Message::user("short"),
+            Message::assistant(&long_content, None),
+            Message::user("latest"),
         ];
         let result = AgentLoop::optimize_context(&msgs, 10);
         assert!(result.len() < 3);

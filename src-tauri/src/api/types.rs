@@ -9,6 +9,28 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
+impl Message {
+    /// Create a system message.
+    pub fn system(content: impl Into<String>) -> Self {
+        Self { id: None, role: MessageRole::System, content: content.into(), tool_calls: None, tool_call_id: None }
+    }
+
+    /// Create a user message.
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { id: None, role: MessageRole::User, content: content.into(), tool_calls: None, tool_call_id: None }
+    }
+
+    /// Create an assistant message, optionally with tool calls.
+    pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
+        Self { id: None, role: MessageRole::Assistant, content: content.into(), tool_calls, tool_call_id: None }
+    }
+
+    /// Create a tool-result message linked to a previous tool call.
+    pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
+        Self { id: None, role: MessageRole::Tool, content: content.into(), tool_calls: None, tool_call_id: Some(tool_call_id.into()) }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
