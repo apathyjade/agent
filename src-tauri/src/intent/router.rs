@@ -51,6 +51,7 @@ impl IntentRouter {
             return IntentResult {
                 name: "chat".to_string(),
                 config: self.default_config.clone(),
+                path: IntentResult::path_for_intent("chat"),
             };
         }
 
@@ -72,9 +73,12 @@ impl IntentRouter {
                 }
             });
 
+        let intent_name = result.intent;
+        let path = IntentResult::path_for_intent(&intent_name);
         IntentResult {
-            name: result.intent,
+            name: intent_name,
             config,
+            path,
         }
     }
 

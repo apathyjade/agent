@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::models::{BoundProjectModel, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SkillRecord, SystemPrompt};
-use crate::execution::types::{ExecutionPlanRecord, PlanStepRecord};
+use crate::orchestrator::plan_types::{ExecutionPlanRecord, PlanStepRecord};
 use crate::pipeline::models::WorkflowRunRecord;
 use crate::error::Result;
 
@@ -31,6 +31,16 @@ impl Database {
         path.push("agent");
         path.push("agent.db");
         path
+    }
+
+    /// Create a temporary in-memory database for testing.
+    /// Only available in test builds.
+    #[cfg(test)]
+    pub fn new_test() -> Result<Self> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        Self::init_tables(&conn)?;
+        Self::migrate_tables(&conn)?;
+        Ok(Self { conn })
     }
 
     fn init_tables(conn: &Connection) -> Result<()> {

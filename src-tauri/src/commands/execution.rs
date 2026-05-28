@@ -1,8 +1,8 @@
 use tauri::{Emitter, State};
 use tokio::sync::mpsc;
 
-use crate::execution::runtime::ExecutionRuntime;
-use crate::execution::types::*;
+use crate::orchestrator::runtime::ExecutionRuntime;
+use crate::orchestrator::plan_types::*;
 use crate::state::AppState;
 
 #[tauri::command]

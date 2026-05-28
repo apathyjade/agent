@@ -4,6 +4,16 @@ pub mod router;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Path selection: which agent system handles this message.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathSelection {
+    /// Use existing agent/loop.rs (fast, simple)
+    Fast,
+    /// Use OrchestratorAgent (deep reasoning, task decomposition)
+    Deep,
+}
+
 /// Serializable config for one intent's behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentConfig {
@@ -40,6 +50,18 @@ fn default_max_iter() -> usize { 10 }
 pub struct IntentResult {
     pub name: String,
     pub config: IntentConfig,
+    pub path: PathSelection,
+}
+
+impl IntentResult {
+    /// Determine path selection based on intent name.
+    /// `chat` → Fast, everything else → Deep.
+    pub fn path_for_intent(name: &str) -> PathSelection {
+        match name {
+            "chat" => PathSelection::Fast,
+            _ => PathSelection::Deep,
+        }
+    }
 }
 
 /// Top-level config section for intent routing.
@@ -118,6 +140,20 @@ fn default_intents() -> std::collections::HashMap<String, IntentConfig> {
             model_id: None,
             max_iterations: None,
             auto_escalate: false,
+        },
+    );
+    m.insert(
+        "deep_think".to_string(),
+        IntentConfig {
+            system_prompt_appendix: Some(
+                "You are a deep reasoning agent. Analyze problems step by step, \
+                 explore multiple approaches, and provide thorough, well-reasoned responses."
+                    .to_string(),
+            ),
+            enabled_tools: None,
+            model_id: None,
+            max_iterations: Some(20),
+            auto_escalate: true,
         },
     );
     m

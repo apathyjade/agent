@@ -5,19 +5,29 @@ use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
 use crate::config::{AppConfig, ModelProvider};
+use crate::critic::agent::CriticAgent;
 use crate::db::repository::Database;
 use crate::environment::alias::AliasManager;
 use crate::environment::resolver::VersionResolver;
 use crate::environment::RuntimeManager;
 use crate::environment::registry::RuntimeRegistry;
-use crate::execution::types::ExecutionHandle;
+use crate::orchestrator::plan_types::ExecutionHandle;
 use crate::intent::router::IntentRouter;
 use crate::lifecycle::LifecycleManager;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
+use crate::orchestrator::agent::OrchestratorAgent;
+use crate::orchestrator::dispatcher::Dispatcher;
 use crate::persona::PersonaManager;
 use crate::skills::SkillManager;
 use crate::tools::registry::ToolRegistry;
+use crate::workers::code_editor::CodeEditorWorker;
+use crate::workers::code_explorer::CodeExplorerWorker;
+use crate::workers::mcp_bridge::MCPBridgeWorker;
+use crate::workers::memory::MemoryWorker;
+use crate::workers::shell::ShellWorker;
+use crate::workers::web::WebWorker;
+use crate::workers::thinker::ThinkerWorker;
 
 pub struct AppState {
     pub app_handle: AppHandle,
@@ -35,6 +45,7 @@ pub struct AppState {
     pub alias_manager: Arc<AliasManager>,
     pub lifecycle: LifecycleManager,
     pub intent_router: Arc<IntentRouter>,
+    pub orchestrator: Arc<OrchestratorAgent>,
     /// 运行中的执行句柄（session_id → ExecutionHandle）
     pub active_executions: Arc<Mutex<HashMap<String, ExecutionHandle>>>,
 }
@@ -84,6 +95,21 @@ impl AppState {
 
         let intent_router = Arc::new(IntentRouter::new(&config.intent_routing, providers_arc.clone()));
 
+        // Build OrchestratorAgent with registered workers
+        let mut dispatcher = Dispatcher::new();
+        dispatcher.register(Box::new(ThinkerWorker::new(providers_arc.clone())));
+        dispatcher.register(Box::new(CodeExplorerWorker::new(providers_arc.clone())));
+        dispatcher.register(Box::new(CodeEditorWorker::new(providers_arc.clone())));
+        dispatcher.register(Box::new(ShellWorker::new(providers_arc.clone())));
+        dispatcher.register(Box::new(WebWorker));
+        dispatcher.register(Box::new(MemoryWorker::new(db_arc.clone())));
+        dispatcher.register(Box::new(MCPBridgeWorker::new(
+            providers_arc.clone(),
+            tools_arc.clone(),
+        )));
+        let critic = Arc::new(CriticAgent::new(providers_arc.clone()));
+        let orchestrator = Arc::new(OrchestratorAgent::new(dispatcher, critic));
+
         Ok(Self {
             app_handle: app_handle.clone(),
             db: db_arc,
@@ -100,6 +126,7 @@ impl AppState {
             alias_manager,
             lifecycle,
             intent_router,
+            orchestrator,
             active_executions: Arc::new(Mutex::new(HashMap::new())),
         })
     }

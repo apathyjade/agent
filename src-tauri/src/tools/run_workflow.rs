@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::error::Result;
-use crate::execution::pipeline_adapter::PipelineAdapter;
+use crate::orchestrator::pipeline_adapter::PipelineAdapter;
 use crate::tools::r#trait::Tool;
 
 /// Tool that loads and describes a YAML workflow.

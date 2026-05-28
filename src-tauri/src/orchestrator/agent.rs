@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Mutex;
 
 use crate::critic::{CriticAgent, CritiqueDecision};
 use crate::error::{AppError, Result};
@@ -57,7 +58,7 @@ pub enum OrchestrationEvent {
 pub struct OrchestratorAgent {
     dispatcher: Dispatcher,
     critic: Arc<CriticAgent>,
-    event_tx: Option<tokio::sync::mpsc::Sender<OrchestrationEvent>>,
+    event_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<OrchestrationEvent>>>>,
     max_critique_rounds: u32,
 }
 
@@ -66,17 +67,18 @@ impl OrchestratorAgent {
         Self {
             dispatcher,
             critic,
-            event_tx: None,
+            event_tx: Arc::new(Mutex::new(None)),
             max_critique_rounds: 3,
         }
     }
 
-    pub fn with_event_channel(
-        mut self,
-        tx: tokio::sync::mpsc::Sender<OrchestrationEvent>,
-    ) -> Self {
-        self.event_tx = Some(tx);
-        self
+    pub fn set_event_tx(&self, tx: tokio::sync::mpsc::Sender<OrchestrationEvent>) {
+        let mut lock = self.event_tx.try_lock();
+        if let Ok(ref mut slot) = lock {
+            **slot = Some(tx);
+        } else {
+            log::warn!("Failed to set event_tx — lock contended");
+        }
     }
 
     pub fn with_max_critique_rounds(mut self, rounds: u32) -> Self {
@@ -89,7 +91,7 @@ impl OrchestratorAgent {
     }
 
     async fn emit(&self, event: OrchestrationEvent) {
-        if let Some(tx) = &self.event_tx {
+        if let Some(tx) = &*self.event_tx.lock().await {
             let _ = tx.send(event).await;
         }
     }
@@ -384,15 +386,18 @@ impl OrchestratorAgent {
     /// Takes a natural language goal, auto-decomposes, executes, and returns the result.
     /// Currently creates a TaskGraph with one Thinker task.
     /// In future phases this will use LLM-based decomposition.
-    pub async fn process_goal(&self, goal: &str, _model_id: Option<&str>) -> Result<String> {
+    pub async fn process_goal(&self, goal: &str, model_id: Option<&str>) -> Result<String> {
         let mut graph = TaskGraph::new("goal_1".into(), goal.into());
 
-        let node = crate::orchestrator::task_graph::TaskNode::new(
+        let mut node = crate::orchestrator::task_graph::TaskNode::new(
             "task_1".into(),
             format!("Process: {}", goal),
             WorkerKind::Thinker,
             goal.into(),
         );
+        if let Some(mid) = model_id {
+            node = node.with_model_id(mid.to_string());
+        }
         graph.add_node(node);
 
         self.execute_graph(&mut graph).await

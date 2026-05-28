@@ -5,8 +5,6 @@ import * as api from '../api/tauri';
 import { type UISlice, createUISlice } from './uiSlice';
 import { type SessionSlice, createSessionSlice } from './sessionSlice';
 import { type ModelSlice, createModelSlice } from './modelSlice';
-import { type ToolSlice, createToolSlice } from './toolSlice';
-import { type PromptSlice, createPromptSlice } from './promptSlice';
 import { type SkillSlice, createSkillSlice } from './skillSlice';
 import { type McpSlice, createMcpSlice } from './mcpSlice';
 import { type MemorySlice, createMemorySlice } from './memorySlice';
@@ -22,7 +20,7 @@ export interface StreamSlice {
   sendMessageStream: (content: string, toolsEnabled?: boolean, activePersonaId?: string) => Promise<void>;
 }
 
-export type AppState = UISlice & SessionSlice & ModelSlice & ToolSlice & PromptSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & LifecycleSlice & StreamSlice & {
+export type AppState = UISlice & SessionSlice & ModelSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & LifecycleSlice & StreamSlice & {
   summaries: SessionSummary[];
   fetchSummaries: (sessionId: string) => Promise<void>;
   activePersonaId: string | null;
@@ -34,8 +32,6 @@ export const useStore = create<AppState>()((set, get, store) => ({
   ...createUISlice(set, get, store),
   ...createSessionSlice(set, get, store),
   ...createModelSlice(set, get, store),
-  ...createToolSlice(set, get, store),
-  ...createPromptSlice(set, get, store),
   ...createSkillSlice(set, get, store),
   ...createMcpSlice(set, get, store),
   ...createMemorySlice(set, get, store),

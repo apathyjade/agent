@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent, ExecutionLogEntry } from '../types';
+import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent, ExecutionLogEntry, ToolInfo, SystemPrompt } from '../types';
 import * as api from '../api/tauri';
 
 export interface SessionSlice {
@@ -36,12 +36,26 @@ export interface SessionSlice {
   pauseExecution: (sessionId: string) => Promise<void>;
   resumeExecution: (sessionId: string) => Promise<void>;
   cancelExecution: (sessionId: string) => Promise<void>;
+
+  // ── Tools state (merged from toolSlice) ──
+  tools: ToolInfo[];
+  fetchTools: () => Promise<void>;
+  toggleTool: (name: string, enabled: boolean) => Promise<void>;
+
+  // ── System prompts state (merged from promptSlice) ──
+  systemPrompts: SystemPrompt[];
+  fetchSystemPrompts: () => Promise<void>;
+  createSystemPrompt: (name: string, content: string, isDefault: boolean) => Promise<void>;
+  deleteSystemPrompt: (id: string) => Promise<void>;
+  setDefaultSystemPrompt: (id: string) => Promise<void>;
 }
 
 export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set, get) => ({
   sessions: [],
   currentSession: null,
   messages: [],
+  tools: [],
+  systemPrompts: [],
   sessionMode: 'chat',
   executionStatus: { type: 'idle' },
   activePlan: null,
@@ -267,6 +281,77 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       set({ activePlan: null, executionStatus: { type: 'idle' }, planProgress: null });
     } catch (err) {
       console.error('Failed to cancel:', err);
+    }
+  },
+
+  // ── Tools (merged from toolSlice) ──
+
+  fetchTools: async () => {
+    try {
+      const tools = await api.listTools();
+      set({ tools });
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  toggleTool: async (name, enabled) => {
+    try {
+      await api.toggleTool(name, enabled);
+      set((state: any) => ({
+        tools: state.tools.map((t: any) =>
+          t.name === name ? { ...t, enabled } : t
+        ),
+      }));
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  // ── System prompts (merged from promptSlice) ──
+
+  fetchSystemPrompts: async () => {
+    try {
+      const prompts = await api.listSystemPrompts();
+      set({ systemPrompts: prompts });
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  createSystemPrompt: async (name, content, isDefault) => {
+    try {
+      const prompt = await api.createSystemPrompt(name, content, isDefault);
+      set((state: any) => ({
+        systemPrompts: [prompt, ...state.systemPrompts],
+      }));
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  deleteSystemPrompt: async (id) => {
+    try {
+      await api.deleteSystemPrompt(id);
+      set((state: any) => ({
+        systemPrompts: state.systemPrompts.filter((p: any) => p.id !== id),
+      }));
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  setDefaultSystemPrompt: async (id) => {
+    try {
+      await api.setDefaultSystemPrompt(id);
+      set((state: any) => ({
+        systemPrompts: state.systemPrompts.map((p: any) => ({
+          ...p,
+          is_default: p.id === id,
+        })),
+      }));
+    } catch (err) {
+      set({ error: String(err) });
     }
   },
 });

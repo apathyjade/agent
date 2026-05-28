@@ -34,10 +34,18 @@ pub struct TaskNode {
     pub error: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// Model ID to use for this task (None = use default).
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 impl TaskNode {
-    pub fn new(id: String, label: String, worker_kind: WorkerKind, instruction: String) -> Self {
+    pub fn new(
+        id: String,
+        label: String,
+        worker_kind: WorkerKind,
+        instruction: String,
+    ) -> Self {
         Self {
             id,
             label,
@@ -47,7 +55,13 @@ impl TaskNode {
             result_summary: None,
             error: None,
             duration_ms: None,
+            model_id: None,
         }
+    }
+
+    pub fn with_model_id(mut self, model_id: String) -> Self {
+        self.model_id = Some(model_id);
+        self
     }
 
     pub fn to_sub_task(&self) -> SubTask {
@@ -56,7 +70,7 @@ impl TaskNode {
             label: self.label.clone(),
             instruction: self.instruction.clone(),
             worker_kind: self.worker_kind.clone(),
-            model_id: None,
+            model_id: self.model_id.clone(),
             max_tokens: None,
             temperature: None,
             context: None,

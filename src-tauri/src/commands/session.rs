@@ -7,9 +7,10 @@ use crate::api::types::{Message, MessageRole, ToolCall};
 use crate::commands::{StreamChunk, ToolCallEvent};
 use crate::db::models::{Session as DbSession, Message as DbMessage};
 use crate::error::{AppError, Result};
-use crate::execution::planner::LlmPlanner;
-use crate::execution::runtime::ExecutionRuntime;
-use crate::execution::types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
+use crate::orchestrator::planner::LlmPlanner;
+use crate::orchestrator::runtime::ExecutionRuntime;
+use crate::orchestrator::plan_types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
+use crate::intent::PathSelection;
 use crate::persona::PersonaResolution;
 use crate::state::AppState;
 
@@ -380,7 +381,42 @@ pub async fn send_message_stream(
         let entry = ExecutionLogEntry::new(level, step, message);
         let _ = app_handle.emit("execution_log", entry);
     };
-    emit_log(&app_handle, "info", "intent", format!("LLM 分类结果: intent={}, should_escalate={}", _intent_result.name, should_escalate));
+    emit_log(&app_handle, "info", "intent", format!("LLM 分类结果: intent={}, path={:?}, should_escalate={}", _intent_result.name, _intent_result.path, should_escalate));
+
+    // ── Path Selection: Deep path → OrchestratorAgent ──
+    if _intent_result.path == PathSelection::Deep {
+        emit_log(&app_handle, "info", "planner", format!("路由到深度思考: {}", _intent_result.name));
+        let _ = app_handle.emit("stream_chunk", StreamChunk {
+            content: String::new(), done: false, tool_calls: None,
+            phase: Some("deep_think".to_string()),
+        });
+
+        // Save assistant message placeholder and delegate to orchestrator with session's model
+        let model_id = _intent_result.config.model_id.clone()
+            .or_else(|| Some(sess.model_id.clone()));
+        let result = state.orchestrator.process_goal(&content, model_id.as_deref()).await?;
+
+        // Save the result as assistant message
+        let assistant_msg = DbMessage {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.clone(),
+            role: "assistant".to_string(),
+            content: result.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+            tokens: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let db = state.db.lock().await;
+        db.insert_message(&assistant_msg)?;
+        drop(db);
+
+        let _ = app_handle.emit("stream_chunk", StreamChunk {
+            content: result.clone(), done: true, tool_calls: None,
+            phase: Some("done".to_string()),
+        });
+        return Ok(result);
+    }
 
     // ── Autonomous mode: check if this intent should auto-escalate ──
     if should_escalate {
@@ -405,7 +441,7 @@ pub async fn send_message_stream(
                 {
                     let db = state.db.lock().await;
                     let status_json = serde_json::to_string(
-                        &crate::execution::types::ExecStatus::Running { step_index: 0, started_at: Utc::now().to_rfc3339() }
+                        &crate::orchestrator::plan_types::ExecStatus::Running { step_index: 0, started_at: Utc::now().to_rfc3339() }
                     ).unwrap_or_default();
                     let _ = db.update_session_execution(&session_id, "autonomous", &status_json, Some(&plan_id));
                 }

@@ -1,13 +1,11 @@
 ﻿pub mod api;
 pub mod agent;
 pub mod commands;
-pub mod commands_provider;
 pub mod config;
 pub mod critic;
 pub mod db;
 pub mod environment;
 pub mod error;
-pub mod execution;
 pub mod intent;
 pub mod keychain;
 pub mod lifecycle;
@@ -220,12 +218,13 @@ pub fn run() {
             commands::get_persona_memories,
             commands::bind_persona_project,
             commands::unbind_persona_project,
-            commands_provider::list_providers_cmd,
-            commands_provider::setup_provider,
-            commands_provider::update_provider_config,
-            commands_provider::remove_provider,
-            commands_provider::get_provider_models,
-            commands_provider::get_available_models,
+            commands::list_providers_cmd,
+            commands::setup_provider,
+            commands::update_provider_config,
+            commands::remove_provider,
+            commands::get_provider_models,
+            commands::get_available_models,
+            commands::orchestrator::orchestrate_message,
             commands::window::set_window_position,
         ])
         .run(tauri::generate_context!())

@@ -1,7 +1,10 @@
 pub mod code_editor;
 pub mod code_explorer;
+pub mod mcp_bridge;
+pub mod memory;
 pub mod shell;
 pub mod thinker;
+pub mod web;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
