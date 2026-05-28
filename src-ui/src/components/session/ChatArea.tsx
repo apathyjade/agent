@@ -7,7 +7,6 @@ import {
   ArrowDown,
   FileText,
 } from 'lucide-react';
-import { Select } from 'antd';
 import { useStore } from '../../store';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
@@ -93,9 +92,7 @@ export function ChatArea() {
   const activeToolCalls = useStore((s) => s.activeToolCalls);
   const currentPhase = useStore((s) => s.currentPhase);
   const sendMessageStream = useStore((s) => s.sendMessageStream);
-  const models = useStore((s) => s.models);
   const personas = useStore((s) => s.personas);
-  const updateSessionModel = useStore((s) => s.updateSessionModel);
   const setError = useStore((s) => s.setError);
   const summaries = useStore((s) => s.summaries);
   const fetchSummaries = useStore((s) => s.fetchSummaries);
@@ -153,6 +150,8 @@ export function ChatArea() {
     if (currentSession?.id) fetchSummaries(currentSession.id);
   }, [currentSession?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+
+
   // Esc key to cancel autonomous execution
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -183,37 +182,11 @@ export function ChatArea() {
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 transition-colors">
-      {/* Top status bar */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100 dark:border-gray-700 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <Select
-            value={currentSession.model_id}
-            onChange={async (value) => {
-              await updateSessionModel(currentSession.id, value);
-            }}
-            size="small"
-            variant="borderless"
-            popupMatchSelectWidth={false}
-            className="text-xs"
-            options={models
-              .filter((m) => m.enabled)
-              .map((m) => ({
-                value: m.id,
-                label: m.display_name,
-                provider: m.provider,
-              }))}
-            optionRender={(option) => (
-              <div className="flex items-center justify-between gap-3">
-                <span>{option.data.label}</span>
-                <span className="text-xs text-gray-400 opacity-60">
-                  {option.data.provider}
-                </span>
-              </div>
-            )}
-            notFoundContent="没有可用模型"
-          />
+      {/* Top status bar — badges only */}
+      <div className="flex items-center justify-between px-6 py-2.5 border-b border-gray-100 dark:border-gray-700 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm flex-shrink-0">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
           {currentSession.system_prompt && (
-            <span className="px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs rounded-lg">
+            <span className="px-2 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[11px] rounded-md leading-relaxed whitespace-nowrap">
               提示词已加载
             </span>
           )}
@@ -222,27 +195,18 @@ export function ChatArea() {
               ? personas.find(p => p.id === currentSession.persona_id)
               : null;
             return sessionPersona ? (
-              <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs rounded-lg">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[11px] rounded-md leading-relaxed whitespace-nowrap">
                 <span>{sessionPersona.emoji}</span>
                 <span>{sessionPersona.name}</span>
               </span>
             ) : null;
           })()}
-          {(() => {
-            const cfg = currentSession.config ? (() => { try { return JSON.parse(currentSession.config); } catch { return null; } })() : null;
-            const tools = cfg?.enabled_tools;
-            return tools && tools.length > 0 ? (
-              <span className="text-xs text-gray-400 dark:text-gray-500" title={tools.join(', ')}>
-                {tools.length} tools
-              </span>
-            ) : null;
-          })()}
         </div>
-        <div className="flex items-center gap-4 text-xs text-gray-400 dark:text-gray-500">
+        <div className="flex items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500 flex-shrink-0 ml-3">
           <span>{messages.length} 条消息</span>
           {isStreaming && (
             <span className="flex items-center gap-1 text-purple-600">
-              <Loader2 size={12} className="animate-spin" />
+              <Loader2 size={11} className="animate-spin" />
               生成中...
             </span>
           )}
@@ -413,12 +377,9 @@ export function ChatArea() {
       <PlanTimeline />
 
       {/* Input area */}
-      <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 px-6 py-4 flex-shrink-0 transition-colors">
-        <div className="max-w-4xl mx-auto">
+      <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 flex-shrink-0 transition-colors">
+        <div className="max-w-4xl mx-auto px-6 py-3">
           <ChatInput onSend={handleChatSend} disabled={isStreaming} />
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-2 text-center">
-            AI 可能会产生不准确的信息，请验证重要信息
-          </p>
         </div>
       </div>
     </div>

@@ -9,6 +9,17 @@ import { SkillDetailPanel } from '../management/SkillDetailPanel';
 import { SkillInstallDialog } from '../management/SkillInstallDialog';
 import { DirectoryPicker } from '../common/DirectoryPicker';
 
+// OS-specific default workspace path
+// Based on research: ~/Code is the most common convention (HN 2024 survey),
+// avoids Documents/ iCloud/OneDrive sync issues (GitHub Desktop problem),
+// and is cross-platform consistent vs JetBrains' IdeaProjects brand path.
+function getDefaultWorkspacePath(): string {
+  const ua = navigator.platform.toLowerCase();
+  if (ua.includes('win')) return '%USERPROFILE%\\Code';
+  if (ua.includes('mac')) return '~/Code';
+  return '~/Code';
+}
+
 export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills' | 'runtime' | 'conversation'>('providers');
   const {
@@ -44,6 +55,9 @@ export function SettingsPage() {
   const [proxyUrl, setProxyUrl] = useState('');
   const [savedProxyUrl, setSavedProxyUrl] = useState('');
 
+  const [defaultWorkspace, setDefaultWorkspace] = useState('');
+  const [savedWorkspace, setSavedWorkspace] = useState('');
+
   const getSetting = async (key: string): Promise<string | null> => {
     try {
       const settings = await api.getSettings();
@@ -68,6 +82,18 @@ export function SettingsPage() {
     setSavedProxyUrl(val || '');
   };
 
+  const loadWorkspaceSetting = async () => {
+    const val = await getSetting('default_workspace');
+    const resolved = val || getDefaultWorkspacePath();
+    setDefaultWorkspace(resolved);
+    setSavedWorkspace(resolved);
+    localStorage.setItem('agent_default_workspace', resolved);
+    // Persist the OS default if no setting exists yet
+    if (!val) {
+      await api.updateSettings('default_workspace', resolved);
+    }
+  };
+
   useEffect(() => {
     fetchProviders();
     fetchSystemPrompts();
@@ -75,6 +101,7 @@ export function SettingsPage() {
     fetchSkills();
     fetchInstallDir();
     loadProxySetting();
+    loadWorkspaceSetting();
     fetchLifecycleConfig();
   }, []);
 
@@ -173,12 +200,27 @@ export function SettingsPage() {
     custom: { hint: '自定义 OpenAI 兼容 API，可设置任意 Base URL' },
   };
 
-  const tabs = [
-    { id: 'providers' as const, icon: <Cpu size={16} />, label: '模型提供商' },
-    { id: 'prompts' as const, icon: <FileText size={16} />, label: '提示词' },
-    { id: 'skills' as const, icon: <BrainCircuit size={16} />, label: '技能' },
-    { id: 'runtime' as const, icon: <Server size={16} />, label: '运行环境' },
-    { id: 'conversation' as const, icon: <MessageSquare size={16} />, label: '对话管理' },
+  type TabGroup = {
+    label: string;
+    items: { id: string; icon: React.ReactNode; label: string }[];
+  };
+
+  const tabGroups: TabGroup[] = [
+    {
+      label: '基础配置',
+      items: [
+        { id: 'providers', icon: <Cpu size={16} />, label: '模型提供商' },
+        { id: 'conversation', icon: <MessageSquare size={16} />, label: '对话管理' },
+      ],
+    },
+    {
+      label: 'Agent 配置',
+      items: [
+        { id: 'prompts', icon: <FileText size={16} />, label: '提示词' },
+        { id: 'skills', icon: <BrainCircuit size={16} />, label: '技能' },
+        { id: 'runtime', icon: <Server size={16} />, label: '运行环境' },
+      ],
+    },
   ];
 
   const renderTabContent = () => {
@@ -262,11 +304,6 @@ export function SettingsPage() {
                   ) : (
                     <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">未配置</span>
                   )}
-                  {/* Rig backend badge */}
-                  <span className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
-                    <Sparkles size={11} />
-                    Rig
-                  </span>
                 </div>
 
                 {/* Provider-specific hint */}
@@ -331,10 +368,6 @@ export function SettingsPage() {
               <div className="space-y-3">
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">配置 {selected.name}</h3>
-                  <span className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
-                    <Sparkles size={11} />
-                    Rig
-                  </span>
                 </div>
 
                 {/* Provider hint */}
@@ -419,10 +452,6 @@ export function SettingsPage() {
               <div className="space-y-3">
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">编辑 {selected.name}</h3>
-                  <span className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
-                    <Sparkles size={11} />
-                    Rig
-                  </span>
                 </div>
                 {selected.requires_api_key && (
                   <div>
@@ -679,6 +708,41 @@ export function SettingsPage() {
   function renderConversationTab() {
     return (
       <div className="space-y-4">
+        {/* Default workspace */}
+        <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+          <div className="mb-3">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">默认工作空间</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">新建会话时自动关联的默认工作目录（基于系统自动生成，仅可修改）</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                try {
+                  const { open } = await import('@tauri-apps/plugin-dialog');
+                  const selected = await open({ directory: true, multiple: false, title: '选择默认工作空间目录' });
+                  if (selected) {
+                    setDefaultWorkspace(selected as string);
+                    localStorage.setItem('agent_default_workspace', selected as string);
+                    await api.updateSettings('default_workspace', selected as string);
+                    setSavedWorkspace(selected as string);
+                  }
+                } catch {
+                  // Not in Tauri
+                }
+              }}
+              className="flex-1 flex items-center gap-2 px-3 py-2 text-xs border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10 text-amber-800 dark:text-amber-200 hover:border-amber-300 dark:hover:border-amber-700 rounded-lg transition-all cursor-pointer"
+              title="点击修改默认工作空间目录"
+            >
+              <FolderOpen size={16} className="flex-shrink-0 text-amber-500" />
+              <span className="truncate">{defaultWorkspace}</span>
+            </button>
+            <span className="text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0">仅可修改</span>
+          </div>
+          {savedWorkspace && (
+            <p className="text-[11px] text-green-600 dark:text-green-400 mt-1.5">已保存</p>
+          )}
+        </div>
+
         {/* Auto-title */}
         <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
           <div className="flex items-center justify-between mb-1">
@@ -769,25 +833,32 @@ export function SettingsPage() {
       subtitle="模型提供商、提示词、技能和运行环境配置"
     >
       <Row style={{ height: '100%' }}>
-        {/* Sidebar tabs — vertical */}
+        {/* Sidebar tabs — vertical with categories */}
         <Row.Item $width={176} $fixed>
-          <div style={{ borderRight: '1px solid #e5e7eb', paddingRight: 24 }} className="dark:border-gray-700 h-full">
-            <div className="space-y-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-left ${
-                    activeTab === tab.id
-                      ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 shadow-sm'
-                      : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700/50 hover:text-gray-700 dark:hover:text-gray-300'
-                  }`}
-                >
-                  {tab.icon}
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+          <div style={{ borderRight: '1px solid #e5e7eb', paddingRight: 24 }} className="dark:border-gray-700 h-full overflow-y-auto">
+            {tabGroups.map((group) => (
+              <div key={group.label} className="mb-4 last:mb-0">
+                <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-3 mb-1.5">
+                  {group.label}
+                </div>
+                <div className="space-y-0.5">
+                  {group.items.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all text-left ${
+                        activeTab === tab.id
+                          ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 shadow-sm'
+                          : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700/50 hover:text-gray-700 dark:hover:text-gray-300'
+                      }`}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </Row.Item>
 

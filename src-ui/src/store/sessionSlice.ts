@@ -24,6 +24,7 @@ export interface SessionSlice {
   newChat: () => void;
   sendMessage: (content: string) => Promise<void>;
   updateSessionConfig: (id: string, config: Record<string, unknown>) => Promise<void>;
+  updateSessionWorkspace: (id: string, workspacePath: string | null) => Promise<void>;
 
   // Execution actions
   setSessionMode: (mode: SessionMode) => void;
@@ -76,6 +77,19 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
     get().setLoading(true);
     try {
       const conv = await api.createSession(title, modelId, systemPrompt, personaId);
+
+      // Apply default workspace setting if present
+      try {
+        const settings = await api.getSettings();
+        const ws = settings['default_workspace'];
+        if (ws) {
+          const config = { workspace_path: ws };
+          const configStr = JSON.stringify(config);
+          await api.updateSessionConfig(conv.id, configStr);
+          conv.config = configStr;
+        }
+      } catch { /* ignore settings errors */ }
+
       set((state: any) => ({
         sessions: [conv, ...state.sessions],
         currentSession: conv,
@@ -239,6 +253,19 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       executionLogs: [...state.executionLogs, entry].slice(-200),
       messages: [...state.messages, logMsg],
     }));
+  },
+
+  updateSessionWorkspace: async (id, workspacePath) => {
+    const state = get() as any;
+    const session = state.sessions.find((s: any) => s.id === id);
+    if (!session) return;
+    const config = session.config ? (() => { try { return JSON.parse(session.config); } catch { return {} as Record<string, unknown>; } })() : {} as Record<string, unknown>;
+    if (workspacePath) {
+      config.workspace_path = workspacePath;
+    } else {
+      delete config.workspace_path;
+    }
+    await get().updateSessionConfig(id, config);
   },
 
   clearExecutionLogs: () => set({ executionLogs: [] }),
