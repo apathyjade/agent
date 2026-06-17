@@ -38,7 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 thiserror = "2"
 futures = "0.3"
-config = { version = "0.14", features = ["toml"] }
+config = { version = "0.15", features = ["toml"] }
 regex = "1"
 urlencoding = "2.1"
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
