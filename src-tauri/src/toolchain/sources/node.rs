@@ -14,11 +14,13 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::environment::http_client::get_http_client;
-use crate::environment::node_integration::{ExternalNodeManager, ExternalManager, NodeIntegrationStrategy};
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::http_client::get_http_client;
+use crate::toolchain::node_integration::{
+    ExternalManager, ExternalNodeManager, NodeIntegrationStrategy,
+};
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 // ── Download Mirror ──
 
@@ -121,20 +123,32 @@ impl NodeVersionSource {
 
     fn platform_file_pattern(&self) -> &'static str {
         #[cfg(target_os = "windows")]
-        { "win-x64" }
+        {
+            "win-x64"
+        }
         #[cfg(target_os = "linux")]
-        { "linux-x64" }
+        {
+            "linux-x64"
+        }
         #[cfg(target_os = "macos")]
-        { "darwin-arm64" }
+        {
+            "darwin-arm64"
+        }
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        { "linux-x64" }
+        {
+            "linux-x64"
+        }
     }
 
     fn archive_ext(&self) -> &'static str {
         #[cfg(target_os = "windows")]
-        { "zip" }
+        {
+            "zip"
+        }
         #[cfg(not(target_os = "windows"))]
-        { "tar.gz" }
+        {
+            "tar.gz"
+        }
     }
 
     /// Fetch versions from the official Node.js dist index.
@@ -162,7 +176,11 @@ impl NodeVersionSource {
                 has_platform_file && is_stable
             })
             .filter_map(|e| {
-                let version = e.version.strip_prefix('v').unwrap_or(&e.version).to_string();
+                let version = e
+                    .version
+                    .strip_prefix('v')
+                    .unwrap_or(&e.version)
+                    .to_string();
                 let lts = e.lts.as_str().map(|s| s.to_string());
                 let url = self.mirror.download_url(&version, platform, ext);
 
@@ -185,8 +203,16 @@ impl NodeVersionSource {
 
         // Sort: newest version first (semver comparison)
         versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a.version.split('.').filter_map(|s| s.parse().ok()).collect();
-            let b_parts: Vec<u64> = b.version.split('.').filter_map(|s| s.parse().ok()).collect();
+            let a_parts: Vec<u64> = a
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let b_parts: Vec<u64> = b
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
             for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
                 if av != bv {
                     return bv.cmp(av);
@@ -201,14 +227,15 @@ impl NodeVersionSource {
     /// Fetch versions from the best available external manager.
     async fn fetch_from_external_manager(&self) -> Result<Vec<RuntimeVersion>> {
         let managers = ExternalNodeManager::detect_all().await;
-        let available: Vec<ExternalManager> = managers.into_iter()
+        let available: Vec<ExternalManager> = managers
+            .into_iter()
             .filter(|(_, available)| *available)
             .map(|(mgr, _)| mgr)
             .collect();
 
         if available.is_empty() {
             return Err(crate::error::AppError::NotFound(
-                "未检测到外部 Node.js 版本管理器 (fnm/volta/nvm)".into()
+                "未检测到外部 Node.js 版本管理器 (fnm/volta/nvm)".into(),
             ));
         }
 
@@ -217,7 +244,11 @@ impl NodeVersionSource {
         for manager in &available {
             let versions = ExternalNodeManager::list_manager_versions(manager).await;
             for ver in versions {
-                let url = self.mirror.download_url(&ver, self.platform_file_pattern(), self.archive_ext());
+                let url = self.mirror.download_url(
+                    &ver,
+                    self.platform_file_pattern(),
+                    self.archive_ext(),
+                );
                 combined.push(RuntimeVersion {
                     runtime_type: RuntimeType::Node,
                     version: ver.clone(),
@@ -237,7 +268,7 @@ impl NodeVersionSource {
 
         if combined.is_empty() {
             return Err(crate::error::AppError::NotFound(
-                "外部管理器已检测到但没有可用的 Node.js 版本".into()
+                "外部管理器已检测到但没有可用的 Node.js 版本".into(),
             ));
         }
 
@@ -279,7 +310,8 @@ impl NodeVersionSource {
             .and_then(|line| line.split_whitespace().next())
             .ok_or_else(|| {
                 crate::error::AppError::NotFound(format!(
-                    "未在 SHASUMS256.txt 中找到 {} 的校验和", filename
+                    "未在 SHASUMS256.txt 中找到 {} 的校验和",
+                    filename
                 ))
             })?;
 
@@ -293,9 +325,10 @@ impl NodeVersionSource {
         };
 
         if actual_hash != expected_hash {
-            return Err(crate::error::AppError::InvalidInput(
-                format!("SHA256 校验失败: 期望 {}，实际 {}", expected_hash, actual_hash)
-            ));
+            return Err(crate::error::AppError::InvalidInput(format!(
+                "SHA256 校验失败: 期望 {}，实际 {}",
+                expected_hash, actual_hash
+            )));
         }
 
         log::info!("SHA256 校验通过: {}", filename);
@@ -330,12 +363,8 @@ impl VersionSource for NodeVersionSource {
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
         match &self.strategy {
-            NodeIntegrationStrategy::Standalone => {
-                self.fetch_from_nodejs_org().await
-            }
-            NodeIntegrationStrategy::WrapExisting => {
-                self.fetch_from_external_manager().await
-            }
+            NodeIntegrationStrategy::Standalone => self.fetch_from_nodejs_org().await,
+            NodeIntegrationStrategy::WrapExisting => self.fetch_from_external_manager().await,
             NodeIntegrationStrategy::Hybrid => {
                 // Try external managers first, fall back to self-managed
                 let external_result = self.fetch_from_external_manager().await;
@@ -354,10 +383,20 @@ impl VersionSource for NodeVersionSource {
                         }
                         // Resorted
                         ext_versions.sort_by(|a, b| {
-                            let a_p: Vec<u64> = a.version.split('.').filter_map(|s| s.parse().ok()).collect();
-                            let b_p: Vec<u64> = b.version.split('.').filter_map(|s| s.parse().ok()).collect();
+                            let a_p: Vec<u64> = a
+                                .version
+                                .split('.')
+                                .filter_map(|s| s.parse().ok())
+                                .collect();
+                            let b_p: Vec<u64> = b
+                                .version
+                                .split('.')
+                                .filter_map(|s| s.parse().ok())
+                                .collect();
                             for (av, bv) in a_p.iter().zip(b_p.iter()) {
-                                if av != bv { return bv.cmp(av); }
+                                if av != bv {
+                                    return bv.cmp(av);
+                                }
                             }
                             b_p.len().cmp(&a_p.len())
                         });

@@ -1,7 +1,7 @@
 // ── Project Detector Tests ──
 
-use agent_lib::environment::project::ProjectDetector;
-use agent_lib::environment::RuntimeType;
+use agent_lib::project_env::ProjectDetector;
+use agent_lib::toolchain::RuntimeType;
 
 fn create_temp_dir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -19,7 +19,10 @@ async fn test_parse_nvmrc() {
     assert!(result.is_ok());
     let scan = result.unwrap();
     assert!(!scan.requirements.is_empty(), "Should detect .nvmrc");
-    let has_node = scan.requirements.iter().any(|r| r.runtime_type == RuntimeType::Node);
+    let has_node = scan
+        .requirements
+        .iter()
+        .any(|r| r.runtime_type == RuntimeType::Node);
     assert!(has_node, "Should detect Node requirement");
 }
 
@@ -31,7 +34,10 @@ async fn test_parse_python_version() {
     let result = ProjectDetector::scan(&dir).await;
     assert!(result.is_ok());
     let scan = result.unwrap();
-    let has_python = scan.requirements.iter().any(|r| r.runtime_type == RuntimeType::Python);
+    let has_python = scan
+        .requirements
+        .iter()
+        .any(|r| r.runtime_type == RuntimeType::Python);
     assert!(has_python, "Should detect Python requirement");
 }
 
@@ -58,23 +64,25 @@ async fn test_parse_go_mod() {
     let result = ProjectDetector::scan(&dir).await;
     assert!(result.is_ok());
     let scan = result.unwrap();
-    let has_go = scan.requirements.iter().any(|r| r.runtime_type == RuntimeType::Go);
+    let has_go = scan
+        .requirements
+        .iter()
+        .any(|r| r.runtime_type == RuntimeType::Go);
     assert!(has_go, "Should detect Go requirement");
 }
 
 #[tokio::test]
 async fn test_parse_package_json_engines() {
     let (dir, _guard) = create_temp_dir("test_package_json");
-    std::fs::write(
-        dir.join("package.json"),
-        r#"{"engines": {"node": ">=18"}}"#,
-    )
-    .unwrap();
+    std::fs::write(dir.join("package.json"), r#"{"engines": {"node": ">=18"}}"#).unwrap();
 
     let result = ProjectDetector::scan(&dir).await;
     assert!(result.is_ok());
     let scan = result.unwrap();
-    let has_node = scan.requirements.iter().any(|r| r.runtime_type == RuntimeType::Node);
+    let has_node = scan
+        .requirements
+        .iter()
+        .any(|r| r.runtime_type == RuntimeType::Node);
     assert!(has_node, "Should detect Node from package.json engines");
 }
 
@@ -85,7 +93,10 @@ async fn test_scan_empty_directory() {
     let result = ProjectDetector::scan(&dir).await;
     assert!(result.is_ok());
     let scan = result.unwrap();
-    assert!(scan.requirements.is_empty(), "Empty dir should have no requirements");
+    assert!(
+        scan.requirements.is_empty(),
+        "Empty dir should have no requirements"
+    );
 }
 
 #[tokio::test]
@@ -100,6 +111,9 @@ async fn test_cargo_toml_implies_rust() {
     let result = ProjectDetector::scan(&dir).await;
     assert!(result.is_ok());
     let scan = result.unwrap();
-    let has_rust = scan.requirements.iter().any(|r| r.runtime_type == RuntimeType::Rust);
+    let has_rust = scan
+        .requirements
+        .iter()
+        .any(|r| r.runtime_type == RuntimeType::Rust);
     assert!(has_rust, "Cargo.toml should imply Rust requirement");
 }

@@ -7,9 +7,9 @@
 
 use async_trait::async_trait;
 
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 pub struct RubyVersionSource;
 

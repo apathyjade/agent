@@ -1,5 +1,5 @@
+use crate::toolchain::RuntimeType;
 use serde::{Deserialize, Serialize};
-use crate::environment::RuntimeType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionManager {
@@ -17,7 +17,11 @@ pub struct VersionManager {
 }
 
 fn check_command(cmd: &str, args: &[&str]) -> Option<(String, String)> {
-    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let which = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
     let which_output = std::process::Command::new(which)
         .arg(cmd)
         .stdout(std::process::Stdio::piped())
@@ -45,7 +49,11 @@ fn check_command(cmd: &str, args: &[&str]) -> Option<(String, String)> {
         .unwrap_or("")
         .trim()
         .to_string();
-    let version = if version.is_empty() { None } else { Some(version) };
+    let version = if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    };
 
     Some((path, version.unwrap_or_else(|| "未知".to_string())))
 }
@@ -95,11 +103,19 @@ fn detect_node_managers() -> Vec<VersionManager> {
     }
 
     // nvm (macOS/Linux) / nvm-windows
-    let nvm_cmd = if cfg!(target_os = "windows") { "nvm" } else { "nvm" };
+    let nvm_cmd = if cfg!(target_os = "windows") {
+        "nvm"
+    } else {
+        "nvm"
+    };
     if let Some((path, version)) = check_command(nvm_cmd, &["--version"]) {
         managers.push(VersionManager {
             id: "nvm".to_string(),
-            display_name: if cfg!(target_os = "windows") { "nvm-windows".to_string() } else { "nvm".to_string() },
+            display_name: if cfg!(target_os = "windows") {
+                "nvm-windows".to_string()
+            } else {
+                "nvm".to_string()
+            },
             runtime_type: RuntimeType::Node,
             installed: true,
             install_path: Some(path),
@@ -116,7 +132,11 @@ fn detect_node_managers() -> Vec<VersionManager> {
     } else {
         managers.push(VersionManager {
             id: "nvm".to_string(),
-            display_name: if cfg!(target_os = "windows") { "nvm-windows".to_string() } else { "nvm".to_string() },
+            display_name: if cfg!(target_os = "windows") {
+                "nvm-windows".to_string()
+            } else {
+                "nvm".to_string()
+            },
             runtime_type: RuntimeType::Node,
             installed: false,
             install_path: None,

@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use semver::{Version, VersionReq};
 
-use crate::environment::registry::RuntimeRegistry;
-use crate::environment::RuntimeType;
 use crate::error::{AppError, Result};
+use crate::toolchain::registry::RuntimeRegistry;
+use crate::toolchain::RuntimeType;
 
 /// Resolves version specifications (e.g. "20", ">=18", "lts", "stable") to exact versions.
 pub struct VersionResolver {
@@ -98,7 +98,7 @@ impl VersionResolver {
 
         // Handle semver ranges: ">=18", "20.x", "^20.0.0", ">=18 <19", etc.
         if let Ok(req) = VersionReq::parse(spec) {
-            let matching: Vec<&crate::environment::registry::RuntimeVersion> = versions
+            let matching: Vec<&crate::toolchain::registry::RuntimeVersion> = versions
                 .iter()
                 .filter(|v| {
                     Version::parse(&v.version)
@@ -138,14 +138,20 @@ impl VersionResolver {
             "lts" => {
                 // Check if version has an LTS tag in the registry
                 let versions = self.registry.get_versions(rt).await?;
-                return Ok(versions.iter().any(|v| v.version == version && v.lts.is_some()));
+                return Ok(versions
+                    .iter()
+                    .any(|v| v.version == version && v.lts.is_some()));
             }
             _ => {}
         }
 
         // Major-only: "20" matches "20.18.3"
         if let Ok(major) = spec.parse::<u64>() {
-            if let Some(v_major) = version.split('.').next().and_then(|s| s.parse::<u64>().ok()) {
+            if let Some(v_major) = version
+                .split('.')
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+            {
                 if v_major == major {
                     return Ok(true);
                 }

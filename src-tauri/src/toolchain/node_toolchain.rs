@@ -53,17 +53,16 @@ pub struct SemverReq {
 
 impl SemverReq {
     pub fn new(raw: &str) -> Self {
-        Self { raw: raw.to_string() }
+        Self {
+            raw: raw.to_string(),
+        }
     }
 
     /// Very basic semver comparison: checks if `version` satisfies `raw`.
     /// Supports: ">=X.Y.Z", "^X.Y.Z", "~X.Y.Z", ">X.Y.Z", "<X.Y.Z", "X.Y.Z"
     pub fn matches(&self, version: &str) -> bool {
         let raw = self.raw.trim();
-        let ver_parts: Vec<u64> = version
-            .split('.')
-            .filter_map(|s| s.parse().ok())
-            .collect();
+        let ver_parts: Vec<u64> = version.split('.').filter_map(|s| s.parse().ok()).collect();
         if ver_parts.len() < 2 {
             return false;
         }
@@ -73,10 +72,7 @@ impl SemverReq {
                 || Self::cmp_version(version, stripped) == std::cmp::Ordering::Equal
         } else if let Some(stripped) = raw.strip_prefix('^') {
             // ^X.Y.Z: first non-zero component is fixed
-            let req_parts: Vec<u64> = stripped
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
+            let req_parts: Vec<u64> = stripped.split('.').filter_map(|s| s.parse().ok()).collect();
             if req_parts.is_empty() {
                 return false;
             }
@@ -93,10 +89,7 @@ impl SemverReq {
             true
         } else if let Some(stripped) = raw.strip_prefix('~') {
             // ~X.Y.Z: patch-level changes only
-            let req_parts: Vec<u64> = stripped
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
+            let req_parts: Vec<u64> = stripped.split('.').filter_map(|s| s.parse().ok()).collect();
             if req_parts.len() >= 2 && ver_parts.len() >= 2 {
                 req_parts[0] == ver_parts[0] && req_parts[1] == ver_parts[1]
             } else {
@@ -213,7 +206,9 @@ impl NodeToolchainMatrix {
 
     /// Recommend npm/pnpm/yarn versions for a given Node.js version.
     pub fn recommend(&self, node_version: &str) -> ToolchainRecommendation {
-        let npm = self.npm_compat.iter()
+        let npm = self
+            .npm_compat
+            .iter()
             .find(|e| e.node_range.matches(node_version))
             .and_then(|_| {
                 // Return a reasonable version within the compatible range
@@ -226,22 +221,32 @@ impl NodeToolchainMatrix {
                 })
             });
 
-        let pnpm = self.pnpm_compat.iter()
+        let pnpm = self
+            .pnpm_compat
+            .iter()
             .find(|e| e.node_range.matches(node_version))
             .and_then(|_| {
                 Some(match node_version {
-                    v if v.starts_with("18.") || v.starts_with("20.") || v.starts_with("22.") => "9.15.4".to_string(),
+                    v if v.starts_with("18.") || v.starts_with("20.") || v.starts_with("22.") => {
+                        "9.15.4".to_string()
+                    }
                     v if v.starts_with("16.") => "8.15.8".to_string(),
                     _ => "latest".to_string(),
                 })
             });
 
-        let yarn = self.yarn_compat.iter()
+        let yarn = self
+            .yarn_compat
+            .iter()
             .find(|e| e.node_range.matches(node_version))
             .and_then(|_| {
                 Some(match node_version {
-                    v if v.starts_with("18.") || v.starts_with("20.") || v.starts_with("22.") => "4.5.0".to_string(),
-                    v if v.starts_with("12.") || v.starts_with("14.") || v.starts_with("16.") => "3.8.5".to_string(),
+                    v if v.starts_with("18.") || v.starts_with("20.") || v.starts_with("22.") => {
+                        "4.5.0".to_string()
+                    }
+                    v if v.starts_with("12.") || v.starts_with("14.") || v.starts_with("16.") => {
+                        "3.8.5".to_string()
+                    }
                     _ => "latest".to_string(),
                 })
             });
@@ -285,7 +290,9 @@ impl NodeToolchainMatrix {
 
         // Check pnpm
         if let Some(actual) = pnpm_version {
-            let compatible = self.pnpm_compat.iter()
+            let compatible = self
+                .pnpm_compat
+                .iter()
                 .any(|e| e.node_range.matches(node_version));
             if !compatible {
                 mismatches.push(ToolchainMismatch {
@@ -293,17 +300,16 @@ impl NodeToolchainMatrix {
                     expected: ">=9.0.0 (for Node >=18)".to_string(),
                     actual: actual.to_string(),
                     severity: MismatchSeverity::Error,
-                    message: format!(
-                        "pnpm {} 可能不兼容 Node {}",
-                        actual, node_version
-                    ),
+                    message: format!("pnpm {} 可能不兼容 Node {}", actual, node_version),
                 });
             }
         }
 
         // Check yarn
         if let Some(actual) = yarn_version {
-            let compatible = self.yarn_compat.iter()
+            let compatible = self
+                .yarn_compat
+                .iter()
                 .any(|e| e.node_range.matches(node_version));
             if !compatible {
                 mismatches.push(ToolchainMismatch {
@@ -331,8 +337,8 @@ impl NodeToolchainMatrix {
 
 // ── Toolchain Version Detection ──
 
-use tokio::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
 /// Detect installed toolchain versions by running CLI commands.
 pub async fn detect_toolchain_versions() -> ToolchainStatus {
@@ -362,7 +368,11 @@ async fn run_and_parse(cmd_and_args: &[&str]) -> Option<String> {
     if out.status.success() {
         let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let ver = ver.trim_start_matches('v').to_string();
-        if ver.is_empty() { None } else { Some(ver) }
+        if ver.is_empty() {
+            None
+        } else {
+            Some(ver)
+        }
     } else {
         None
     }
@@ -416,12 +426,7 @@ mod tests {
     #[test]
     fn test_check_status_match() {
         let matrix = NodeToolchainMatrix::builtin();
-        let status = matrix.check_status(
-            "22.14.0",
-            Some("10.8.2"),
-            Some("9.15.4"),
-            Some("4.5.0"),
-        );
+        let status = matrix.check_status("22.14.0", Some("10.8.2"), Some("9.15.4"), Some("4.5.0"));
         assert!(status.mismatches.is_empty());
     }
 

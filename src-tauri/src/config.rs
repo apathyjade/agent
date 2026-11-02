@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::error::{AppError, Result};
@@ -78,12 +78,19 @@ impl ModelConfig {
         match self.provider {
             ModelProvider::OpenAI => "https://api.openai.com/v1/chat/completions".to_string(),
             ModelProvider::Anthropic => "https://api.anthropic.com/v1/messages".to_string(),
-            ModelProvider::Google => "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string(),
+            ModelProvider::Google => {
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                    .to_string()
+            }
             ModelProvider::Groq => "https://api.groq.com/openai/v1/chat/completions".to_string(),
             ModelProvider::DeepSeek => "https://api.deepseek.com/v1/chat/completions".to_string(),
-            ModelProvider::Zhipu => "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string(),
+            ModelProvider::Zhipu => {
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
+            }
             ModelProvider::Moonshot => "https://api.moonshot.cn/v1/chat/completions".to_string(),
-            ModelProvider::SiliconFlow => "https://api.siliconflow.cn/v1/chat/completions".to_string(),
+            ModelProvider::SiliconFlow => {
+                "https://api.siliconflow.cn/v1/chat/completions".to_string()
+            }
             ModelProvider::Ollama => "http://localhost:11434/v1/chat/completions".to_string(),
             ModelProvider::LMStudio => "http://localhost:1234/v1/chat/completions".to_string(),
             ModelProvider::Custom => String::new(),
@@ -91,7 +98,9 @@ impl ModelConfig {
     }
 
     pub fn effective_base_url(&self) -> String {
-        self.base_url.clone().unwrap_or_else(|| self.default_base_url())
+        self.base_url
+            .clone()
+            .unwrap_or_else(|| self.default_base_url())
     }
 
     pub fn is_compatible_with_openai_api(&self) -> bool {
@@ -133,6 +142,10 @@ pub struct AppConfig {
     /// Key = runtime_type string (e.g. "node"), Value = manager id (e.g. "fnm").
     #[serde(default)]
     pub active_managers: std::collections::HashMap<String, String>,
+    /// Persisted default version per runtime type.
+    /// Key = runtime_type string (e.g. "node"), Value = exact version (e.g. "20.18.3").
+    #[serde(default)]
+    pub runtime_defaults: std::collections::HashMap<String, String>,
     /// Intent routing configuration.
     #[serde(default)]
     pub intent_routing: IntentRouterConfig,
@@ -179,12 +192,25 @@ impl Default for AppConfig {
             runtime_install_dir: None,
             download_proxy: None,
             active_managers: std::collections::HashMap::new(),
+            runtime_defaults: std::collections::HashMap::new(),
             intent_routing: IntentRouterConfig::default(),
         }
     }
 }
 
 impl AppConfig {
+    /// Build the plain settings value consumed by the standalone toolchain.
+    pub fn runtime_options(&self) -> crate::toolchain::RuntimeOptions {
+        crate::toolchain::RuntimeOptions {
+            install_dir: self
+                .runtime_install_dir
+                .as_ref()
+                .map(std::path::PathBuf::from),
+            download_proxy: self.download_proxy.clone(),
+            defaults: self.runtime_defaults.clone(),
+        }
+    }
+
     pub fn load() -> Result<Self> {
         let config_path = Self::config_path();
         if config_path.exists() {
@@ -226,7 +252,9 @@ impl AppConfig {
     }
 
     pub fn get_default_model(&self) -> Option<&ModelConfig> {
-        self.models.iter().find(|m| m.is_default && m.enabled)
+        self.models
+            .iter()
+            .find(|m| m.is_default && m.enabled)
             .or_else(|| self.models.iter().find(|m| m.enabled))
     }
 

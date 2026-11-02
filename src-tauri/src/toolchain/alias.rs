@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::environment::RuntimeType;
+use crate::toolchain::RuntimeType;
 
 /// Manages named version aliases (e.g. "default" → "20.18.3").
 /// Primarily manages per-runtime default version.
@@ -15,8 +15,13 @@ pub struct AliasManager {
 
 impl AliasManager {
     pub fn new() -> Self {
+        Self::with_defaults(HashMap::new())
+    }
+
+    /// Create an alias manager pre-populated with persisted defaults.
+    pub fn with_defaults(defaults: HashMap<RuntimeType, String>) -> Self {
         Self {
-            defaults: Arc::new(Mutex::new(HashMap::new())),
+            defaults: Arc::new(Mutex::new(defaults)),
         }
     }
 

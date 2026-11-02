@@ -6,10 +6,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::environment::http_client::get_http_client;
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::http_client::get_http_client;
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 /// GitHub release API response entry.
 #[derive(Debug, Deserialize)]
@@ -29,13 +29,21 @@ pub struct PythonVersionSource;
 impl PythonVersionSource {
     fn platform_label(&self) -> &'static str {
         #[cfg(target_os = "windows")]
-        { "x86_64-pc-windows-msvc" }
+        {
+            "x86_64-pc-windows-msvc"
+        }
         #[cfg(target_os = "linux")]
-        { "x86_64-unknown-linux-gnu" }
+        {
+            "x86_64-unknown-linux-gnu"
+        }
         #[cfg(target_os = "macos")]
-        { "aarch64-apple-darwin" }
+        {
+            "aarch64-apple-darwin"
+        }
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        { "x86_64-unknown-linux-gnu" }
+        {
+            "x86_64-unknown-linux-gnu"
+        }
     }
 
     fn archive_ext(&self) -> &'static str {
@@ -50,8 +58,8 @@ impl PythonVersionSource {
         format!(
             "https://github.com/astral-sh/python-build-standalone/releases/download/{}/{}",
             tag, archive_name
-        )
-        + "." + ext
+        ) + "."
+            + ext
     }
 
     /// Parse a version from a release tag like "20250115" -> no direct version mapping.

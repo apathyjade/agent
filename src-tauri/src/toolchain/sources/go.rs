@@ -6,15 +6,15 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::environment::http_client::get_http_client;
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::http_client::get_http_client;
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 /// Raw response entry from https://go.dev/dl/?mode=json
 #[derive(Debug, Deserialize)]
 struct GoDistEntry {
-    version: String,       // "go1.22.4"
+    version: String, // "go1.22.4"
     stable: bool,
     files: Vec<GoFile>,
 }
@@ -34,24 +34,40 @@ pub struct GoVersionSource;
 impl GoVersionSource {
     fn current_os(&self) -> &'static str {
         #[cfg(target_os = "windows")]
-        { "windows" }
+        {
+            "windows"
+        }
         #[cfg(target_os = "linux")]
-        { "linux" }
+        {
+            "linux"
+        }
         #[cfg(target_os = "macos")]
-        { "darwin" }
+        {
+            "darwin"
+        }
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        { "linux" }
+        {
+            "linux"
+        }
     }
 
     fn current_arch(&self) -> &'static str {
         #[cfg(target_os = "windows")]
-        { "amd64" }
+        {
+            "amd64"
+        }
         #[cfg(target_os = "linux")]
-        { "amd64" }
+        {
+            "amd64"
+        }
         #[cfg(target_os = "macos")]
-        { "arm64" }
+        {
+            "arm64"
+        }
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        { "amd64" }
+        {
+            "amd64"
+        }
     }
 
     /// Strip "go" prefix from version string.
@@ -90,15 +106,13 @@ impl VersionSource for GoVersionSource {
                 let version = Self::strip_go_prefix(&e.version);
 
                 // Find the file that matches current platform
-                let matching_file = e.files.iter().find(|f| {
-                    f.os == current_os && f.arch == current_arch
-                })?;
+                let matching_file = e
+                    .files
+                    .iter()
+                    .find(|f| f.os == current_os && f.arch == current_arch)?;
 
                 // Build download URL from filename
-                let url = format!(
-                    "https://dl.google.com/go/{}",
-                    matching_file.filename
-                );
+                let url = format!("https://dl.google.com/go/{}", matching_file.filename);
 
                 Some(RuntimeVersion {
                     runtime_type: RuntimeType::Go,
@@ -115,8 +129,16 @@ impl VersionSource for GoVersionSource {
 
         // Sort: newest version first
         versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a.version.split('.').filter_map(|s| s.parse().ok()).collect();
-            let b_parts: Vec<u64> = b.version.split('.').filter_map(|s| s.parse().ok()).collect();
+            let a_parts: Vec<u64> = a
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let b_parts: Vec<u64> = b
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
             for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
                 if av != bv {
                     return bv.cmp(av);

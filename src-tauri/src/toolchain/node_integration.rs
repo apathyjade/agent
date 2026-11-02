@@ -124,7 +124,10 @@ impl ExternalNodeManager {
         let candidate_paths = [
             PathBuf::from(&home).join(".nvm").join("nvm.sh"),
             PathBuf::from(&home).join(".nvm").join("nvm-exec"),
-            PathBuf::from(&home).join(".config").join("nvm").join("nvm.sh"),
+            PathBuf::from(&home)
+                .join(".config")
+                .join("nvm")
+                .join("nvm.sh"),
         ];
         candidate_paths.iter().any(|p| p.exists())
     }
@@ -142,7 +145,11 @@ impl ExternalNodeManager {
                     .ok()?;
                 if out.status.success() {
                     let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !ver.is_empty() { Some(ver) } else { None }
+                    if !ver.is_empty() {
+                        Some(ver)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -178,7 +185,11 @@ impl ExternalNodeManager {
                     .ok()?;
                 if out.status.success() {
                     let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !ver.is_empty() { Some(ver) } else { None }
+                    if !ver.is_empty() {
+                        Some(ver)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -194,13 +205,11 @@ impl ExternalNodeManager {
                 if out.status.success() {
                     let output = String::from_utf8_lossy(&out.stdout);
                     // Find line with "*" marking current
-                    output.lines()
-                        .find(|l| l.contains('*'))
-                        .and_then(|l| {
-                            l.split_whitespace()
-                                .find(|w| w.contains('.'))
-                                .map(|s| s.to_string())
-                        })
+                    output.lines().find(|l| l.contains('*')).and_then(|l| {
+                        l.split_whitespace()
+                            .find(|w| w.contains('.'))
+                            .map(|s| s.to_string())
+                    })
                 } else {
                     None
                 }
@@ -214,37 +223,70 @@ impl ExternalNodeManager {
             ExternalManager::Fnm => {
                 Self::run_cmd_parse_lines("fnm", &["list"], |line| {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() { return None; }
-                    let ver = trimmed.trim_start_matches('→').trim().trim_start_matches('v');
-                    if ver.is_empty() { None } else { Some(ver.to_string()) }
-                }).await
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    let ver = trimmed
+                        .trim_start_matches('→')
+                        .trim()
+                        .trim_start_matches('v');
+                    if ver.is_empty() {
+                        None
+                    } else {
+                        Some(ver.to_string())
+                    }
+                })
+                .await
             }
             ExternalManager::Volta => {
                 Self::run_cmd_parse_lines("volta", &["list", "node", "--format", "plain"], |line| {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with("Node.js") { return None; }
+                    if trimmed.is_empty() || trimmed.starts_with("Node.js") {
+                        return None;
+                    }
                     let ver = trimmed.split_whitespace().next()?;
                     let ver = ver.trim_start_matches('v');
-                    if ver.is_empty() { None } else { Some(ver.to_string()) }
-                }).await
+                    if ver.is_empty() {
+                        None
+                    } else {
+                        Some(ver.to_string())
+                    }
+                })
+                .await
             }
             ExternalManager::Nvm => {
-                Self::run_cmd_parse_lines("bash", &["-lc", "nvm list --no-alias 2>/dev/null"], |line| {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed == "->" { return None; }
-                    let ver = trimmed.trim_start_matches("->").trim().trim_start_matches('v');
-                    if ver.is_empty() { None } else { Some(ver.to_string()) }
-                }).await
+                Self::run_cmd_parse_lines(
+                    "bash",
+                    &["-lc", "nvm list --no-alias 2>/dev/null"],
+                    |line| {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() || trimmed == "->" {
+                            return None;
+                        }
+                        let ver = trimmed
+                            .trim_start_matches("->")
+                            .trim()
+                            .trim_start_matches('v');
+                        if ver.is_empty() {
+                            None
+                        } else {
+                            Some(ver.to_string())
+                        }
+                    },
+                )
+                .await
             }
             ExternalManager::NvmWindows => {
                 Self::run_cmd_parse_lines("nvm", &["list"], |line| {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.contains("---") || trimmed.contains("Current") {
+                    if trimmed.is_empty() || trimmed.contains("---") || trimmed.contains("Current")
+                    {
                         return None;
                     }
                     let ver = trimmed.split_whitespace().find(|w| w.contains('.'))?;
                     Some(ver.to_string())
-                }).await
+                })
+                .await
             }
         };
         result.unwrap_or_default()
@@ -280,12 +322,12 @@ impl ExternalNodeManager {
                     .stderr(Stdio::inherit())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("fnm install 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("fnm install 失败: {}", e))
+                    })?;
                 if !status.success() {
                     return Err(crate::error::AppError::InvalidInput(
-                        "fnm install 返回非零退出码".into()
+                        "fnm install 返回非零退出码".into(),
                     ));
                 }
             }
@@ -297,12 +339,12 @@ impl ExternalNodeManager {
                     .stderr(Stdio::inherit())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("volta install 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("volta install 失败: {}", e))
+                    })?;
                 if !status.success() {
                     return Err(crate::error::AppError::InvalidInput(
-                        "volta install 返回非零退出码".into()
+                        "volta install 返回非零退出码".into(),
                     ));
                 }
             }
@@ -313,12 +355,12 @@ impl ExternalNodeManager {
                     .stderr(Stdio::inherit())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("nvm install 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("nvm install 失败: {}", e))
+                    })?;
                 if !status.success() {
                     return Err(crate::error::AppError::InvalidInput(
-                        "nvm install 返回非零退出码".into()
+                        "nvm install 返回非零退出码".into(),
                     ));
                 }
             }
@@ -329,12 +371,12 @@ impl ExternalNodeManager {
                     .stderr(Stdio::inherit())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("nvm install 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("nvm install 失败: {}", e))
+                    })?;
                 if !status.success() {
                     return Err(crate::error::AppError::InvalidInput(
-                        "nvm install 返回非零退出码".into()
+                        "nvm install 返回非零退出码".into(),
                     ));
                 }
             }
@@ -352,13 +394,14 @@ impl ExternalNodeManager {
                     .stderr(Stdio::null())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("fnm use 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("fnm use 失败: {}", e))
+                    })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
-                        format!("fnm use {} 失败", version)
-                    ));
+                    return Err(crate::error::AppError::InvalidInput(format!(
+                        "fnm use {} 失败",
+                        version
+                    )));
                 }
             }
             ExternalManager::Volta => {
@@ -379,13 +422,14 @@ impl ExternalNodeManager {
                     .stderr(Stdio::null())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("nvm use 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("nvm use 失败: {}", e))
+                    })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
-                        format!("nvm use {} 失败", version)
-                    ));
+                    return Err(crate::error::AppError::InvalidInput(format!(
+                        "nvm use {} 失败",
+                        version
+                    )));
                 }
             }
             ExternalManager::NvmWindows => {
@@ -395,13 +439,14 @@ impl ExternalNodeManager {
                     .stderr(Stdio::null())
                     .status()
                     .await
-                    .map_err(|e| crate::error::AppError::InvalidInput(
-                        format!("nvm use 失败: {}", e)
-                    ))?;
+                    .map_err(|e| {
+                        crate::error::AppError::InvalidInput(format!("nvm use 失败: {}", e))
+                    })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
-                        format!("nvm use {} 失败", version)
-                    ));
+                    return Err(crate::error::AppError::InvalidInput(format!(
+                        "nvm use {} 失败",
+                        version
+                    )));
                 }
             }
         }

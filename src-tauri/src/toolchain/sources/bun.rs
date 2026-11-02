@@ -6,10 +6,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::environment::http_client::get_http_client;
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::http_client::get_http_client;
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 /// A GitHub release entry.
 #[derive(Debug, Deserialize)]
@@ -26,19 +26,32 @@ impl BunVersionSource {
     /// Determine the platform-specific asset filename for Bun downloads.
     fn platform_asset_name() -> &'static str {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        { "bun-windows-x64.zip" }
+        {
+            "bun-windows-x64.zip"
+        }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        { "bun-linux-x64.zip" }
+        {
+            "bun-linux-x64.zip"
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        { "bun-darwin-arm64.zip" }
+        {
+            "bun-darwin-arm64.zip"
+        }
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        { "bun-darwin-x64.zip" }
+        {
+            "bun-darwin-x64.zip"
+        }
         #[cfg(not(any(
             all(target_os = "windows", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "x86_64"),
-            all(target_os = "macos", any(target_arch = "aarch64", target_arch = "x86_64")),
+            all(
+                target_os = "macos",
+                any(target_arch = "aarch64", target_arch = "x86_64")
+            ),
         )))]
-        { "bun-windows-x64.zip" } // fallback
+        {
+            "bun-windows-x64.zip"
+        } // fallback
     }
 
     fn archive_ext() -> &'static str {
@@ -105,8 +118,16 @@ impl VersionSource for BunVersionSource {
 
         // Sort: newest version first (semver comparison)
         versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a.version.split('.').filter_map(|s| s.parse().ok()).collect();
-            let b_parts: Vec<u64> = b.version.split('.').filter_map(|s| s.parse().ok()).collect();
+            let a_parts: Vec<u64> = a
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let b_parts: Vec<u64> = b
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
             for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
                 if av != bv {
                     return bv.cmp(av);
@@ -128,20 +149,18 @@ impl BunVersionSource {
     fn fallback_versions(_ext: &'static str, asset_name: &str) -> Vec<RuntimeVersion> {
         ["1.2.5", "1.1.42", "1.0.36", "0.8.1"]
             .iter()
-            .map(|v| {
-                RuntimeVersion {
-                    runtime_type: RuntimeType::Bun,
-                    version: v.to_string(),
-                    display_name: format!("Bun v{}", v),
-                    url: format!(
-                        "https://github.com/oven-sh/bun/releases/download/bun-v{}/{}",
-                        v, asset_name
-                    ),
-                    lts: None,
-                    is_stable: true,
-                    release_date: None,
-                    file_size: None,
-                }
+            .map(|v| RuntimeVersion {
+                runtime_type: RuntimeType::Bun,
+                version: v.to_string(),
+                display_name: format!("Bun v{}", v),
+                url: format!(
+                    "https://github.com/oven-sh/bun/releases/download/bun-v{}/{}",
+                    v, asset_name
+                ),
+                lts: None,
+                is_stable: true,
+                release_date: None,
+                file_size: None,
             })
             .collect()
     }

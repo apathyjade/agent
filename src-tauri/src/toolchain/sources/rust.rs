@@ -6,10 +6,10 @@
 
 use async_trait::async_trait;
 
-use crate::environment::http_client::get_http_client;
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::http_client::get_http_client;
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 pub struct RustupVersionSource;
 

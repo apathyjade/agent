@@ -26,10 +26,12 @@ agent/
 │   │   ├── keychain.rs              # 安全凭据存储
 │   │   ├── agent/loop.rs            # Agent 执行循环
 │   │   ├── api/                     # LLM API 客户端（openai, anthropic）
+│   │   ├── cli/                     # CLI 入口（toolchain 子命令，独立于桌面应用）
 │   │   ├── commands/                # IPC 命令，按功能拆分
 │   │   ├── db/                      # SQLite 存储（models + repository）
 │   │   ├── tools/                   # 工具系统（calculator, file_system 等）
-│   │   ├── environment/             # 运行时环境管理
+│   │   ├── toolchain/               # 独立运行时引擎（检测、安装、解析、别名）
+│   │   ├── project_env/             # 应用侧项目绑定（依赖 db，建立在 toolchain 之上）
 │   │   ├── mcp/                     # Model Context Protocol
 │   │   ├── memory/                  # 记忆系统
 │   │   ├── pipeline/                # 工作流引擎

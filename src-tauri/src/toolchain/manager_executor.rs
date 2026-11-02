@@ -1,5 +1,5 @@
+use crate::toolchain::RuntimeType;
 use std::process::Command;
-use crate::environment::RuntimeType;
 
 pub type ManagerResult<T> = std::result::Result<T, String>;
 
@@ -16,7 +16,15 @@ fn run_cmd(cmd: &str, args: &[&str]) -> ManagerResult<String> {
         Ok(stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("命令 '{}' 失败: {}", cmd, if stderr.is_empty() { "未知错误" } else { &stderr }))
+        Err(format!(
+            "命令 '{}' 失败: {}",
+            cmd,
+            if stderr.is_empty() {
+                "未知错误"
+            } else {
+                &stderr
+            }
+        ))
     }
 }
 
@@ -30,7 +38,13 @@ fn install_node(manager: &str, version: &str) -> ManagerResult<()> {
             if cfg!(target_os = "windows") {
                 run_cmd("nvm", &["install", version])?;
             } else {
-                run_cmd("bash", &["-c", &format!(". \"$NVM_DIR/nvm.sh\" && nvm install {}", version)])?;
+                run_cmd(
+                    "bash",
+                    &[
+                        "-c",
+                        &format!(". \"$NVM_DIR/nvm.sh\" && nvm install {}", version),
+                    ],
+                )?;
             }
             Ok(())
         }
@@ -76,7 +90,13 @@ fn switch_node(manager: &str, version: &str) -> ManagerResult<()> {
             if cfg!(target_os = "windows") {
                 run_cmd("nvm", &["use", version])?;
             } else {
-                run_cmd("bash", &["-c", &format!(". \"$NVM_DIR/nvm.sh\" && nvm use {}", version)])?;
+                run_cmd(
+                    "bash",
+                    &[
+                        "-c",
+                        &format!(". \"$NVM_DIR/nvm.sh\" && nvm use {}", version),
+                    ],
+                )?;
             }
             Ok(())
         }
@@ -122,7 +142,13 @@ fn uninstall_node(manager: &str, version: &str) -> ManagerResult<()> {
             if cfg!(target_os = "windows") {
                 run_cmd("nvm", &["uninstall", version])?;
             } else {
-                run_cmd("bash", &["-c", &format!(". \"$NVM_DIR/nvm.sh\" && nvm uninstall {}", version)])?;
+                run_cmd(
+                    "bash",
+                    &[
+                        "-c",
+                        &format!(". \"$NVM_DIR/nvm.sh\" && nvm uninstall {}", version),
+                    ],
+                )?;
             }
             Ok(())
         }

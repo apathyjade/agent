@@ -1,8 +1,8 @@
 // ── Runtime Tests: Lifecycle, VersionSource, and Type Detection ──
 
-use agent_lib::environment::lifecycle;
-use agent_lib::environment::lifecycle::VersionLifecycle;
-use agent_lib::environment::RuntimeType;
+use agent_lib::toolchain::lifecycle;
+use agent_lib::toolchain::lifecycle::VersionLifecycle;
+use agent_lib::toolchain::RuntimeType;
 
 // ── Node.js Lifecycle Tests ──
 
@@ -184,15 +184,36 @@ fn test_for_runtime_ruby() {
 fn test_version_lifecycle_label() {
     assert_eq!(VersionLifecycle::Latest.label(), "最新");
     assert_eq!(VersionLifecycle::Active.label(), "活跃");
-    assert_eq!(VersionLifecycle::Eol { eol_date: "2024-01-01".into() }.label(), "已停止支持");
-    assert_eq!(VersionLifecycle::Lts { codename: "Jod".into() }.label(), "LTS");
-    assert_eq!(VersionLifecycle::Maintenance { eol_date: None }.label(), "维护期");
+    assert_eq!(
+        VersionLifecycle::Eol {
+            eol_date: "2024-01-01".into()
+        }
+        .label(),
+        "已停止支持"
+    );
+    assert_eq!(
+        VersionLifecycle::Lts {
+            codename: "Jod".into()
+        }
+        .label(),
+        "LTS"
+    );
+    assert_eq!(
+        VersionLifecycle::Maintenance { eol_date: None }.label(),
+        "维护期"
+    );
 }
 
 #[test]
 fn test_version_lifecycle_emoji() {
     assert_eq!(VersionLifecycle::Latest.emoji(), "🆕");
-    assert_eq!(VersionLifecycle::Eol { eol_date: "x".into() }.emoji(), "🔴");
+    assert_eq!(
+        VersionLifecycle::Eol {
+            eol_date: "x".into()
+        }
+        .emoji(),
+        "🔴"
+    );
     assert_eq!(VersionLifecycle::Active.emoji(), "🟢");
 }
 
@@ -200,14 +221,20 @@ fn test_version_lifecycle_emoji() {
 
 #[test]
 fn test_runtime_type_from_str() {
-    assert_eq!(RuntimeType::from_str("node"), Some(RuntimeType::Node));
-    assert_eq!(RuntimeType::from_str("python"), Some(RuntimeType::Python));
-    assert_eq!(RuntimeType::from_str("bun"), Some(RuntimeType::Bun));
-    assert_eq!(RuntimeType::from_str("ruby"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::from_str("irb"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::from_str("gem"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::from_str("bundler"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::from_str("unknown"), None);
+    assert_eq!("node".parse::<RuntimeType>().ok(), Some(RuntimeType::Node));
+    assert_eq!(
+        "python".parse::<RuntimeType>().ok(),
+        Some(RuntimeType::Python)
+    );
+    assert_eq!("bun".parse::<RuntimeType>().ok(), Some(RuntimeType::Bun));
+    assert_eq!("ruby".parse::<RuntimeType>().ok(), Some(RuntimeType::Ruby));
+    assert_eq!("irb".parse::<RuntimeType>().ok(), Some(RuntimeType::Ruby));
+    assert_eq!("gem".parse::<RuntimeType>().ok(), Some(RuntimeType::Ruby));
+    assert_eq!(
+        "bundler".parse::<RuntimeType>().ok(),
+        Some(RuntimeType::Ruby)
+    );
+    assert!("unknown".parse::<RuntimeType>().is_err());
 }
 
 #[test]
@@ -224,11 +251,26 @@ fn test_runtime_type_dir_name() {
 
 #[test]
 fn test_runtime_type_infer_from_command() {
-    assert_eq!(RuntimeType::infer_from_command("bun"), Some(RuntimeType::Bun));
-    assert_eq!(RuntimeType::infer_from_command("ruby"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::infer_from_command("irb"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::infer_from_command("gem"), Some(RuntimeType::Ruby));
-    assert_eq!(RuntimeType::infer_from_command("bundler"), Some(RuntimeType::Ruby));
+    assert_eq!(
+        RuntimeType::infer_from_command("bun"),
+        Some(RuntimeType::Bun)
+    );
+    assert_eq!(
+        RuntimeType::infer_from_command("ruby"),
+        Some(RuntimeType::Ruby)
+    );
+    assert_eq!(
+        RuntimeType::infer_from_command("irb"),
+        Some(RuntimeType::Ruby)
+    );
+    assert_eq!(
+        RuntimeType::infer_from_command("gem"),
+        Some(RuntimeType::Ruby)
+    );
+    assert_eq!(
+        RuntimeType::infer_from_command("bundler"),
+        Some(RuntimeType::Ruby)
+    );
 }
 
 #[test]
@@ -254,8 +296,8 @@ fn test_runtime_type_all_contains_new() {
 
 #[test]
 fn test_bun_version_source_fallback() {
-    use agent_lib::environment::sources::bun::BunVersionSource;
-    use agent_lib::environment::registry::VersionSource;
+    use agent_lib::toolchain::registry::VersionSource;
+    use agent_lib::toolchain::sources::bun::BunVersionSource;
 
     // We can't easily test fetch_versions (needs network), but we can test the
     // fallback logic by checking that the source compiles and is constructible.
@@ -265,8 +307,8 @@ fn test_bun_version_source_fallback() {
 
 #[test]
 fn test_ruby_version_source_curated() {
-    use agent_lib::environment::sources::ruby::RubyVersionSource;
-    use agent_lib::environment::registry::VersionSource;
+    use agent_lib::toolchain::registry::VersionSource;
+    use agent_lib::toolchain::sources::ruby::RubyVersionSource;
 
     let source = RubyVersionSource;
     assert_eq!(source.runtime_type(), RuntimeType::Ruby);
@@ -277,8 +319,8 @@ fn test_ruby_version_source_curated() {
 #[test]
 fn test_init_http_client_no_proxy() {
     // Should not panic
-    agent_lib::environment::http_client::init_http_client(None);
-    let client = agent_lib::environment::http_client::get_http_client();
+    agent_lib::toolchain::http_client::init_http_client(None);
+    let client = agent_lib::toolchain::http_client::get_http_client();
     // Just verify it returns a client
     let _ = client;
 }

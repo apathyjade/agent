@@ -84,7 +84,7 @@ cd src-tauri && cargo tauri build
 | 添加 IPC 命令 | `commands/` 下新建文件，在 `lib.rs` 注册 handler |
 | 添加工具 | `tools/` 下实现 `AgentTool` trait，`ToolRegistry::new()` 注册 |
 | 添加 provider | `config.rs` 的 `ModelProvider` 加枚举值，`api/provider.rs` 注册 |
-| 添加运行时 | `environment/registry.rs` 注册，实现 detector + installer |
+| 添加运行时 | `toolchain/registry.rs` 注册，实现 detector + installer |
 | 添加记忆种子 | `memory/seeds.rs` 的 `default_seed_memories()` 中添加 |
 | 修改 CSP 白名单 | 编辑 `src-tauri/tauri.conf.json` 的 `connect-src` |
 

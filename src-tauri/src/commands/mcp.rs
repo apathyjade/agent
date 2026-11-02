@@ -23,8 +23,8 @@ pub async fn add_mcp_server(
     // Validate runtime if provided
     if let Some(ref rt_str) = runtime {
         if !rt_str.is_empty() && rt_str != "auto" {
-            if let Some(rt) = crate::environment::RuntimeType::from_str(rt_str) {
-                if let Err(msg) = state.runtime_manager.validate_runtime(&rt).await {
+            if let Ok(rt) = rt_str.parse::<crate::toolchain::RuntimeType>() {
+                if let Err(msg) = state.toolchain.manager.validate_runtime(&rt).await {
                     return Err(crate::error::AppError::InvalidInput(msg));
                 }
             }
@@ -56,8 +56,9 @@ pub async fn add_mcp_server(
 
     // Return connection info
     let infos = state.mcp.list_connections().await;
-    infos.into_iter().find(|c| c.id == id)
-        .ok_or_else(|| AppError::NotFound(format!("MCP connection '{}' not found after connect", id)))
+    infos.into_iter().find(|c| c.id == id).ok_or_else(|| {
+        AppError::NotFound(format!("MCP connection '{}' not found after connect", id))
+    })
 }
 
 #[tauri::command]
@@ -121,10 +122,7 @@ pub async fn restart_mcp_server(state: State<'_, AppState>, id: String) -> Resul
 
 /// Get stderr logs for a specific MCP server connection.
 #[tauri::command]
-pub async fn get_mcp_server_logs(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<Vec<String>> {
+pub async fn get_mcp_server_logs(state: State<'_, AppState>, id: String) -> Result<Vec<String>> {
     Ok(state.mcp.get_connection_logs(&id).await)
 }
 
@@ -171,7 +169,10 @@ pub async fn update_mcp_tool_config(
     if needs_reconnect {
         if let Some((is_active, _)) = state.mcp.get_connection_status(&connection_id).await {
             if is_active == "ready" || is_active == "degraded" {
-                log::info!("Tool config changed for '{}', hot-reloading MCP server", connection_id);
+                log::info!(
+                    "Tool config changed for '{}', hot-reloading MCP server",
+                    connection_id
+                );
                 let config = {
                     let app_config = state.config.lock().await;
                     app_config
@@ -231,11 +232,7 @@ pub async fn get_mcp_connection_stats(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ConnectionStats> {
-    state
-        .mcp
-        .get_connection_stats(&id)
-        .await
-        .ok_or_else(|| {
-            crate::error::AppError::NotFound(format!("MCP connection '{}' not found", id))
-        })
+    state.mcp.get_connection_stats(&id).await.ok_or_else(|| {
+        crate::error::AppError::NotFound(format!("MCP connection '{}' not found", id))
+    })
 }

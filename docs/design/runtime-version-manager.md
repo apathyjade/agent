@@ -1401,6 +1401,10 @@ impl RuntimeVersionFile {
 
 ### 7.1 完整文件结构
 
+> 注：本节的 `environment/` 路径为历史实现方案。当前实际分层见
+> [toolchain-separation.md](toolchain-separation.md)：运行时引擎位于 `toolchain/`，
+> 项目绑定位于 `project_env/`，CLI 位于 `cli/toolchain.rs`。
+
 ```
 src-tauri/src/
 ├── environment/

@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
@@ -7,27 +7,24 @@ use crate::api::provider::ProviderRegistry;
 use crate::config::{AppConfig, ModelProvider};
 use crate::critic::agent::CriticAgent;
 use crate::db::repository::Database;
-use crate::environment::alias::AliasManager;
-use crate::environment::resolver::VersionResolver;
-use crate::environment::RuntimeManager;
-use crate::environment::registry::RuntimeRegistry;
-use crate::orchestrator::plan_types::ExecutionHandle;
 use crate::intent::router::IntentRouter;
 use crate::lifecycle::LifecycleManager;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
 use crate::orchestrator::agent::OrchestratorAgent;
 use crate::orchestrator::dispatcher::Dispatcher;
+use crate::orchestrator::plan_types::ExecutionHandle;
 use crate::persona::PersonaManager;
 use crate::skills::SkillManager;
+use crate::toolchain::RuntimeServices;
 use crate::tools::registry::ToolRegistry;
 use crate::workers::code_editor::CodeEditorWorker;
 use crate::workers::code_explorer::CodeExplorerWorker;
 use crate::workers::mcp_bridge::MCPBridgeWorker;
 use crate::workers::memory::MemoryWorker;
 use crate::workers::shell::ShellWorker;
-use crate::workers::web::WebWorker;
 use crate::workers::thinker::ThinkerWorker;
+use crate::workers::web::WebWorker;
 
 pub struct AppState {
     pub app_handle: AppHandle,
@@ -39,10 +36,7 @@ pub struct AppState {
     pub memory: MemoryManager,
     pub persona: PersonaManager,
     pub mcp: McpServerManager,
-    pub runtime_manager: Arc<RuntimeManager>,
-    pub runtime_registry: Arc<RuntimeRegistry>,
-    pub version_resolver: Arc<VersionResolver>,
-    pub alias_manager: Arc<AliasManager>,
+    pub toolchain: RuntimeServices,
     pub lifecycle: LifecycleManager,
     pub intent_router: Arc<IntentRouter>,
     pub orchestrator: Arc<OrchestratorAgent>,
@@ -65,7 +59,8 @@ impl AppState {
         // Pass the first available OpenAI API key for memory embedding.
         // Embedding is best-effort — if no key is available the memory
         // manager falls back to keyword search.
-        let openai_key = config.models
+        let openai_key = config
+            .models
             .iter()
             .find(|m| m.provider == ModelProvider::OpenAI && !m.api_key.is_empty())
             .map(|m| m.api_key.clone())
@@ -74,24 +69,10 @@ impl AppState {
         let persona = PersonaManager::new(db_arc.clone());
         let lifecycle = LifecycleManager::new(db_arc.clone(), providers_arc.clone());
 
-        // Runtime manager: stores runtimes at configured path (or default)
-        let runtime_dir = match &config.runtime_install_dir {
-            Some(path) => std::path::PathBuf::from(path),
-            None => dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("agent")
-                .join("runtimes"),
-        };
-        // Initialize HTTP client with proxy settings for runtime downloads
-        crate::environment::http_client::init_http_client(config.download_proxy.as_deref());
-
-        let runtime_manager = Arc::new(RuntimeManager::new(runtime_dir));
-        let runtime_registry = Arc::new(RuntimeRegistry::new());
-        let version_resolver = Arc::new(VersionResolver::new(runtime_registry.clone()));
-        let alias_manager = Arc::new(AliasManager::new());
+        let toolchain = RuntimeServices::new(config.runtime_options())?;
 
         let mcp = McpServerManager::new(tools_arc.clone())
-            .with_runtime_manager(runtime_manager.clone());
+            .with_runtime_manager(toolchain.manager.clone());
 
         let intent_router = Arc::new(IntentRouter::new(&config.intent_routing));
 
@@ -120,10 +101,7 @@ impl AppState {
             memory,
             persona,
             mcp,
-            runtime_manager,
-            runtime_registry,
-            version_resolver,
-            alias_manager,
+            toolchain,
             lifecycle,
             intent_router,
             orchestrator,

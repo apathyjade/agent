@@ -14,8 +14,7 @@ static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 /// Initialize the global HTTP client with optional proxy settings.
 /// Should be called once at application startup.
 pub fn init_http_client(proxy_url: Option<&str>) {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300));
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300));
     if let Some(proxy) = proxy_url {
         if !proxy.is_empty() {
             if let Ok(p) = reqwest::Proxy::all(proxy) {

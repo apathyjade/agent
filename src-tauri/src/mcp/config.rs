@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::environment::RuntimeType;
+use crate::toolchain::RuntimeType;
 
 // ── Confirmation Mode ──
 
@@ -86,10 +86,18 @@ pub struct StartupPolicy {
     pub health_check_interval_ms: u64,
 }
 
-fn default_launch_on_startup() -> bool { true }
-fn default_max_retries() -> u32 { 3 }
-fn default_retry_delay_ms() -> u64 { 2000 }
-fn default_health_check_interval_ms() -> u64 { 30000 }
+fn default_launch_on_startup() -> bool {
+    true
+}
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_retry_delay_ms() -> u64 {
+    2000
+}
+fn default_health_check_interval_ms() -> u64 {
+    30000
+}
 
 impl Default for StartupPolicy {
     fn default() -> Self {
@@ -196,7 +204,9 @@ pub struct McpServerConfig {
     pub runtime: String,
 }
 
-fn is_false(b: &bool) -> bool { !b }
+fn is_false(b: &bool) -> bool {
+    !b
+}
 
 /// Deserialize auto_connect so old configs without `startup` still work.
 /// When `startup` is present, we ignore `auto_connect`.
@@ -215,7 +225,7 @@ impl McpServerConfig {
         if self.runtime.is_empty() || self.runtime == "auto" {
             RuntimeType::infer_from_command(&self.command)
         } else {
-            RuntimeType::from_str(&self.runtime)
+            self.runtime.parse().ok()
         }
     }
 

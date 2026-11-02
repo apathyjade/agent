@@ -5,8 +5,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::RuntimeType;
 
 /// A project bound to runtime version management.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -25,8 +25,8 @@ pub struct BoundProject {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectRuntimeRequirement {
     pub runtime_type: RuntimeType,
-    pub version_spec: String,         // ">=18", "3.12.x", "stable", "20.18.3"
-    pub source_file: String,          // ".nvmrc", "go.mod", ".runtime-version"
+    pub version_spec: String, // ">=18", "3.12.x", "stable", "20.18.3"
+    pub source_file: String,  // ".nvmrc", "go.mod", ".runtime-version"
     pub resolved_version: Option<String>,
 }
 
@@ -51,7 +51,7 @@ pub struct SyncResult {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SyncAction {
     pub runtime_type: RuntimeType,
-    pub action: String,     // "install", "switch", "already_matched", "skipped"
+    pub action: String, // "install", "switch", "already_matched", "skipped"
     pub from_version: Option<String>,
     pub to_version: String,
     pub success: bool,
@@ -94,10 +94,7 @@ impl ProjectDetector {
                     });
                 }
                 None => {
-                    errors.push(format!(
-                        "无法解析 {} 中的 .runtime-version",
-                        path.display()
-                    ));
+                    errors.push(format!("无法解析 {} 中的 .runtime-version", path.display()));
                 }
             }
         }
@@ -189,7 +186,7 @@ impl ProjectDetector {
 
         let mut requirements = Vec::new();
         for (key, spec) in runtimes {
-            if let Some(rt) = RuntimeType::from_str(&key) {
+            if let Ok(rt) = key.parse::<RuntimeType>() {
                 requirements.push(ProjectRuntimeRequirement {
                     runtime_type: rt,
                     version_spec: spec,
@@ -206,14 +203,22 @@ impl ProjectDetector {
     fn parse_nvmrc(path: &Path) -> Option<String> {
         let content = std::fs::read_to_string(path).ok()?;
         let spec = content.trim().to_string();
-        if spec.is_empty() { None } else { Some(spec) }
+        if spec.is_empty() {
+            None
+        } else {
+            Some(spec)
+        }
     }
 
     /// Read .python-version file.
     fn parse_python_version(path: &Path) -> Option<String> {
         let content = std::fs::read_to_string(path).ok()?;
         let spec = content.trim().to_string();
-        if spec.is_empty() { None } else { Some(spec) }
+        if spec.is_empty() {
+            None
+        } else {
+            Some(spec)
+        }
     }
 
     /// Parse go.mod for `go X.Y` directive.
@@ -257,10 +262,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("go.mod");
         std::fs::write(&path, "module example.com/foo\ngo 1.22.4\n").ok();
-        assert_eq!(
-            ProjectDetector::parse_go_mod(&path),
-            Some("1.22.4".into())
-        );
+        assert_eq!(ProjectDetector::parse_go_mod(&path), Some("1.22.4".into()));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -1,9 +1,9 @@
 // ── Upgrade Check: Detect outdated runtime versions and suggest upgrades ──
 
-use crate::environment::lifecycle;
-use crate::environment::registry::RuntimeRegistry;
-use crate::environment::{RuntimeManager, RuntimeType};
 use crate::error::Result;
+use crate::toolchain::lifecycle;
+use crate::toolchain::registry::RuntimeRegistry;
+use crate::toolchain::{RuntimeManager, RuntimeType};
 
 /// Result of a version update check for a single runtime.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

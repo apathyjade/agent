@@ -6,7 +6,7 @@
 
 use std::process::Stdio;
 
-use crate::environment::{FoundExecutable, PathConflict, RuntimeInfo, RuntimeSource, RuntimeType};
+use crate::toolchain::{FoundExecutable, PathConflict, RuntimeInfo, RuntimeSource, RuntimeType};
 
 pub struct RuntimeDetector;
 
@@ -44,14 +44,22 @@ impl RuntimeDetector {
             version: version.clone(),
             installed_versions: Vec::new(),
             executable_path: Some(exec_path),
-            error: if available { None } else { Some("版本检测失败".to_string()) },
+            error: if available {
+                None
+            } else {
+                Some("版本检测失败".to_string())
+            },
             available,
         })
     }
 
     /// Resolve the full path of a command using `where` (Windows) or `which` (Unix).
     async fn resolve_path(&self, cmd: &str) -> Option<String> {
-        let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+        let which_cmd = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
 
         let output = tokio::process::Command::new(which_cmd)
             .arg(cmd)
@@ -93,9 +101,7 @@ impl RuntimeDetector {
             return None;
         }
 
-        let version = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if version.is_empty() {
             // Try stderr as fallback
@@ -155,13 +161,11 @@ impl RuntimeDetector {
             .ok();
 
         match output {
-            Some(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            }
+            Some(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
             _ => vec![],
         }
     }
@@ -188,7 +192,9 @@ impl RuntimeDetector {
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if version.is_empty() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if !stderr.is_empty() { return Some(stderr); }
+            if !stderr.is_empty() {
+                return Some(stderr);
+            }
             return None;
         }
         Some(version)

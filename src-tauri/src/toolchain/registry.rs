@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::RuntimeType;
 
 use super::sources;
 
@@ -54,14 +54,32 @@ impl RuntimeRegistry {
     pub fn new() -> Self {
         let mut sources: HashMap<RuntimeType, Box<dyn VersionSource>> = HashMap::new();
 
-        sources.insert(RuntimeType::Node, Box::new(sources::node::NodeVersionSource::new()));
-        sources.insert(RuntimeType::Python, Box::new(sources::python::PythonVersionSource));
+        sources.insert(
+            RuntimeType::Node,
+            Box::new(sources::node::NodeVersionSource::new()),
+        );
+        sources.insert(
+            RuntimeType::Python,
+            Box::new(sources::python::PythonVersionSource),
+        );
         sources.insert(RuntimeType::Go, Box::new(sources::go::GoVersionSource));
-        sources.insert(RuntimeType::Rust, Box::new(sources::rust::RustupVersionSource));
-        sources.insert(RuntimeType::Java, Box::new(sources::java::JavaVersionSource));
-        sources.insert(RuntimeType::Deno, Box::new(sources::deno::DenoVersionSource));
+        sources.insert(
+            RuntimeType::Rust,
+            Box::new(sources::rust::RustupVersionSource),
+        );
+        sources.insert(
+            RuntimeType::Java,
+            Box::new(sources::java::JavaVersionSource),
+        );
+        sources.insert(
+            RuntimeType::Deno,
+            Box::new(sources::deno::DenoVersionSource),
+        );
         sources.insert(RuntimeType::Bun, Box::new(sources::bun::BunVersionSource));
-        sources.insert(RuntimeType::Ruby, Box::new(sources::ruby::RubyVersionSource));
+        sources.insert(
+            RuntimeType::Ruby,
+            Box::new(sources::ruby::RubyVersionSource),
+        );
 
         Self {
             sources,
@@ -94,10 +112,7 @@ impl RuntimeRegistry {
     /// Internal: fetch from source and update cache.
     async fn fetch_and_cache(&self, rt: &RuntimeType) -> Result<Vec<RuntimeVersion>> {
         let source = self.sources.get(rt).ok_or_else(|| {
-            crate::error::AppError::NotFound(format!(
-                "没有可用的版本源: {}",
-                rt.display_name()
-            ))
+            crate::error::AppError::NotFound(format!("没有可用的版本源: {}", rt.display_name()))
         })?;
 
         let versions = self.fetch_with_retry(source.as_ref(), rt).await?;
@@ -143,9 +158,7 @@ impl RuntimeRegistry {
             }
         }
         Err(last_err.unwrap_or_else(|| {
-            crate::error::AppError::Provider(
-                "版本源暂时不可用，请稍后重试".to_string(),
-            )
+            crate::error::AppError::Provider("版本源暂时不可用，请稍后重试".to_string())
         }))
     }
 

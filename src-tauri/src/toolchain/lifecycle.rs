@@ -6,7 +6,7 @@
 // Public API functions are used by the frontend via IPC.
 #![allow(dead_code)]
 
-use crate::environment::RuntimeType;
+use crate::toolchain::RuntimeType;
 
 /// Lifecycle stage of a runtime version.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -267,7 +267,9 @@ pub fn rust_lifecycle(version: &str) -> VersionLifecycle {
     match version {
         "stable" | "nightly" => VersionLifecycle::Active,
         v if v.starts_with("1.85") || v.starts_with("1.84") => VersionLifecycle::Active,
-        v if v.starts_with("1.83") || v.starts_with("1.82") => VersionLifecycle::Maintenance { eol_date: None },
+        v if v.starts_with("1.83") || v.starts_with("1.82") => {
+            VersionLifecycle::Maintenance { eol_date: None }
+        }
         _ => VersionLifecycle::Active,
     }
 }
@@ -278,7 +280,9 @@ pub fn rust_lifecycle(version: &str) -> VersionLifecycle {
 pub fn java_lifecycle(version: &str) -> VersionLifecycle {
     let major = version.split('.').next().unwrap_or("");
     match major {
-        "21" | "17" | "11" | "8" => VersionLifecycle::Lts { codename: format!("JDK {}", major) },
+        "21" | "17" | "11" | "8" => VersionLifecycle::Lts {
+            codename: format!("JDK {}", major),
+        },
         "23" => VersionLifecycle::Latest,
         _ => VersionLifecycle::Active,
     }
@@ -311,9 +315,15 @@ pub fn ruby_lifecycle(version: &str) -> VersionLifecycle {
     let minor = parts.get(1).copied().unwrap_or(0);
     match minor {
         4 | 3 => VersionLifecycle::Active,
-        2 => VersionLifecycle::Maintenance { eol_date: Some("2026-03-31".into()) },
-        1 => VersionLifecycle::Maintenance { eol_date: Some("2025-03-31".into()) },
-        _ if minor < 1 => VersionLifecycle::Eol { eol_date: "已结束".into() },
+        2 => VersionLifecycle::Maintenance {
+            eol_date: Some("2026-03-31".into()),
+        },
+        1 => VersionLifecycle::Maintenance {
+            eol_date: Some("2025-03-31".into()),
+        },
+        _ if minor < 1 => VersionLifecycle::Eol {
+            eol_date: "已结束".into(),
+        },
         _ => VersionLifecycle::Active,
     }
 }

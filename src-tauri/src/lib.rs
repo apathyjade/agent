@@ -1,10 +1,10 @@
-﻿pub mod api;
 pub mod agent;
+pub mod api;
+pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod critic;
 pub mod db;
-pub mod environment;
 pub mod error;
 pub mod intent;
 pub mod keychain;
@@ -14,8 +14,10 @@ pub mod memory;
 pub mod orchestrator;
 pub mod persona;
 pub mod pipeline;
+pub mod project_env;
 pub mod skills;
 pub mod state;
+pub mod toolchain;
 pub mod tools;
 pub mod workers;
 pub mod workspace;
@@ -30,7 +32,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(|app: &mut tauri::App| {
             let app_handle = app.handle();
             let state = AppState::new(app_handle)?;
             app.manage(state);
@@ -48,7 +50,7 @@ pub fn run() {
                 }
                 {
                     if let Err(e) = state.persona.seed_defaults().await {
-                        log::error!("Failed to seed personas: {}", e);
+                        log::error!("Failed to seed  : {}", e);
                     }
                 }
 
@@ -68,7 +70,7 @@ pub fn run() {
 
                 // 2. Detect runtimes (cache for fast UI access)
                 {
-                    state.runtime_manager.detect_all().await;
+                    state.toolchain.detect_all().await;
                 }
 
                 // 3. Auto-connect MCP servers
@@ -86,7 +88,9 @@ pub fn run() {
 
                 // 5. Archive old sessions
                 {
-                    if let Err(e) = crate::lifecycle::archiver::run_archive_check(&state.lifecycle).await {
+                    if let Err(e) =
+                        crate::lifecycle::archiver::run_archive_check(&state.lifecycle).await
+                    {
                         log::error!("Failed to run archive check: {}", e);
                     }
                 }
@@ -162,7 +166,6 @@ pub fn run() {
             commands::list_runtimes,
             commands::get_cached_runtimes,
             commands::validate_runtime,
-
             commands::install_runtime,
             commands::refresh_runtime,
             commands::suggest_runtime_for_command,

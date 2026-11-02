@@ -1,42 +1,34 @@
-// ── Environment Module: Runtime Detection, Version Management & Installation ──
+// ── Toolchain Module: Local Runtime Detection, Version Management & Installation ──
 //
-// General-purpose local runtime manager. Not specific to MCP.
-// Supports: system detection, version management, configurable install dir.
+// Standalone toolchain manager for language runtimes (Node, Python, ...).
+// It must not depend on the desktop app, its database or its UI state.
 
+pub mod alias;
 mod detector;
 pub mod http_client;
 mod installer;
 pub mod lifecycle;
-mod manifest;
 pub mod manager;
-pub mod registry;
-pub mod sources;
-pub mod project;
-pub mod resolver;
-pub mod alias;
-pub mod cli;
-mod upgrade;
 pub mod manager_detector;
 pub mod manager_executor;
+mod manifest;
 pub mod node_integration;
 pub mod node_toolchain;
-
-// use std::collections::{HashMap, HashSet};
-// use std::path::PathBuf;
-// use std::sync::Arc;
-// use chrono::Utc;
-// use tokio::sync::Mutex;
-// use crate::error::Result;
+pub mod registry;
+pub mod resolver;
+pub mod services;
+pub mod sources;
+mod upgrade;
 
 pub use alias::AliasManager;
 pub use detector::RuntimeDetector;
-pub use manager::{DiskUsageItem, RuntimeManager};
 pub use installer::RuntimeInstaller;
 pub use lifecycle::VersionLifecycle;
+pub use manager::{DiskUsageItem, RuntimeManager};
 pub use manifest::{read_manifest, write_manifest, RuntimeManifest};
-pub use project::{BoundProject, ProjectDetector, ProjectRuntimeRequirement, ProjectScanResult, SyncAction, SyncResult};
 pub use registry::{CachedVersions, RuntimeRegistry, RuntimeVersion, VersionSource};
 pub use resolver::VersionResolver;
+pub use services::{external_manager, RuntimeOptions, RuntimeServices};
 pub use upgrade::{check_updates, VersionUpdate};
 
 // ── Runtime Types ──
@@ -74,23 +66,32 @@ impl std::fmt::Display for RuntimeType {
     }
 }
 
-impl RuntimeType {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "node" | "nodejs" | "npx" => Some(RuntimeType::Node),
-            "python" | "python3" => Some(RuntimeType::Python),
-            "docker" => Some(RuntimeType::Docker),
-            "uv" | "uvx" => Some(RuntimeType::Uv),
-            "go" | "golang" => Some(RuntimeType::Go),
-            "rust" | "rustc" | "cargo" => Some(RuntimeType::Rust),
-            "java" | "jdk" | "jre" => Some(RuntimeType::Java),
-            "deno" => Some(RuntimeType::Deno),
-            "bun" => Some(RuntimeType::Bun),
-            "ruby" | "irb" | "gem" | "bundler" => Some(RuntimeType::Ruby),
-            _ => None,
-        }
-    }
+impl std::str::FromStr for RuntimeType {
+    type Err = crate::error::AppError;
 
+    fn from_str(s: &str) -> crate::error::Result<Self> {
+        let normalized = s.trim().to_lowercase();
+        let runtime = match normalized.as_str() {
+            "node" | "nodejs" | "npx" | "npm" => RuntimeType::Node,
+            "python" | "python3" | "py" | "pip" | "pip3" => RuntimeType::Python,
+            "docker" => RuntimeType::Docker,
+            "uv" | "uvx" => RuntimeType::Uv,
+            "go" | "golang" => RuntimeType::Go,
+            "rust" | "rustc" | "cargo" | "rustup" => RuntimeType::Rust,
+            "java" | "jdk" | "jre" | "javac" => RuntimeType::Java,
+            "deno" => RuntimeType::Deno,
+            "bun" => RuntimeType::Bun,
+            "ruby" | "irb" | "gem" | "bundler" => RuntimeType::Ruby,
+            _ => return Err(crate::error::AppError::InvalidInput(format!(
+                "未知运行时: {}. 支持: node, python, docker, uv, go, rust, java, deno, bun, ruby",
+                s
+            ))),
+        };
+        Ok(runtime)
+    }
+}
+
+impl RuntimeType {
     pub fn display_name(&self) -> &'static str {
         match self {
             RuntimeType::Node => "Node.js",
@@ -136,31 +137,30 @@ impl RuntimeType {
         }
     }
 
-    /// Infer runtime type from a CLI command string.
+    /// Infer runtime type from an executable command (ignores arguments).
     pub fn infer_from_command(cmd: &str) -> Option<Self> {
-        let lower = cmd.to_lowercase();
-        let base = std::path::Path::new(&lower)
+        let executable = cmd.split_whitespace().next()?;
+        let base = std::path::Path::new(executable)
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or(&lower);
-        match base {
-            "node" | "npx" | "npm" => Some(RuntimeType::Node),
-            "python" | "python3" | "pip" | "pip3" => Some(RuntimeType::Python),
-            "docker" => Some(RuntimeType::Docker),
-            "uv" | "uvx" => Some(RuntimeType::Uv),
-            "go" | "golang" => Some(RuntimeType::Go),
-            "rustc" | "cargo" | "rustup" => Some(RuntimeType::Rust),
-            "java" | "javac" | "jdk" => Some(RuntimeType::Java),
-            "deno" => Some(RuntimeType::Deno),
-            "bun" => Some(RuntimeType::Bun),
-            "ruby" | "irb" | "gem" | "bundler" => Some(RuntimeType::Ruby),
-            _ => None,
-        }
+            .unwrap_or(executable);
+        base.parse().ok()
     }
 
     /// All variants as a slice.
     pub fn all() -> &'static [RuntimeType] {
-        &[Node, Python, Docker, Uv, Go, Rust, Java, Deno, Bun, Ruby]
+        &[
+            RuntimeType::Node,
+            RuntimeType::Python,
+            RuntimeType::Docker,
+            RuntimeType::Uv,
+            RuntimeType::Go,
+            RuntimeType::Rust,
+            RuntimeType::Java,
+            RuntimeType::Deno,
+            RuntimeType::Bun,
+            RuntimeType::Ruby,
+        ]
     }
 
     /// Directory name used for storing versions on disk.
@@ -180,8 +180,6 @@ impl RuntimeType {
     }
 }
 
-use RuntimeType::*;
-
 // ── Installation Source ──
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -189,7 +187,9 @@ use RuntimeType::*;
 pub enum RuntimeSource {
     System,
     BuiltIn,
-    None,
+    /// No usable installation was found. Kept as `"none"` on the wire for the UI.
+    #[serde(rename = "none")]
+    Unavailable,
 }
 
 // ── Installed Version ──

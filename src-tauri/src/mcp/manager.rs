@@ -19,9 +19,9 @@ use tokio::time::{sleep, Duration};
 
 use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
-use crate::environment::RuntimeManager;
 use crate::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
+use crate::toolchain::RuntimeManager;
 use crate::tools::registry::ToolRegistry;
 
 // ── Public types ──
@@ -144,7 +144,7 @@ impl McpServerManager {
 
         // 1b. Validate runtime before spawning
         if let Some(rm) = &self.runtime_manager {
-            let inferred = crate::environment::RuntimeType::infer_from_command(&config.command);
+            let inferred = crate::toolchain::RuntimeType::infer_from_command(&config.command);
             if let Some(rt) = inferred {
                 if let Err(msg) = rm.validate_runtime(&rt).await {
                     let err_msg = format!(
@@ -178,7 +178,8 @@ impl McpServerManager {
                 wrapped.args(&config.args);
                 log::info!(
                     "MCP server '{}': wrapped batch command with `cmd /c {}`",
-                    config.name, display
+                    config.name,
+                    display
                 );
                 cmd = wrapped;
             }
@@ -193,7 +194,9 @@ impl McpServerManager {
 
         log::info!(
             "Spawning MCP server '{}': {} {:?}",
-            config.name, config.command, config.args
+            config.name,
+            config.command,
+            config.args
         );
 
         // 2. Spawn with stderr piped for diagnostics
@@ -236,34 +239,28 @@ impl McpServerManager {
 
         // 4. Perform MCP handshake (initialize + initialized)
         let cmd_display = format!("{} {:?}", config.command, config.args);
-        let running = ()
-            .serve(transport)
-            .await
-            .map_err(|e| {
-                {
-                    let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                    *s = ConnectionStatus::Error(format!("MCP handshake failed: {}", e));
-                }
-                AppError::Skill(format!(
-                    "MCP handshake failed for '{}' (command: `{}`): {}",
-                    config.name, cmd_display, e
-                ))
-            })?;
+        let running = ().serve(transport).await.map_err(|e| {
+            {
+                let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                *s = ConnectionStatus::Error(format!("MCP handshake failed: {}", e));
+            }
+            AppError::Skill(format!(
+                "MCP handshake failed for '{}' (command: `{}`): {}",
+                config.name, cmd_display, e
+            ))
+        })?;
 
         // 5. List tools from the server
-        let mcp_tools: Vec<McpTool> = running
-            .list_all_tools()
-            .await
-            .map_err(|e| {
-                {
-                    let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                    *s = ConnectionStatus::Error(format!("Failed to list tools: {}", e));
-                }
-                AppError::Skill(format!(
-                    "Failed to list MCP tools for '{}' (command: `{}`): {}",
-                    config.name, cmd_display, e
-                ))
-            })?;
+        let mcp_tools: Vec<McpTool> = running.list_all_tools().await.map_err(|e| {
+            {
+                let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                *s = ConnectionStatus::Error(format!("Failed to list tools: {}", e));
+            }
+            AppError::Skill(format!(
+                "Failed to list MCP tools for '{}' (command: `{}`): {}",
+                config.name, cmd_display, e
+            ))
+        })?;
 
         // 6. Setup shared stats tracking
         let peer = running.peer().clone();
@@ -282,15 +279,10 @@ impl McpServerManager {
 
             for mcp_tool in &mcp_tools {
                 let tool_name = mcp_tool.name.to_string();
-                let input_schema: Value =
-                    serde_json::to_value(&*mcp_tool.input_schema)
-                        .unwrap_or_else(|_| Value::Object(Map::new()));
+                let input_schema: Value = serde_json::to_value(&*mcp_tool.input_schema)
+                    .unwrap_or_else(|_| Value::Object(Map::new()));
 
-                let description = mcp_tool
-                    .description
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_string();
+                let description = mcp_tool.description.as_deref().unwrap_or("").to_string();
 
                 // Check tool-level config from McpServerConfig
                 let tool_config = config.tool_configs.get(&tool_name);
@@ -387,17 +379,16 @@ impl McpServerManager {
                         if current_status.is_active() {
                             // Connection dropped unexpectedly
                             let mut s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
-                            let error_msg = "Connection closed unexpectedly (process may have crashed)".to_string();
+                            let error_msg =
+                                "Connection closed unexpectedly (process may have crashed)"
+                                    .to_string();
                             {
                                 if let Ok(mut last) = conn.last_error.lock() {
                                     *last = Some(error_msg.clone());
                                 }
                             }
                             *s = ConnectionStatus::Error(error_msg);
-                            log::warn!(
-                                "MCP health: '{}' connection lost, marked as Error",
-                                name
-                            );
+                            log::warn!("MCP health: '{}' connection lost, marked as Error", name);
                         }
                         // If already error/stopped, no need to update again
                         break; // Stop the health worker
@@ -431,11 +422,7 @@ impl McpServerManager {
         Ok(())
     }
 
-    async fn disconnect_inner(
-        &self,
-        id: &str,
-        guard: &mut HashMap<String, ActiveConnection>,
-    ) {
+    async fn disconnect_inner(&self, id: &str, guard: &mut HashMap<String, ActiveConnection>) {
         if let Some(conn) = guard.remove(id) {
             // Mark as stopping
             {
@@ -476,7 +463,10 @@ impl McpServerManager {
                 let stats = Self::compute_stats(conn);
                 let (status_str, detail) = {
                     let s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
-                    (s.as_str().to_string(), s.error_message().map(|e| e.to_string()))
+                    (
+                        s.as_str().to_string(),
+                        s.error_message().map(|e| e.to_string()),
+                    )
                 };
                 ConnectionInfo {
                     id: id.clone(),
@@ -524,7 +514,10 @@ impl McpServerManager {
         let guard = self.connections.lock().await;
         guard.get(id).map(|conn| {
             let s = conn.status.lock().unwrap_or_else(|e| e.into_inner());
-            (s.as_str().to_string(), s.error_message().map(|e| e.to_string()))
+            (
+                s.as_str().to_string(),
+                s.error_message().map(|e| e.to_string()),
+            )
         })
     }
 
@@ -695,12 +688,10 @@ impl AgentTool for McpToolWrapper {
     fn call<'a>(
         &'a self,
         args: String,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>> {
         Box::pin(async move {
             // Parse JSON args from string
-            let input: Value = serde_json::from_str(&args)
-                .map_err(|e| ToolError::JsonError(e))?;
+            let input: Value = serde_json::from_str(&args).map_err(|e| ToolError::JsonError(e))?;
 
             // Check confirmation mode — deny if configured
             if matches!(self.confirmation, ConfirmationMode::Deny) {
@@ -726,8 +717,8 @@ impl AgentTool for McpToolWrapper {
             };
 
             let tool_name = self.inner_name.clone();
-            let params = rmcp::model::CallToolRequestParams::new(tool_name)
-                .with_arguments(arguments);
+            let params =
+                rmcp::model::CallToolRequestParams::new(tool_name).with_arguments(arguments);
 
             let result = self.peer.call_tool(params).await.map_err(|e| {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
@@ -786,8 +777,7 @@ impl AgentTool for McpToolWrapper {
                 Value::Array(items)
             };
 
-            serde_json::to_string(&result_value)
-                .map_err(|e| ToolError::JsonError(e))
+            serde_json::to_string(&result_value).map_err(|e| ToolError::JsonError(e))
         })
     }
 }

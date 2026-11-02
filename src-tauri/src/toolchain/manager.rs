@@ -7,7 +7,8 @@ use tokio::sync::Mutex;
 
 use super::{
     detector::RuntimeDetector, installer::RuntimeInstaller, read_manifest, write_manifest,
-    AvailableVersion, InstallProgress, InstalledVersion, RuntimeInfo, RuntimeSource, RuntimeType, RuntimeManifest,
+    AvailableVersion, InstallProgress, InstalledVersion, RuntimeInfo, RuntimeManifest,
+    RuntimeSource, RuntimeType,
 };
 use crate::error::Result;
 
@@ -67,45 +68,45 @@ impl RuntimeManager {
         results
     }
 
-    /// Detect a specific runtime (system first, then local installed versions).
+    /// Detect a specific runtime.
+    ///
+    /// An explicitly activated built-in version wins over PATH, otherwise a
+    /// system installation is reported. This is what makes `switch_version`
+    /// observable: the app prefers the version the user selected.
     pub async fn detect(&self, rt: &RuntimeType) -> RuntimeInfo {
         let install_dir = self.install_dir.lock().await.clone();
         let installed = self.list_installed_versions(rt).await;
+        let active_version = installed
+            .iter()
+            .find(|version| version.is_active)
+            .map(|version| version.version.clone());
 
-        // Try system detection
-        if let Some(sys_info) = self.detector.detect_system(rt).await {
-            if sys_info.available {
+        if let Some(version) = active_version.as_deref() {
+            let info = built_in_info(&install_dir, rt, version, installed.clone());
+            if info.available {
+                return info;
+            }
+        }
+
+        if let Some(system) = self.detector.detect_system(rt).await {
+            if system.available {
                 return RuntimeInfo {
                     installed_versions: installed,
-                    ..sys_info
+                    ..system
                 };
             }
         }
 
-        // Check if any installed version is active
-        let active = installed.iter().find(|v| v.is_active);
-        if let Some(ver) = active {
-            let exe_path = find_exe_in_version(&install_dir, rt, &ver.version);
-            let version_str = Some(ver.version.clone());
-            let available = exe_path.as_ref().map(|p| check_exe_works(p, rt)).unwrap_or(false);
-
-            return RuntimeInfo {
-                runtime_type: rt.clone(),
-                display_name: rt.display_name().to_string(),
-                source: RuntimeSource::BuiltIn,
-                version: version_str,
-                installed_versions: installed,
-                executable_path: exe_path,
-                error: if available { None } else { Some("内置版本不可用".to_string()) },
-                available,
-            };
+        // Keep reporting the selected version even if its executable is broken,
+        // so the UI can show why the runtime is unavailable.
+        if let Some(version) = active_version {
+            return built_in_info(&install_dir, rt, &version, installed);
         }
 
-        // No installed versions, not available on system
         RuntimeInfo {
             runtime_type: rt.clone(),
             display_name: rt.display_name().to_string(),
-            source: RuntimeSource::None,
+            source: RuntimeSource::Unavailable,
             version: None,
             installed_versions: installed,
             executable_path: None,
@@ -125,15 +126,19 @@ impl RuntimeManager {
         // Read manifest if exists
         if let Some(manifest) = read_manifest(&manifest_path) {
             let active_version = manifest.active_version.clone();
-            return manifest.versions.into_iter().map(move |(ver, info)| {
-                let is_active = Some(ver.clone()) == active_version;
-                InstalledVersion {
-                    version: ver,
-                    path: info.path,
-                    installed_at: info.installed_at,
-                    is_active,
-                }
-            }).collect();
+            return manifest
+                .versions
+                .into_iter()
+                .map(move |(ver, info)| {
+                    let is_active = Some(ver.clone()) == active_version;
+                    InstalledVersion {
+                        version: ver,
+                        path: info.path,
+                        installed_at: info.installed_at,
+                        is_active,
+                    }
+                })
+                .collect();
         }
 
         // Fallback: scan directory for version folders
@@ -143,7 +148,9 @@ impl RuntimeManager {
                 for entry in entries.flatten() {
                     let name = entry.file_name();
                     let name_str = name.to_string_lossy().to_string();
-                    if name_str.starts_with('.') { continue; }
+                    if name_str.starts_with('.') {
+                        continue;
+                    }
                     if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                         versions.push(InstalledVersion {
                             version: name_str.clone(),
@@ -167,9 +174,10 @@ impl RuntimeManager {
         // Verify the version directory exists
         let ver_dir = rt_dir.join(version);
         if !ver_dir.exists() {
-            return Err(crate::error::AppError::NotFound(
-                format!("版本 {} 未安装", version)
-            ));
+            return Err(crate::error::AppError::NotFound(format!(
+                "版本 {} 未安装",
+                version
+            )));
         }
 
         // Update manifest
@@ -181,12 +189,13 @@ impl RuntimeManager {
         manifest.active_version = Some(version.to_string());
 
         // Ensure version exists in manifest
-        manifest.versions.entry(version.to_string()).or_insert_with(|| {
-            crate::environment::manifest::VersionInfo {
+        manifest
+            .versions
+            .entry(version.to_string())
+            .or_insert_with(|| crate::toolchain::manifest::VersionInfo {
                 path: version.to_string(),
                 installed_at: Utc::now().to_rfc3339(),
-            }
-        });
+            });
 
         write_manifest(&manifest_path, &manifest)?;
 
@@ -235,7 +244,9 @@ impl RuntimeManager {
     ) -> Result<RuntimeInfo> {
         let install_dir = self.install_dir.lock().await.clone();
         let installer = self.installer.lock().await;
-        installer.install(rt, version, install_dir, on_progress).await
+        installer
+            .install(rt, version, install_dir, on_progress)
+            .await
     }
 
     /// Try to begin installing a runtime. Returns an error if already installing.
@@ -268,7 +279,10 @@ impl RuntimeManager {
         if info.available {
             return Ok(());
         }
-        Err(format!("❌ {} 未安装\n\n💡 请通过「运行时管理」安装", rt.display_name()))
+        Err(format!(
+            "❌ {} 未安装\n\n💡 请通过「运行时管理」安装",
+            rt.display_name()
+        ))
     }
 
     // ── Cache ──
@@ -280,7 +294,11 @@ impl RuntimeManager {
     pub async fn get_all_cached(&self) -> Vec<RuntimeInfo> {
         let cache = self.cache.lock().await;
         let mut result: Vec<RuntimeInfo> = cache.values().cloned().collect();
-        result.sort_by(|a, b| a.runtime_type.display_name().cmp(b.runtime_type.display_name()));
+        result.sort_by(|a, b| {
+            a.runtime_type
+                .display_name()
+                .cmp(b.runtime_type.display_name())
+        });
         result
     }
 
@@ -290,12 +308,16 @@ impl RuntimeManager {
     pub async fn get_disk_usage(&self, rt: &RuntimeType) -> u64 {
         let install_dir = self.install_dir.lock().await.clone();
         let rt_dir = install_dir.join(rt.dir_name());
-        if !rt_dir.exists() { return 0; }
+        if !rt_dir.exists() {
+            return 0;
+        }
         let installed = self.list_installed_versions(rt).await;
         let mut total = 0u64;
         for v in &installed {
             let ver_dir = rt_dir.join(&v.version);
-            if ver_dir.exists() { total += dir_size(&ver_dir); }
+            if ver_dir.exists() {
+                total += dir_size(&ver_dir);
+            }
         }
         total
     }
@@ -306,12 +328,21 @@ impl RuntimeManager {
         for rt in RuntimeType::all() {
             let size = self.get_disk_usage(rt).await;
             let info = self.get_cached(rt).await.unwrap_or_else(|| RuntimeInfo {
-                runtime_type: rt.clone(), display_name: rt.display_name().to_string(),
-                source: RuntimeSource::None, version: None, installed_versions: vec![],
-                executable_path: None, error: None, available: false,
+                runtime_type: rt.clone(),
+                display_name: rt.display_name().to_string(),
+                source: RuntimeSource::Unavailable,
+                version: None,
+                installed_versions: vec![],
+                executable_path: None,
+                error: None,
+                available: false,
             });
             items.push(DiskUsageItem {
-                runtime_type: rt.clone(), display_name: rt.display_name().to_string(), size_bytes: size, installed_count: info.installed_versions.len(), active_version: info.version.clone(),
+                runtime_type: rt.clone(),
+                display_name: rt.display_name().to_string(),
+                size_bytes: size,
+                installed_count: info.installed_versions.len(),
+                active_version: info.version.clone(),
             });
         }
         items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
@@ -334,16 +365,48 @@ fn dir_size(path: &std::path::Path) -> u64 {
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() { total += dir_size(&path); }
-            else if let Ok(meta) = entry.metadata() { total += meta.len(); }
+            if path.is_dir() {
+                total += dir_size(&path);
+            } else if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+            }
         }
     }
     total
 }
 
+/// Build a `RuntimeInfo` for an activated built-in version.
+fn built_in_info(
+    install_dir: &std::path::Path,
+    rt: &RuntimeType,
+    version: &str,
+    installed: Vec<InstalledVersion>,
+) -> RuntimeInfo {
+    let exe_path = find_exe_in_version(install_dir, rt, version);
+    let available = exe_path
+        .as_ref()
+        .map(|path| check_exe_works(path, rt))
+        .unwrap_or(false);
+
+    RuntimeInfo {
+        runtime_type: rt.clone(),
+        display_name: rt.display_name().to_string(),
+        source: RuntimeSource::BuiltIn,
+        version: Some(version.to_string()),
+        installed_versions: installed,
+        executable_path: exe_path,
+        error: if available {
+            None
+        } else {
+            Some("内置版本不可用".to_string())
+        },
+        available,
+    }
+}
+
 /// Find the executable path within a version directory.
 /// Checks both the root and `bin/` subdirectory (Go places binaries in `bin/`).
-fn find_exe_in_version(base: &PathBuf, rt: &RuntimeType, version: &str) -> Option<String> {
+fn find_exe_in_version(base: &std::path::Path, rt: &RuntimeType, version: &str) -> Option<String> {
     let ver_dir = base.join(rt.dir_name()).join(version);
     let exe_name = rt.primary_command();
     #[cfg(target_os = "windows")]
@@ -352,10 +415,7 @@ fn find_exe_in_version(base: &PathBuf, rt: &RuntimeType, version: &str) -> Optio
         ver_dir.join("bin").join(format!("{}.exe", exe_name)),
     ];
     #[cfg(not(target_os = "windows"))]
-    let candidates = vec![
-        ver_dir.join(exe_name),
-        ver_dir.join("bin").join(exe_name),
-    ];
+    let candidates = vec![ver_dir.join(exe_name), ver_dir.join("bin").join(exe_name)];
     for c in &candidates {
         if c.exists() {
             return Some(c.to_string_lossy().to_string());

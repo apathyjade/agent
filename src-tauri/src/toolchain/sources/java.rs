@@ -7,10 +7,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::environment::http_client::get_http_client;
-use crate::environment::registry::{RuntimeVersion, VersionSource};
-use crate::environment::RuntimeType;
 use crate::error::Result;
+use crate::toolchain::http_client::get_http_client;
+use crate::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::toolchain::RuntimeType;
 
 /// Top-level response from Adoptium API.
 #[derive(Debug, Deserialize)]
@@ -71,11 +71,17 @@ impl JavaVersionSource {
 
     fn current_os() -> &'static str {
         #[cfg(target_os = "windows")]
-        { "windows" }
+        {
+            "windows"
+        }
         #[cfg(target_os = "linux")]
-        { "linux" }
+        {
+            "linux"
+        }
         #[cfg(target_os = "macos")]
-        { "mac" }
+        {
+            "mac"
+        }
     }
 }
 
@@ -108,8 +114,16 @@ impl VersionSource for JavaVersionSource {
 
         // Sort: newest version first (semver comparison)
         versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a.version.split('.').filter_map(|s| s.parse().ok()).collect();
-            let b_parts: Vec<u64> = b.version.split('.').filter_map(|s| s.parse().ok()).collect();
+            let a_parts: Vec<u64> = a
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let b_parts: Vec<u64> = b
+                .version
+                .split('.')
+                .filter_map(|s| s.parse().ok())
+                .collect();
             for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
                 if av != bv {
                     return bv.cmp(av);
@@ -164,9 +178,9 @@ impl JavaVersionSource {
             };
 
             // Find a matching binary for our OS and architecture
-            let matching_binary = binaries.iter().find(|b| {
-                b.os.as_deref() == Some(os) && b.architecture.as_deref() == Some("x64")
-            });
+            let matching_binary = binaries
+                .iter()
+                .find(|b| b.os.as_deref() == Some(os) && b.architecture.as_deref() == Some("x64"));
 
             if let Some(binary) = matching_binary {
                 let download_url = binary
