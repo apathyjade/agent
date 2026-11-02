@@ -1,0 +1,105 @@
+{
+  // VS Code debugging for the Tauri app.
+  //
+  // The Rust backend is a Cargo project (src-tauri/Cargo.toml); a debug build
+  // compiles `tauri` without the `custom-protocol` feature, so the binary loads
+  // the Vite dev server at http://localhost:1420 (see src-tauri/tauri.conf.json).
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Recommended: builds the Rust backend with Cargo and starts Vite first.
+      // Requires the CodeLLDB extension (vadimcn.vscode-lldb).
+      "name": "Tauri: Debug (start Vite)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path",
+          "${workspaceFolder}/src-tauri/Cargo.toml",
+          "--bin",
+          "agent"
+        ],
+        "filter": {
+          "name": "agent",
+          "kind": "bin"
+        }
+      },
+      "cwd": "${workspaceFolder}/src-tauri",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "RUST_LOG": "debug"
+      },
+      "preLaunchTask": "ui: dev",
+      "sourceLanguages": ["rust"],
+      "console": "integratedTerminal"
+    },
+    {
+      // Same as above, but reuse a Vite server that is already running.
+      "name": "Tauri: Debug (Vite already running)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path",
+          "${workspaceFolder}/src-tauri/Cargo.toml",
+          "--bin",
+          "agent"
+        ],
+        "filter": {
+          "name": "agent",
+          "kind": "bin"
+        }
+      },
+      "cwd": "${workspaceFolder}/src-tauri",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "RUST_LOG": "debug"
+      },
+      "sourceLanguages": ["rust"],
+      "console": "integratedTerminal"
+    },
+    {
+      // Attach to an app started outside VS Code, e.g. `cargo tauri dev`.
+      "name": "Tauri: Attach to Rust process",
+      "type": "lldb",
+      "request": "attach",
+      "pid": "${command:pickProcess}",
+      "sourceLanguages": ["rust"]
+    },
+    {
+      // Windows-only alternative to CodeLLDB, uses the MSVC debugger.
+      // Requires the C/C++ extension (ms-vscode.cpptools).
+      "name": "Tauri: Debug (MSVC, Windows)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/agent.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}/src-tauri",
+      "environment": [
+        { "name": "RUST_BACKTRACE", "value": "1" },
+        { "name": "RUST_LOG", "value": "debug" }
+      ],
+      "preLaunchTask": "rust: build",
+      "console": "integratedTerminal"
+    },
+    {
+      // Debug the frontend itself in Chrome/Edge.
+      "name": "UI: Chrome (Vite)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:1420",
+      "webRoot": "${workspaceFolder}/src-ui",
+      "preLaunchTask": "ui: dev"
+    },
+    {
+      "name": "UI: Edge (Vite)",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:1420",
+      "webRoot": "${workspaceFolder}/src-ui",
+      "preLaunchTask": "ui: dev"
+    }
+  ]
+}

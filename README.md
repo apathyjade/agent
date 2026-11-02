@@ -72,6 +72,21 @@ cargo tauri android dev
 cargo tauri ios dev
 ```
 
+### VS Code Debugging
+
+共享调试配置在 `.vscode/`（需要安装推荐扩展：rust-analyzer、CodeLLDB）：
+
+| 配置 | 用途 |
+|------|------|
+| `Tauri: Debug (start Vite)` | 启动 Vite → 用 Cargo 构建并调试 Rust 后端（F5 默认） |
+| `Tauri: Debug (Vite already running)` | Vite 已在运行时复用，避免端口 1420 冲突 |
+| `Tauri: Attach to Rust process` | 附加到已运行的进程（例如 `cargo tauri dev` 启动的应用） |
+| `Tauri: Debug (MSVC, Windows)` | Windows 下改用 MSVC 调试器（需 C/C++ 扩展） |
+| `UI: Chrome (Vite)` / `UI: Edge (Vite)` | 调试 React 前端 |
+
+Rust 断点直接打在 `src-tauri/src/**/*.rs`；前端断点打在 `src-ui/src/**/*.ts(x)`。
+调试构建会加载 `http://localhost:1420`（见 `src-tauri/tauri.conf.json` 的 `devUrl`）。
+
 ### Production Build
 
 ```bash

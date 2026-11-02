@@ -1,0 +1,95 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Background Vite dev server used by the Tauri debug configs.
+      // Ends when Vite prints "ready in ...", so the debugger can start.
+      "label": "ui: dev",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-ui"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*VITE.*",
+          "endsPattern": ".*ready in.*"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    },
+    {
+      "label": "ui: build",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-ui"
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "rust: build",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--manifest-path", "${workspaceFolder}/src-tauri/Cargo.toml"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "rust: check",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["check", "--manifest-path", "${workspaceFolder}/src-tauri/Cargo.toml", "--all-targets"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "rust: test",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["test", "--manifest-path", "${workspaceFolder}/src-tauri/Cargo.toml"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri"
+      },
+      "group": "test",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      // Full Tauri dev loop (start Vite + build + run) without a debugger.
+      "label": "tauri: dev",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["tauri", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

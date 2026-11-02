@@ -1,0 +1,26 @@
+{
+  "rust-analyzer.linkedProjects": ["src-tauri/Cargo.toml"],
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.cargo.allTargets": true,
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "typescript.tsdk": "src-ui/node_modules/typescript/lib",
+  "eslint.workingDirectories": [
+    {
+      "directory": "src-ui",
+      "changeProcessCWD": true
+    }
+  ],
+  "files.exclude": {
+    "**/target": true,
+    "src-ui/node_modules": true,
+    "src-ui/dist": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "src-ui/node_modules": true,
+    "src-ui/dist": true,
+    "src-ui/pnpm-lock.yaml": true
+  }
+}

@@ -7,10 +7,15 @@ src-ui/node_modules
 src-ui/dist
 
 # IDE
-.vscode
 .idea
 *.swp
 *.swo
+# Shared VS Code configs (debug + workspace settings) are tracked
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
 
 # OS
 .DS_Store
