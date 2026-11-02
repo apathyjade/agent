@@ -1,10 +1,9 @@
-﻿use serde_json::{json, Value};
+use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 pub struct WebSearchTool;
 
@@ -14,36 +13,31 @@ impl WebSearchTool {
     }
 }
 
-impl ToolDyn for WebSearchTool {
+impl AgentTool for WebSearchTool {
     fn name(&self) -> String {
         "web_search".to_string()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: "web_search".to_string(),
-                description: "Search the web for information. Returns relevant results based on the query."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query"
-                        },
-                        "num_results": {
-                            "type": "integer",
-                            "description": "Number of results to return (default: 5, max: 10)"
-                        }
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: "web_search".to_string(),
+            description: "Search the web for information. Returns relevant results based on the query."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
                     },
-                    "required": ["query"]
-                }),
-            }
-        })
+                    "num_results": {
+                        "type": "integer",
+                        "description": "Number of results to return (default: 5, max: 10)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
     }
 
     fn call<'a>(

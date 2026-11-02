@@ -1,5 +1,5 @@
 use agent_lib::tools::calculator::CalculatorTool;
-use agent_lib::tools::r#trait::ToolDyn;
+use agent_lib::tools::r#trait::AgentTool;
 use serde_json::json;
 
 #[tokio::test]

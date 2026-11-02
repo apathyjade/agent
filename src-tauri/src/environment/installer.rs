@@ -510,7 +510,7 @@ struct RuntimeDownloadInfo {
     executables: Vec<&'static str>,
 }
 
-type InfoFn = fn(&str) -> Option<RuntimeDownloadInfo>;
+// type InfoFn = fn(&str) -> Option<RuntimeDownloadInfo>;
 
 fn node_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
     let is_win = cfg!(target_os = "windows");

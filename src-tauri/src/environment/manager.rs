@@ -7,8 +7,7 @@ use tokio::sync::Mutex;
 
 use super::{
     detector::RuntimeDetector, installer::RuntimeInstaller, read_manifest, write_manifest,
-    AvailableVersion, FoundExecutable, InstallProgress, InstalledVersion,
-    PathConflict, RuntimeInfo, RuntimeSource, RuntimeType, RuntimeManifest,
+    AvailableVersion, InstallProgress, InstalledVersion, RuntimeInfo, RuntimeSource, RuntimeType, RuntimeManifest,
 };
 use crate::error::Result;
 

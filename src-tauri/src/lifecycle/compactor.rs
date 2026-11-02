@@ -15,7 +15,8 @@ fn message_text(msg: &ApiMessage) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        ApiMessage::Assistant { content, .. } => content
+        ApiMessage::Assistant(turn) => turn
+            .content
             .iter()
             .filter_map(|c| match c {
                 AssistantContent::Text(t) => Some(t.text.clone()),

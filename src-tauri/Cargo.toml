@@ -54,7 +54,7 @@ glob = "0.3"
 notify = "7"
 git2 = { version = "0.19", features = ["vendored-libgit2"] }
 # Rig AI framework — provider adapter + extractor
-rig = "0.37"
+rig = "0.46"
 schemars = "1.2"
 
 [dev-dependencies]

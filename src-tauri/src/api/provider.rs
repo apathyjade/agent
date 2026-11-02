@@ -1,25 +1,25 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use rig::completion::Message;
-use rig::tool::ToolSet;
+use rig::tool::DynamicTool;
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
 
 use super::rig::create_rig_provider;
 
 // ---------------------------------------------------------------------------
-// Object-safe trait — wraps any Rig CompletionClient behind a single
-// interface so we can store heterogeneous providers in the registry.
+// Object-safe trait — wraps a Rig completion model behind a single interface
+// so heterogeneous providers can live in the registry.
 // ---------------------------------------------------------------------------
 
-/// Object-safe provider interface for type-erased access to Rig clients.
+/// Object-safe provider interface for type-erased access to Rig models.
 ///
-/// Every concrete [`RigProvider<C>`](super::rig::RigProvider) implements this
-/// trait, allowing [`ProviderRegistry`] to store providers built from
-/// different backends (OpenAI, Anthropic, …) in a single map.
+/// The single [`RigProvider`](super::rig::RigProvider) implementation covers
+/// every backend, so [`ProviderRegistry`] stores one boxed trait object per
+/// configured model.
 #[async_trait]
 pub trait ProviderBox: Send + Sync {
     /// The model identifier (e.g. `"gpt-4o"`, `"claude-3-opus"`).
@@ -42,7 +42,7 @@ pub trait ProviderBox: Send + Sync {
         &self,
         preamble: &str,
         prompt: &str,
-        tool_set: ToolSet,
+        tools: Vec<DynamicTool>,
     ) -> Result<String>;
 
     /// Streamed one-shot prompt (no tools).
@@ -57,7 +57,7 @@ pub trait ProviderBox: Send + Sync {
         &self,
         preamble: &str,
         prompt: &str,
-        tool_set: ToolSet,
+        tools: Vec<DynamicTool>,
     ) -> Result<BoxStream<'static, Result<String>>>;
 }
 

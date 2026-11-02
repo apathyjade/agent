@@ -35,7 +35,7 @@ impl LlmPlanner {
             let registry = self.tools.lock().await;
             let mut entries = Vec::new();
             for tool in registry.get_enabled() {
-                let def = tool.definition(String::new()).await;
+                let def = tool.definition();
                 entries.push(format!(
                     "- `{}`: {} — params: {}",
                     def.name, def.description, def.parameters

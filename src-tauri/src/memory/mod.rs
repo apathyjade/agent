@@ -9,8 +9,8 @@ use crate::db::repository::Database;
 use crate::error::{AppError, Result};
 
 // Rig imports for embedding support
-use rig::client::EmbeddingsClient;
-use rig::embeddings::EmbeddingModel;
+use rig::driver::DynModel;
+use rig::operation::Embedding;
 
 pub mod seeds;
 pub mod vector_index;
@@ -94,7 +94,7 @@ pub struct UpdateMemoryParams {
 /// to SQLite keyword search.
 pub struct MemoryManager {
     db: Arc<Mutex<Database>>,
-    embedder: Option<rig::providers::openai::EmbeddingModel>,
+    embedder: Option<DynModel<Embedding>>,
     vector_index: Arc<Mutex<InMemoryVectorIndex>>,
 }
 
@@ -105,20 +105,11 @@ impl MemoryManager {
     /// a Rig embedding model and rebuild the vector index from existing
     /// memories on first `retrieve_relevant` call.
     pub fn new(db: Arc<Mutex<Database>>, openai_api_key: Option<String>) -> Self {
-        let embedder = openai_api_key.and_then(|key| {
-            match rig::providers::openai::Client::new(&key) {
-                Ok(client) => {
-                    let model = client.embedding_model(
-                        rig::providers::openai::TEXT_EMBEDDING_3_SMALL,
-                    );
-                    log::info!("MemoryManager: embedding model initialised");
-                    Some(model)
-                }
-                Err(e) => {
-                    log::warn!("MemoryManager: failed to init embedder: {}", e);
-                    None
-                }
-            }
+        let embedder = openai_api_key.map(|key| {
+            let client = rig::providers::openai::OpenAI::new(key);
+            let model = client.embedding(rig::providers::openai::TEXT_EMBEDDING_3_SMALL, None);
+            log::info!("MemoryManager: embedding model initialised");
+            model.erase()
         });
 
         Self {

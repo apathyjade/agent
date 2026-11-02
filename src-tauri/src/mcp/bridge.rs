@@ -2,10 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use serde_json::Value;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
-/// A tool exposed by an MCP server, wrapped to implement ToolDyn.
+/// A tool exposed by an MCP server, wrapped to implement [`AgentTool`].
 pub struct McpToolBridge {
     connection_id: String,
     tool_name: String,
@@ -33,22 +32,17 @@ impl McpToolBridge {
     }
 }
 
-impl ToolDyn for McpToolBridge {
+impl AgentTool for McpToolBridge {
     fn name(&self) -> String {
         self.tool_name.clone()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: self.tool_name.clone(),
-                description: self.tool_description.clone(),
-                parameters: self.input_schema.clone(),
-            }
-        })
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: self.tool_name.clone(),
+            description: self.tool_description.clone(),
+            parameters: self.input_schema.clone(),
+        }
     }
 
     fn call<'a>(

@@ -1,4 +1,4 @@
-﻿use serde_json::{json, Value};
+use serde_json::{json, Value};
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
@@ -6,8 +6,7 @@ use std::pin::Pin;
 
 use crate::error::AppError;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 pub struct FileSystemTool;
 
@@ -85,40 +84,35 @@ impl FileSystemTool {
     }
 }
 
-impl ToolDyn for FileSystemTool {
+impl AgentTool for FileSystemTool {
     fn name(&self) -> String {
         "file_system".to_string()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: "file_system".to_string(),
-                description: "Read, write, and manage files and directories. Supports reading files, writing files, listing directory contents, creating directories, and deleting files.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["read", "write", "list", "mkdir", "delete"],
-                            "description": "The action to perform"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "The file or directory path"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Content to write (for write action)"
-                        }
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: "file_system".to_string(),
+            description: "Read, write, and manage files and directories. Supports reading files, writing files, listing directory contents, creating directories, and deleting files.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["read", "write", "list", "mkdir", "delete"],
+                        "description": "The action to perform"
                     },
-                    "required": ["action", "path"]
-                }),
-            }
-        })
+                    "path": {
+                        "type": "string",
+                        "description": "The file or directory path"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to write (for write action)"
+                    }
+                },
+                "required": ["action", "path"]
+            }),
+        }
     }
 
     fn call<'a>(

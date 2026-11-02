@@ -9,8 +9,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::error::AppError;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 pub struct ScriptTool {
     #[allow(dead_code)]
@@ -75,25 +74,17 @@ impl ScriptTool {
     }
 }
 
-impl ToolDyn for ScriptTool {
+impl AgentTool for ScriptTool {
     fn name(&self) -> String {
         self.name.clone()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        let name = self.name.clone();
-        let description = self.description.clone();
-        let parameters = self.parameters.clone();
-        Box::pin(async move {
-            ToolDefinition {
-                name,
-                description,
-                parameters,
-            }
-        })
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            parameters: self.parameters.clone(),
+        }
     }
 
     fn call<'a>(

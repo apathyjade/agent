@@ -5,8 +5,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 pub struct CodeExecutorTool;
 
@@ -16,43 +15,38 @@ impl CodeExecutorTool {
     }
 }
 
-impl ToolDyn for CodeExecutorTool {
+impl AgentTool for CodeExecutorTool {
     fn name(&self) -> String {
         "code_executor".to_string()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: "code_executor".to_string(),
-                description:
-                    "Execute code snippets in Python or JavaScript. Returns stdout, stderr, and exit code. Timeout enforced for safety."
-                        .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "language": {
-                            "type": "string",
-                            "enum": ["python", "javascript"],
-                            "description": "The programming language of the code"
-                        },
-                        "code": {
-                            "type": "string",
-                            "description": "The code to execute"
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Execution timeout in seconds (default: 30, max: 60)",
-                            "default": 30
-                        }
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: "code_executor".to_string(),
+            description:
+                "Execute code snippets in Python or JavaScript. Returns stdout, stderr, and exit code. Timeout enforced for safety."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "javascript"],
+                        "description": "The programming language of the code"
                     },
-                    "required": ["language", "code"]
-                }),
-            }
-        })
+                    "code": {
+                        "type": "string",
+                        "description": "The code to execute"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Execution timeout in seconds (default: 30, max: 60)",
+                        "default": 30
+                    }
+                },
+                "required": ["language", "code"]
+            }),
+        }
     }
 
     fn call<'a>(

@@ -1,4 +1,4 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use serde::{Serialize, Deserialize};
 
@@ -66,9 +66,9 @@ impl ToolLoop {
 
     /// Non-streaming agent run.
     ///
-    /// Accepts a `Vec<Message>` (Rig v0.37 enum) for backward compatibility
-    /// with callers that already construct message lists, extracts the system
-    /// prompt and last user message, then delegates to ProviderBox.
+    /// Accepts a `Vec<Message>` from callers that already construct message
+    /// lists, extracts the system prompt and last user message, then delegates
+    /// to ProviderBox.
     pub async fn run(
         &self,
         model_id: &str,
@@ -134,10 +134,12 @@ impl ToolLoop {
         Ok(rx)
     }
 
-    /// Build a Rig Agent with ToolSet and run it.
+    /// Build a Rig Agent with a tool set and run it.
     ///
-    /// Currently delegates to [`ProviderBox::prompt()`]; proper ToolSet
-    /// integration (via `prompt_with_tools`) will be enabled in Phase 3.2.
+    /// Currently delegates to [`ProviderBox::prompt()`]; tools are wired
+    /// through [`ProviderBox::prompt_with_tools()`] with
+    /// `ToolRegistry::to_rig_tools()`, which the orchestrator enables once
+    /// tool routing is switched over.
     pub async fn run_with_agent(
         &self,
         model_id: &str,
@@ -171,8 +173,8 @@ fn extract_chat_params(messages: Vec<Message>) -> (String, String, Vec<Message>)
         .iter()
         .rev()
         .find_map(|m| match m {
-            Message::User { content } => match content.first_ref() {
-                rig::message::UserContent::Text(t) => Some(t.text.clone()),
+            Message::User { content } => match content.first() {
+                Some(rig::message::UserContent::Text(t)) => Some(t.text.clone()),
                 _ => None,
             },
             _ => None,

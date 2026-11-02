@@ -14,6 +14,21 @@ use crate::intent::PathSelection;
 use crate::persona::PersonaResolution;
 use crate::state::AppState;
 
+/// Rebuild a persisted tool result as a Rig user message.
+///
+/// Rig 0.45 identifies a tool result by its call id and the tool name; the
+/// database persists only the call id, so the placeholder name `tool` is used
+/// for stored rows.
+fn tool_result_message(m: &DbMessage) -> Message {
+    use rig::message::{CallId, ToolName};
+
+    let call = CallId::from_wire(m.tool_call_id.clone().unwrap_or_default());
+    match ToolName::new("tool") {
+        Ok(name) => Message::tool_result(call, name, m.content.clone()),
+        Err(_) => Message::user(m.content.clone()),
+    }
+}
+
 /// Default system prompt used when user hasn't configured one.
 /// Guides the model toward clear, well-structured, high-quality responses.
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful, respectful AI assistant. \
@@ -240,11 +255,7 @@ pub async fn send_message(
             "system" => Message::system(m.content.clone()),
             "user" => Message::user(m.content.clone()),
             "assistant" => Message::assistant(m.content.clone()),
-            "tool" => Message::tool_result_with_call_id(
-                m.tool_call_id.clone().unwrap_or_default(),
-                m.tool_call_id.clone(),
-                m.content.clone(),
-            ),
+            "tool" => tool_result_message(m),
             _ => Message::user(m.content.clone()),
         }
     }));
@@ -566,11 +577,7 @@ pub async fn send_message_stream(
             "system" => Message::system(m.content.clone()),
             "user" => Message::user(m.content.clone()),
             "assistant" => Message::assistant(m.content.clone()),
-            "tool" => Message::tool_result_with_call_id(
-                m.tool_call_id.clone().unwrap_or_default(),
-                m.tool_call_id.clone(),
-                m.content.clone(),
-            ),
+            "tool" => tool_result_message(m),
             _ => Message::user(m.content.clone()),
         }
     }));

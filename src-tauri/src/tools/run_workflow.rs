@@ -4,41 +4,35 @@ use std::pin::Pin;
 
 use crate::orchestrator::pipeline_adapter::PipelineAdapter;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 /// Tool that loads and describes a YAML workflow.
 /// Does NOT execute the workflow — returns the plan for the LLM to process.
 /// Actual pipeline execution is handled by ExecStep::Pipeline in the ExecutionRuntime.
 pub struct RunWorkflowTool;
 
-impl ToolDyn for RunWorkflowTool {
+impl AgentTool for RunWorkflowTool {
     fn name(&self) -> String {
         "run_workflow".to_string()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: "run_workflow".to_string(),
-                description:
-                    "Load a predefined workflow by name and return its steps. Available workflows: analyze_project, build_project, test_suite, deploy. The result includes each step's type, tool, and parameters."
-                        .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "workflow": {
-                            "type": "string",
-                            "description": "The workflow name to load"
-                        }
-                    },
-                    "required": ["workflow"]
-                }),
-            }
-        })
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: "run_workflow".to_string(),
+            description:
+                "Load a predefined workflow by name and return its steps. Available workflows: analyze_project, build_project, test_suite, deploy. The result includes each step's type, tool, and parameters."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "workflow": {
+                        "type": "string",
+                        "description": "The workflow name to load"
+                    }
+                },
+                "required": ["workflow"]
+            }),
+        }
     }
 
     fn call<'a>(

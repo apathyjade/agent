@@ -13,7 +13,7 @@
 
 | 依赖 | 用途 | 说明 |
 |------|------|------|
-| **Rig v0.37** | AI 基础设施 | LLM provider、embeddings、extraction、streaming — 统一 AI 框架 |
+| **Rig v0.46** | AI 基础设施 | LLM provider、embeddings、extraction、streaming — 统一 AI 框架 |
 | Tauri 2.x | 桌面框架 | Rust 后端 + React 前端 |
 | SQLite | 持久化 | 消息、记忆、配置存储 |
 
@@ -82,7 +82,7 @@ cd src-tauri && cargo tauri build
 | 构建检查 | `cd src-tauri && cargo check` |
 | 前端类型检查 | `cd src-ui && npx tsc --noEmit` |
 | 添加 IPC 命令 | `commands/` 下新建文件，在 `lib.rs` 注册 handler |
-| 添加工具 | `tools/` 下实现 `Tool` trait，`ToolRegistry::new()` 注册 |
+| 添加工具 | `tools/` 下实现 `AgentTool` trait，`ToolRegistry::new()` 注册 |
 | 添加 provider | `config.rs` 的 `ModelProvider` 加枚举值，`api/provider.rs` 注册 |
 | 添加运行时 | `environment/registry.rs` 注册，实现 detector + installer |
 | 添加记忆种子 | `memory/seeds.rs` 的 `default_seed_memories()` 中添加 |

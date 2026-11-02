@@ -1,11 +1,10 @@
-﻿use serde_json::{json, Value};
+use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
 
 use crate::error::{AppError, Result};
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 pub struct CalculatorTool;
 
@@ -15,31 +14,26 @@ impl CalculatorTool {
     }
 }
 
-impl ToolDyn for CalculatorTool {
+impl AgentTool for CalculatorTool {
     fn name(&self) -> String {
         "calculator".to_string()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: "calculator".to_string(),
-                description: "Evaluate mathematical expressions. Supports basic arithmetic (+, -, *, /), parentheses, and common functions (sqrt, pow, sin, cos, tan, log, abs).".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "expression": {
-                            "type": "string",
-                            "description": "The mathematical expression to evaluate"
-                        }
-                    },
-                    "required": ["expression"]
-                }),
-            }
-        })
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: "calculator".to_string(),
+            description: "Evaluate mathematical expressions. Supports basic arithmetic (+, -, *, /), parentheses, and common functions (sqrt, pow, sin, cos, tan, log, abs).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "The mathematical expression to evaluate"
+                    }
+                },
+                "required": ["expression"]
+            }),
+        }
     }
 
     fn call<'a>(

@@ -17,8 +17,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolError};
+use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 use crate::environment::RuntimeManager;
 use crate::error::{AppError, Result};
@@ -680,22 +679,17 @@ pub struct McpToolWrapper {
     last_error: Arc<std::sync::Mutex<Option<String>>>,
 }
 
-impl ToolDyn for McpToolWrapper {
+impl AgentTool for McpToolWrapper {
     fn name(&self) -> String {
         self.inner_name.clone()
     }
 
-    fn definition<'a>(
-        &'a self,
-        _prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        Box::pin(async move {
-            ToolDefinition {
-                name: self.inner_name.clone(),
-                description: self.inner_description.clone(),
-                parameters: self.inner_parameters.clone(),
-            }
-        })
+    fn definition(&self) -> ToolSpec {
+        ToolSpec {
+            name: self.inner_name.clone(),
+            description: self.inner_description.clone(),
+            parameters: self.inner_parameters.clone(),
+        }
     }
 
     fn call<'a>(

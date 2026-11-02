@@ -2,11 +2,12 @@
 
 ## Rig AI 框架
 
-- **Rig 版本兼容**：项目当前使用 `rig = "0.37"`，Rig 在 0.3x 系列中有 breaking changes（如 `max_depth` → `max_turns`），升级时需检查 changelog
-- **Provider 非 feature-gated**：Rig v0.37 中所有 provider 是内置在 rig-core 中的，**没有** `openai`/`anthropic` 等 feature flag。`features = ["openai", "anthropic"]` 会导致构建失败——正确方式：`rig = "0.37"`
+- **Rig 版本兼容**：项目当前使用 `rig = "0.46"`。0.37 → 0.45 是破坏性升级：`ToolDyn` / `CompletionClient` / `StreamingChat` / `ToolError` 均已移除，provider 改为「客户端 → model → `AgentBuilder`」；0.45 → 0.46 的 breaking change 集中在上游 CLI/TUI、plugin/ECS 与 memory API，本项目用到的 `AgentBuilder` / `DynamicTool` / `Message` / extractor 签名未变。迁移细节见 `docs/design/2026-10-29-rig-0.45-migration.md`
+- **Provider 非 feature-gated**：Rig 0.46 中所有 provider 内置在 rig-core 中，**没有** `openai`/`anthropic` 等 feature flag。`features = ["openai", "anthropic"]` 会导致构建失败——正确方式：`rig = "0.46"`
 - **schemars 版本匹配**：`extract_structured<T>()` 要求 T 实现 `schemars::JsonSchema`。Rig 内部使用 `schemars v1.2.x`，项目中需使用相同版本，否则 trait bound 不满足（错误："trait `schemars::JsonSchema` is not satisfied"）
-- **Client::new() 返回 Result**：所有 Rig provider 的 `Client::new(&api_key)` 返回 `Result`，不是直接返回结构体——构造时需处理错误
-- **流式传输不携带工具调用**：当前 `StreamingChat::stream_chat()` 仅发送文本 delta。工具调用走 `chat_with_tools()` 的非流式路径，通过 `AgentLoop` 的输出通道推送 ToolCall/ToolResult 事件
+- **客户端构造不再返回 Result**：`OpenAI::new(key)` / `Anthropic::new(key)` 现在是直接返回客户端；只有 `from_env()` 返回 `Result`。真正的错误边界在 `AgentRunner` 执行时
+- **工具不是 `ToolDyn`**：自定义工具实现项目内的 `tools::r#trait::AgentTool`，由 `ToolRegistry::to_rig_tools()` 转成 `rig::tool::DynamicTool`；直接 `impl rig::tool::ToolDyn` 会编译失败
+- **流式传输不携带工具调用**：当前流式适配器只透出文本 delta（`StreamEvent::Text`）和 `FinalResponse`。工具调用走 `prompt_with_tools()` 的非流式路径，通过 `AgentLoop` 的输出通道推送 ToolCall/ToolResult 事件
 - **记忆语义搜索依赖 OpenAI API**：`MemoryManager` 的语义搜索需要 OpenAI API key（`OPENAI_API_KEY` 环境变量或 config 中第一个 OpenAI 模型的 key）。无 key 时自动降级到关键词 LIKE 搜索
 
 ## 项目配置

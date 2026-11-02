@@ -1,10 +1,7 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use rig::completion::ToolDefinition;
-use rig::tool::{ToolDyn, ToolSet};
 use serde_json::Value;
 
 use crate::error::{AppError, Result};
@@ -13,32 +10,7 @@ use crate::tools::code_executor::CodeExecutorTool;
 use crate::tools::file_system::FileSystemTool;
 use crate::tools::run_workflow::RunWorkflowTool;
 use crate::tools::web_search::WebSearchTool;
-use crate::tools::r#trait::ToolInfo;
-
-/// Wrapper to allow Arc<dyn ToolDyn> to be used as a sized ToolDyn impl
-/// for building ToolSet.
-struct ArcToolDyn(Arc<dyn ToolDyn>);
-
-impl ToolDyn for ArcToolDyn {
-    fn name(&self) -> String {
-        self.0.name()
-    }
-
-    fn definition<'a>(
-        &'a self,
-        prompt: String,
-    ) -> Pin<Box<dyn Future<Output = ToolDefinition> + Send + 'a>> {
-        self.0.definition(prompt)
-    }
-
-    fn call<'a>(
-        &'a self,
-        args: String,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<String, rig::tool::ToolError>> + Send + 'a>>
-    {
-        self.0.call(args)
-    }
-}
+use crate::tools::r#trait::{AgentTool, ToolInfo};
 
 /// Aliases for tool names, mapping common alternative names to registered tool names
 fn tool_aliases() -> HashMap<&'static str, &'static str> {
@@ -65,7 +37,7 @@ fn tool_aliases() -> HashMap<&'static str, &'static str> {
 }
 
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn ToolDyn>>,
+    tools: HashMap<String, Arc<dyn AgentTool>>,
     enabled: HashMap<String, bool>,
     aliases: HashMap<String, String>,
 }
@@ -92,12 +64,12 @@ impl ToolRegistry {
         registry
     }
 
-    pub fn register(&mut self, name: &str, tool: Arc<dyn ToolDyn>, enabled: bool) {
+    pub fn register(&mut self, name: &str, tool: Arc<dyn AgentTool>, enabled: bool) {
         self.tools.insert(name.to_string(), tool);
         self.enabled.insert(name.to_string(), enabled);
     }
 
-    pub fn get(&self, name: &str) -> Result<Arc<dyn ToolDyn>> {
+    pub fn get(&self, name: &str) -> Result<Arc<dyn AgentTool>> {
         // Direct lookup first
         if let Some(tool) = self.tools.get(name) {
             return Ok(tool.clone());
@@ -118,7 +90,7 @@ impl ToolRegistry {
         Err(AppError::Tool(format!("Tool '{}' not found", name)))
     }
 
-    pub fn get_enabled(&self) -> Vec<Arc<dyn ToolDyn>> {
+    pub fn get_enabled(&self) -> Vec<Arc<dyn AgentTool>> {
         self.tools
             .iter()
             .filter(|(name, _)| self.enabled.get(name.as_str()).copied().unwrap_or(false))
@@ -126,17 +98,52 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Convert enabled tools to a Rig ToolSet for use with rig::agent::Agent.
-    pub fn to_rig_tool_set(&self, allowed: Option<&[String]>) -> ToolSet {
-        let mut builder = ToolSet::builder();
+    /// Convert enabled tools to Rig [`DynamicTool`]s for use with
+    /// [`rig::agent::Agent`].
+    ///
+    /// Rig 0.45 has no object-safe tool trait, so each registered tool is
+    /// erased into a `DynamicTool` whose callback forwards to
+    /// [`AgentTool::call`](crate::tools::r#trait::AgentTool::call).
+    pub fn to_rig_tools(&self, allowed: Option<&[String]>) -> Vec<rig::tool::DynamicTool> {
+        use rig::message::ToolName;
+        use rig::tool::{ToolExecutionError, ToolOutput};
+
+        let mut dynamic_tools = Vec::new();
+
         for (name, tool) in &self.tools {
             let is_enabled = self.enabled.get(name).copied().unwrap_or(false);
             let is_allowed = allowed.map_or(true, |a| a.contains(name));
-            if is_enabled && is_allowed {
-                builder = builder.static_tool(ArcToolDyn(tool.clone()));
+            if !is_enabled || !is_allowed {
+                continue;
             }
+
+            let spec = tool.definition();
+            let tool_name = match ToolName::new(spec.name.clone()) {
+                Ok(name) => name,
+                Err(e) => {
+                    log::warn!("Skipping tool '{}': {}", name, e);
+                    continue;
+                }
+            };
+
+            let tool = tool.clone();
+            dynamic_tools.push(rig::tool::DynamicTool::new(
+                tool_name,
+                spec.description,
+                spec.parameters,
+                move |args: Value| {
+                    let tool = tool.clone();
+                    Box::pin(async move {
+                        tool.call(args.to_string())
+                            .await
+                            .map(ToolOutput::text)
+                            .map_err(ToolExecutionError::from)
+                    })
+                },
+            ));
         }
-        builder.build()
+
+        dynamic_tools
     }
 
     pub fn execute(&self, name: &str, input: Value) -> impl Future<Output = Result<Value>> + Send + '_ {
@@ -165,7 +172,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn register_dynamic(&mut self, name: &str, tool: Arc<dyn ToolDyn>, enabled: bool) {
+    pub fn register_dynamic(&mut self, name: &str, tool: Arc<dyn AgentTool>, enabled: bool) {
         self.tools.insert(name.to_string(), tool);
         self.enabled.insert(name.to_string(), enabled);
     }

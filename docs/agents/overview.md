@@ -6,7 +6,7 @@
 |----|------|
 | 框架 | Tauri 2.x |
 | 后端 | Rust（Tokio、reqwest、rusqlite） |
-| AI 框架 | **Rig v0.37**（LLM provider、agent、embeddings、extraction） |
+| AI 框架 | **Rig v0.46**（LLM provider、agent、embeddings、extraction） |
 | 前端 | React 18 + TypeScript + Vite |
 | 状态管理 | Zustand |
 | 样式 | TailwindCSS + 自定义紫色主题 |
@@ -52,12 +52,12 @@ agent/
 
 ### 核心依赖
 
-项目基于 **[Rig](https://rig.rs/) v0.37** 作为统一的 AI 基础设施层，涵盖 LLM 通信、embeddings、结构化提取等所有 AI 能力。Rig 抽象了 20+ 模型 provider 的差异，提供一致的 `CompletionClient` / `EmbeddingModel` / `Extractor` 接口。
+项目基于 **[Rig](https://rig.rs/) v0.46** 作为统一的 AI 基础设施层，涵盖 LLM 通信、embeddings、结构化提取等所有 AI 能力。Rig 抽象了 20+ 模型 provider 的差异：客户端（如 `openai::OpenAI`）构造具体 **model**，model 被擦除为 `DynModel<Completion>`，再由 `rig::agent::AgentBuilder` 组装成 agent。
 
 **关键 Cargo 依赖：**
 
 ```toml
-rig = "0.37"        # 完整 Rig 框架（core + 所有 provider）
+rig = "0.46"        # 完整 Rig 框架（core + agent 运行时 + 所有 provider）
 schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 ```
 
@@ -67,19 +67,18 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 ┌─────────────────────────────────────────────────────┐
 │   AgentLoop / Lifecycle / Intent / Execution        │  ← AI 消费者模块
 ├─────────────────────────────────────────────────────┤
-│               LLMProvider trait                      │  ← 统一适配层
-│    chat() → ChatResponse                            │
-│    chat_stream() → BoxStream<StreamPayload>         │
-│    chat_with_tools() → ChatResponse (+ tool_calls)  │
+│               ProviderBox trait                      │  ← 统一适配层
+│    prompt() / chat() / prompt_with_tools()          │
+│    stream_prompt() / stream_with_tools()            │
 ├─────────────────────────────────────────────────────┤
-│           RigProvider<C: CompletionClient>           │  ← Rig 泛型适配器
-│    do_chat() / chat_with_tools() / stream_chat()    │
+│        RigProvider { DynModel<Completion> }         │  ← 类型擦除适配器
+│    AgentBuilder::new(model).preamble(..).build()    │
 ├─────────────────────────────────────────────────────┤
 │    rig::providers::openai / anthropic / gemini / …  │  ← Rig provider 客户端
-│    rig::completion::{Chat, Completion, CompletionModel} │
-│    rig::embeddings::EmbeddingModel                  │
-│    rig::streaming::StreamingChat                    │
-│    rig::extractor::Extractor                        │
+│    client.chat(id) / client.completion(id)          │     → Model, erase() → DynModel
+│    rig::agent::{AgentBuilder, Agent, AgentRunner}   │  ← agent 运行时 + 工具循环
+│    rig::tool::{DynamicTool, ToolSet, ToolOutput}    │
+│    rig::extractor::ExtractorBuilder                 │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -105,26 +104,27 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 
 | 能力 | Rust API | 实现位置 |
 |------|----------|----------|
-| **LLM 对话** | `LLMProvider::chat()` / `chat_stream()` | `api/rig.rs` — `RigProvider` |
-| **工具调用** | `chat_with_tools()` — 通过 Rig Completion API 返回原始 tool_calls | `api/rig.rs` — `chat_with_tools()` |
-| **流式传输** | `StreamingChat::stream_chat()` — 真正的增量 SSE | `api/rig.rs` — `chat_stream()` |
-| **语义搜索** | `rig::embeddings::EmbeddingModel` + `InMemoryVectorIndex` | `memory/mod.rs` — `retrieve_relevant()` |
-| **结构化提取** | `rig::extractor::Extractor<T>` — 编译期类型安全 | `api/rig.rs` — `extract_structured::<T>()` |
+| **LLM 对话** | `ProviderBox::prompt()` / `chat()` → `rig::agent::Agent` | `api/rig.rs` — `RigProvider` |
+| **工具调用** | `AgentBuilder::dynamic_tools()` + `rig::tool::DynamicTool`，agent 内部驱动工具循环 | `api/rig.rs` / `tools/registry.rs` — `to_rig_tools()` |
+| **流式传输** | `AgentRunner::stream()` → `MultiTurnStreamItem`（取 `StreamEvent::Text` 与 `FinalResponse`） | `api/rig.rs` — `stream_prompt()` / `stream_with_tools()` |
+| **语义搜索** | `provider.embedding(id, None)` → `DynModel<Embedding>` + `InMemoryVectorIndex` | `memory/mod.rs` — `retrieve_relevant()` |
+| **结构化提取** | `rig::extractor::ExtractorBuilder::<T>::new(model)` — 编译期类型安全 | `api/rig.rs` — `extract_structured::<T>()` |
 | **工具执行** | `agent/loop.rs` + `ToolRegistry` — AgentLoop 执行 tool_calls | `agent/loop.rs` — `run()` / `run_stream()` |
 
 ### 关键设计决策
 
-- **适配器而非替换**：通过 `RigProvider<C: CompletionClient>` 泛型包装器适配到内部 `LLMProvider` trait，而非直接暴露 Rig 类型到消费者模块
-- **泛型工厂**：`create_rig_provider()` 根据 `ModelConfig.provider` 映射到正确的 Rig 客户端
-- **构建时单态化**：Rig 使用编译期泛型，通过 `Arc<dyn LLMProvider>` 桥接到运行时多态
+- **类型擦除一次**：`create_rig_provider()` 在配置加载时把各 provider 的 `Model<W>` 擦除为 `DynModel<Completion>`，因此所有后端共享同一个 `RigProvider`，可以直接放进 `Arc<dyn ProviderBox>`
+- **适配器而非替换**：`ProviderBox` trait 隔离内部模块与 Rig 类型；Rig 的 `Message`、`DynamicTool` 仅在适配层和工具层出现
+- **agent 按请求构建**：`AgentBuilder::new(model.clone()).preamble(..).build()` 每次调用构建，preamble 由调用方传入
+- **工具契约自有**：Rig 0.45 起不再有 object-safe 的 `ToolDyn`，项目保留 `AgentTool`（`tools/trait.rs`），在构建工具集时转成 `DynamicTool`
 - **降级策略**：embedding 不可用时 → LIKE 搜索；extraction 失败时 → 回退到 chat JSON 解析
 
 ### 进程启动
 
 应用启动时，`AppState::new()` 按以下顺序初始化 AI 基础设施：
 
-1. `config.json` → `ProviderRegistry::new()` → 为每个启用的 model 创建 `RigProvider`
-2. `MemoryManager::new()` — 传入 OpenAI API key → 可选初始化 `EmbeddingModel`
+1. `config.json` → `ProviderRegistry::new()` → 为每个启用的 model 创建 `RigProvider`（内部持有 `DynModel<Completion>`）
+2. `MemoryManager::new()` — 传入 OpenAI API key → 可选初始化 `DynModel<Embedding>`
 3. `IntentRouter::new()` — 创建 `LlmClassifier`（Rig extraction 优先）
 4. `seed_defaults()` / `reconcile_skills()` — 预先注入内置记忆和技能
 
@@ -157,7 +157,7 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 
 | 模式 | 原理 | 依赖 |
 |------|------|------|
-| **语义搜索**（优先） | Rig `EmbeddingModel` → 余弦相似度 top-k | OpenAI API key |
+| **语义搜索**（优先） | `DynModel<Embedding>::embed_text()` → 余弦相似度 top-k | OpenAI API key |
 | **关键词搜索**（降级） | SQLite `LIKE '%keyword%'` | 无条件 |
 
 **数据流**：

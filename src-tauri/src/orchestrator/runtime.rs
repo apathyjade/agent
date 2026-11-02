@@ -488,7 +488,7 @@ impl ExecutionRuntime {
 
             match result {
                 Ok(val) => return Ok(val),
-                Err(e) if attempt < max_retries - 1 => {
+                Err(_e) if attempt < max_retries - 1 => {
                     if delay > 0 {
                         tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                     }
