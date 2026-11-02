@@ -58,3 +58,20 @@ fn test_toolchain_action_variants() {
     let _project_remove = ProjectAction::Remove { id: "abc".into() };
     let _project_sync = ProjectAction::Sync { id: "abc".into() };
 }
+
+#[test]
+fn test_cli_toolchain_command_and_runtime_alias() {
+    use agent_lib::cli::{Cli, Command};
+    use clap::Parser;
+
+    let cli = Cli::try_parse_from(["agent", "toolchain", "ls"]).unwrap();
+    assert!(matches!(cli.command, Some(Command::Toolchain { .. })));
+
+    // `runtime` is kept as a compatibility alias.
+    let cli = Cli::try_parse_from(["agent", "runtime", "ls"]).unwrap();
+    assert!(matches!(cli.command, Some(Command::Toolchain { .. })));
+
+    // No subcommand still means "start the desktop app".
+    let cli = Cli::try_parse_from(["agent"]).unwrap();
+    assert!(cli.command.is_none());
+}
