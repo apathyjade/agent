@@ -22,16 +22,27 @@ pub fn init_http_client(proxy_url: Option<&str>) {
             }
         }
     }
-    let _ = HTTP_CLIENT.set(builder.build().expect("Failed to build HTTP client"));
+    match builder.build() {
+        Ok(client) => {
+            let _ = HTTP_CLIENT.set(client);
+        }
+        Err(error) => log::warn!("Failed to build HTTP client: {}", error),
+    }
 }
 
 /// Get the global HTTP client, initializing with defaults if not set.
 pub fn get_http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+        match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .expect("Failed to build HTTP client")
+        {
+            Ok(client) => client,
+            Err(error) => {
+                log::warn!("Failed to build HTTP client, using defaults: {}", error);
+                reqwest::Client::new()
+            }
+        }
     })
 }
 
@@ -45,7 +56,7 @@ pub async fn download_bytes<F: Fn(u64, u64) + Send + 'static>(
         .get(url)
         .send()
         .await
-        .map_err(|e| crate::error::AppError::Http(e))?;
+        .map_err(crate::error::AppError::Http)?;
 
     if !response.status().is_success() {
         return Err(crate::error::AppError::Http(
@@ -59,7 +70,7 @@ pub async fn download_bytes<F: Fn(u64, u64) + Send + 'static>(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| crate::error::AppError::Http(e))?;
+        let chunk = chunk.map_err(crate::error::AppError::Http)?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         if total_size > 0 {
@@ -77,7 +88,7 @@ pub async fn download_bytes_simple(url: &str) -> Result<Vec<u8>> {
         .get(url)
         .send()
         .await
-        .map_err(|e| crate::error::AppError::Http(e))?;
+        .map_err(crate::error::AppError::Http)?;
 
     if !response.status().is_success() {
         return Err(crate::error::AppError::Http(
@@ -88,6 +99,6 @@ pub async fn download_bytes_simple(url: &str) -> Result<Vec<u8>> {
     Ok(response
         .bytes()
         .await
-        .map_err(|e| crate::error::AppError::Http(e))?
+        .map_err(crate::error::AppError::Http)?
         .to_vec())
 }

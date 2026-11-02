@@ -25,9 +25,10 @@ use crate::toolchain::RuntimeType;
 // ── Download Mirror ──
 
 /// Node.js download mirror source.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum NodeMirror {
     /// Official nodejs.org (default)
+    #[default]
     Official,
     /// NPMMirror (Chinese mirror, formerly taobao)
     NpmMirror,
@@ -63,12 +64,6 @@ impl NodeMirror {
             NodeMirror::Custom { download_base, .. } => download_base.trim_end_matches('/'),
         };
         format!("{base}/v{version}/SHASUMS256.txt")
-    }
-}
-
-impl Default for NodeMirror {
-    fn default() -> Self {
-        Self::Official
     }
 }
 
@@ -161,12 +156,12 @@ impl NodeVersionSource {
             .get(self.mirror.index_url())
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let entries: Vec<NodeDistEntry> = response
             .json()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = entries
             .into_iter()
@@ -175,7 +170,7 @@ impl NodeVersionSource {
                 let is_stable = !matches!(&e.lts, serde_json::Value::Bool(false));
                 has_platform_file && is_stable
             })
-            .filter_map(|e| {
+            .map(|e| {
                 let version = e
                     .version
                     .strip_prefix('v')
@@ -184,7 +179,7 @@ impl NodeVersionSource {
                 let lts = e.lts.as_str().map(|s| s.to_string());
                 let url = self.mirror.download_url(&version, platform, ext);
 
-                Some(RuntimeVersion {
+                RuntimeVersion {
                     runtime_type: RuntimeType::Node,
                     version: version.clone(),
                     display_name: if let Some(ref codename) = lts {
@@ -197,7 +192,7 @@ impl NodeVersionSource {
                     is_stable: true,
                     release_date: Some(e.date),
                     file_size: None,
-                })
+                }
             })
             .collect();
 
@@ -291,7 +286,7 @@ impl NodeVersionSource {
             .get(&shasums_url)
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         if !response.status().is_success() {
             log::warn!("无法获取 SHASUMS256.txt ({}), 跳过校验", response.status());
@@ -301,7 +296,7 @@ impl NodeVersionSource {
         let text = response
             .text()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         // Find expected hash for our file
         let expected_hash = text

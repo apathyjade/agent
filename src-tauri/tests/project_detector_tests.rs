@@ -1,5 +1,7 @@
 // ── Project Detector Tests ──
 
+#![allow(clippy::disallowed_methods)]
+
 use agent_lib::project_env::ProjectDetector;
 use agent_lib::toolchain::RuntimeType;
 

@@ -30,7 +30,7 @@
 ## 工具系统
 
 - **静态注册**：内置工具硬编码在 `ToolRegistry::new()` 中。动态工具通过 SkillManager 的 `register_dynamic` 注册（脚本工具）
-- **测试覆盖**：测试文件在 `src-tauri/tests/` 下，已有 4 个测试文件（calculator + runtime\* + project_detector）
+- **测试覆盖**：测试文件在 `src-tauri/tests/` 下（calculator、toolchain\*、project_detector、llm）
 
 ## 运行时管理
 

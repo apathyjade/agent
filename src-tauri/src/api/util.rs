@@ -15,26 +15,38 @@
 pub fn extract_json(input: &str) -> String {
     let trimmed = input.trim();
 
-    // Try to find a ```json ... ``` block
-    if let Some(start) = trimmed.find("```json") {
-        let after_fence = &trimmed[start + 7..];
-        if let Some(end) = after_fence.find("```") {
-            let json_block = after_fence[..end].trim();
-            if !json_block.is_empty() {
-                return json_block.to_string();
+    // Walk every fenced block once. A ```json fence wins; otherwise keep the
+    // first non-empty generic fence. Empty fences are skipped so a stray
+    // ```json\n``` cannot mask a later usable block.
+    let mut generic_fence: Option<String> = None;
+    let mut rest = trimmed;
+    while let Some(start) = rest.find("```") {
+        let after_open = &rest[start + 3..];
+        let (info, after_line) = match after_open.split_once('\n') {
+            Some((info, after)) => (info.trim(), after),
+            None => (after_open.trim(), ""),
+        };
+        let Some(end) = after_line.find("```") else {
+            break;
+        };
+
+        let block = after_line[..end].trim();
+        if !block.is_empty() {
+            if info.eq_ignore_ascii_case("json") {
+                return block.to_string();
+            }
+            if generic_fence.is_none() {
+                generic_fence = Some(block.to_string());
             }
         }
+
+        // Continue after the closing fence.
+        let consumed = start + 3 + (after_open.len() - after_line.len()) + end + 3;
+        rest = &rest[consumed..];
     }
 
-    // Try to find a ``` ... ``` block (generic code fence)
-    if let Some(start) = trimmed.find("```") {
-        let after_fence = &trimmed[start + 3..];
-        if let Some(end) = after_fence.find("```") {
-            let json_block = after_fence[..end].trim();
-            if !json_block.is_empty() {
-                return json_block.to_string();
-            }
-        }
+    if let Some(block) = generic_fence {
+        return block;
     }
 
     // Look for a bare JSON object — find first '{' and last '}'
@@ -90,5 +102,18 @@ mod tests {
         let input = "```json\n```\n{\"fallback\": true}";
         let result = extract_json(input);
         assert!(result.contains("fallback"));
+    }
+
+    #[test]
+    fn test_empty_fence_then_later_json_fence() {
+        let input = "```json\n```\ntext\n```json\n{\"ok\": true}\n```";
+        assert_eq!(extract_json(input), "{\"ok\": true}");
+    }
+
+    #[test]
+    fn test_generic_fence_with_language_tag() {
+        // The info string must not leak into the extracted content.
+        let input = "```rust\nfn main() {}\n```";
+        assert_eq!(extract_json(input), "fn main() {}");
     }
 }

@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 #[derive(Clone)]
 struct IndexEntry {
+    /// Kept alongside the embedding so entries can be inspected or rebuilt.
+    #[allow(dead_code)]
     text: String,
     embedding: Vec<f32>,
 }
@@ -14,6 +16,12 @@ struct IndexEntry {
 /// A simple in-memory vector index.
 pub struct InMemoryVectorIndex {
     entries: HashMap<String, IndexEntry>,
+}
+
+impl Default for InMemoryVectorIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryVectorIndex {
@@ -121,7 +129,7 @@ mod tests {
     #[test]
     fn test_empty_index() {
         let index = InMemoryVectorIndex::new();
-        let results = index.search(&vec![1.0, 0.0], 5);
+        let results = index.search(&[1.0, 0.0], 5);
         assert!(results.is_empty());
     }
 

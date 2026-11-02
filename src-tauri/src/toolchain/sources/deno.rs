@@ -95,17 +95,17 @@ impl VersionSource for DenoVersionSource {
             .header("User-Agent", "agent-runtime-manager/1.0")
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let releases: Vec<GitHubRelease> = response
             .json()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = releases
             .into_iter()
             .filter(|r| !r.prerelease)
-            .filter_map(|r| {
+            .map(|r| {
                 let tag = r
                     .tag_name
                     .strip_prefix('v')
@@ -118,7 +118,7 @@ impl VersionSource for DenoVersionSource {
                     tag, suffix
                 );
 
-                Some(RuntimeVersion {
+                RuntimeVersion {
                     runtime_type: RuntimeType::Deno,
                     version: tag.clone(),
                     display_name: format!("Deno {}", tag),
@@ -127,7 +127,7 @@ impl VersionSource for DenoVersionSource {
                     is_stable: true,
                     release_date: None,
                     file_size: None,
-                })
+                }
             })
             .collect();
 

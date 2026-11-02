@@ -36,20 +36,15 @@ impl ExternalManager {
 }
 
 /// Strategy for how Agent resolves Node.js versions.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum NodeIntegrationStrategy {
     /// Only use Agent's built-in Node downloads (no external wrap).
     Standalone,
     /// Only use external managers; fail if none found.
     WrapExisting,
     /// Prefer external managers, fall back to self-managed.
+    #[default]
     Hybrid,
-}
-
-impl Default for NodeIntegrationStrategy {
-    fn default() -> Self {
-        Self::Hybrid
-    }
 }
 
 /// Result of external manager detection.

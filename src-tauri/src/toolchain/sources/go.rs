@@ -92,12 +92,12 @@ impl VersionSource for GoVersionSource {
             .get("https://go.dev/dl/?mode=json")
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let entries: Vec<GoDistEntry> = response
             .json()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = entries
             .into_iter()

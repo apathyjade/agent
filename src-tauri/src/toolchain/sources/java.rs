@@ -153,12 +153,12 @@ impl JavaVersionSource {
             .get(&url)
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let adopt_response: AdoptiumResponse = response
             .json()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let assets = match adopt_response.assets {
             Some(a) => a,

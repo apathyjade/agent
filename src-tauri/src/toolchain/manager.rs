@@ -345,7 +345,7 @@ impl RuntimeManager {
                 active_version: info.version.clone(),
             });
         }
-        items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        items.sort_by_key(|item| std::cmp::Reverse(item.size_bytes));
         items
     }
 }

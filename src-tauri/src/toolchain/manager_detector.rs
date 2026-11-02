@@ -73,13 +73,7 @@ fn detect_node_managers() -> Vec<VersionManager> {
             can_install: true,
             install_guide: None,
             recommended: true,
-            install_url: Some(if cfg!(target_os = "windows") {
-                "https://fnm.vercel.app/".to_string()
-            } else if cfg!(target_os = "macos") {
-                "https://fnm.vercel.app/".to_string()
-            } else {
-                "https://fnm.vercel.app/".to_string()
-            }),
+            install_url: Some("https://fnm.vercel.app/".to_string()),
         });
     } else {
         managers.push(VersionManager {
@@ -92,22 +86,12 @@ fn detect_node_managers() -> Vec<VersionManager> {
             can_install: true,
             install_guide: None,
             recommended: true,
-            install_url: Some(if cfg!(target_os = "windows") {
-                "https://fnm.vercel.app/".to_string()
-            } else if cfg!(target_os = "macos") {
-                "https://fnm.vercel.app/".to_string()
-            } else {
-                "https://fnm.vercel.app/".to_string()
-            }),
+            install_url: Some("https://fnm.vercel.app/".to_string()),
         });
     }
 
     // nvm (macOS/Linux) / nvm-windows
-    let nvm_cmd = if cfg!(target_os = "windows") {
-        "nvm"
-    } else {
-        "nvm"
-    };
+    let nvm_cmd = "nvm";
     if let Some((path, version)) = check_command(nvm_cmd, &["--version"]) {
         managers.push(VersionManager {
             id: "nvm".to_string(),
@@ -199,13 +183,7 @@ fn detect_python_managers() -> Vec<VersionManager> {
             can_install: true,
             install_guide: None,
             recommended: true,
-            install_url: Some(if cfg!(target_os = "windows") {
-                "https://docs.astral.sh/uv/".to_string()
-            } else if cfg!(target_os = "macos") {
-                "https://docs.astral.sh/uv/".to_string()
-            } else {
-                "https://docs.astral.sh/uv/".to_string()
-            }),
+            install_url: Some("https://docs.astral.sh/uv/".to_string()),
         });
     } else {
         managers.push(VersionManager {
@@ -218,13 +196,7 @@ fn detect_python_managers() -> Vec<VersionManager> {
             can_install: true,
             install_guide: None,
             recommended: true,
-            install_url: Some(if cfg!(target_os = "windows") {
-                "https://docs.astral.sh/uv/".to_string()
-            } else if cfg!(target_os = "macos") {
-                "https://docs.astral.sh/uv/".to_string()
-            } else {
-                "https://docs.astral.sh/uv/".to_string()
-            }),
+            install_url: Some("https://docs.astral.sh/uv/".to_string()),
         });
     }
 
@@ -275,13 +247,7 @@ fn detect_rust_managers() -> Vec<VersionManager> {
             can_install: true,
             install_guide: None,
             recommended: true,
-            install_url: Some(if cfg!(target_os = "windows") {
-                "https://rustup.rs/".to_string()
-            } else if cfg!(target_os = "macos") {
-                "https://rustup.rs/".to_string()
-            } else {
-                "https://rustup.rs/".to_string()
-            }),
+            install_url: Some("https://rustup.rs/".to_string()),
         });
     } else {
         managers.push(VersionManager {
@@ -294,13 +260,7 @@ fn detect_rust_managers() -> Vec<VersionManager> {
             can_install: true,
             install_guide: None,
             recommended: true,
-            install_url: Some(if cfg!(target_os = "windows") {
-                "https://rustup.rs/".to_string()
-            } else if cfg!(target_os = "macos") {
-                "https://rustup.rs/".to_string()
-            } else {
-                "https://rustup.rs/".to_string()
-            }),
+            install_url: Some("https://rustup.rs/".to_string()),
         });
     }
 

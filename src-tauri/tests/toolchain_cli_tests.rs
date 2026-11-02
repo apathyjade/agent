@@ -2,6 +2,8 @@
 //
 // Tests that CLI types compile and construct correctly.
 
+#![allow(clippy::disallowed_methods)]
+
 #[test]
 fn test_cli_compiles() {
     // Verify the CLI types exist and are constructible

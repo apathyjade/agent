@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 use agent_lib::tools::calculator::CalculatorTool;
 use agent_lib::tools::r#trait::AgentTool;
 use serde_json::json;

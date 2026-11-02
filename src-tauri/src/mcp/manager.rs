@@ -170,7 +170,7 @@ impl McpServerManager {
         {
             let lower = config.command.to_lowercase();
             if lower.ends_with(".cmd") || lower.ends_with(".bat") {
-                let display = format!("{} {}", &config.command, &config.args.join(" "));
+                let display = format!("{} {}", config.command, config.args.join(" "));
                 drop(cmd);
                 let mut wrapped = Command::new("cmd");
                 wrapped.arg("/c");
@@ -494,7 +494,7 @@ impl McpServerManager {
     /// Get health and usage stats for a specific connection.
     pub async fn get_connection_stats(&self, id: &str) -> Option<ConnectionStats> {
         let guard = self.connections.lock().await;
-        guard.get(id).map(|conn| Self::compute_stats(conn))
+        guard.get(id).map(Self::compute_stats)
     }
 
     /// Get stderr logs for a specific connection.
@@ -691,7 +691,7 @@ impl AgentTool for McpToolWrapper {
     ) -> Pin<Box<dyn Future<Output = std::result::Result<String, ToolError>> + Send + 'a>> {
         Box::pin(async move {
             // Parse JSON args from string
-            let input: Value = serde_json::from_str(&args).map_err(|e| ToolError::JsonError(e))?;
+            let input: Value = serde_json::from_str(&args).map_err(ToolError::JsonError)?;
 
             // Check confirmation mode — deny if configured
             if matches!(self.confirmation, ConfirmationMode::Deny) {
@@ -777,7 +777,7 @@ impl AgentTool for McpToolWrapper {
                 Value::Array(items)
             };
 
-            serde_json::to_string(&result_value).map_err(|e| ToolError::JsonError(e))
+            serde_json::to_string(&result_value).map_err(ToolError::JsonError)
         })
     }
 }

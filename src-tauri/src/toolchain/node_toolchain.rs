@@ -81,10 +81,8 @@ impl SemverReq {
                 return false;
             }
             // If req has minor, version must be >= req minor
-            if req_parts.len() > 1 && ver_parts.len() > 1 {
-                if req_parts[1] > ver_parts[1] {
-                    return false;
-                }
+            if req_parts.len() > 1 && ver_parts.len() > 1 && req_parts[1] > ver_parts[1] {
+                return false;
             }
             true
         } else if let Some(stripped) = raw.strip_prefix('~') {
@@ -210,37 +208,37 @@ impl NodeToolchainMatrix {
             .npm_compat
             .iter()
             .find(|e| e.node_range.matches(node_version))
-            .and_then(|_| {
+            .map(|_| {
                 // Return a reasonable version within the compatible range
-                Some(match node_version {
+                match node_version {
                     v if v.starts_with("22.") => "10.8.2".to_string(),
                     v if v.starts_with("20.") => "10.8.2".to_string(),
                     v if v.starts_with("18.") => "9.8.1".to_string(),
                     v if v.starts_with("16.") => "8.19.4".to_string(),
                     _ => "latest".to_string(),
-                })
+                }
             });
 
         let pnpm = self
             .pnpm_compat
             .iter()
             .find(|e| e.node_range.matches(node_version))
-            .and_then(|_| {
-                Some(match node_version {
+            .map(|_| {
+                match node_version {
                     v if v.starts_with("18.") || v.starts_with("20.") || v.starts_with("22.") => {
                         "9.15.4".to_string()
                     }
                     v if v.starts_with("16.") => "8.15.8".to_string(),
                     _ => "latest".to_string(),
-                })
+                }
             });
 
         let yarn = self
             .yarn_compat
             .iter()
             .find(|e| e.node_range.matches(node_version))
-            .and_then(|_| {
-                Some(match node_version {
+            .map(|_| {
+                match node_version {
                     v if v.starts_with("18.") || v.starts_with("20.") || v.starts_with("22.") => {
                         "4.5.0".to_string()
                     }
@@ -248,7 +246,7 @@ impl NodeToolchainMatrix {
                         "3.8.5".to_string()
                     }
                     _ => "latest".to_string(),
-                })
+                }
             });
 
         ToolchainRecommendation {

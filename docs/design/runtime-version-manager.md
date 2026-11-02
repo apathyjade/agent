@@ -310,8 +310,8 @@ pub async fn refresh_version_cache(
 ) -> Result<Vec<RuntimeVersion>> {
     let rt = parse_runtime_type(&runtime_type)?;
     // 强制重新拉取远程 API
-    state.runtime_registry.force_refresh(&rt).await?;
-    state.runtime_registry.get_versions(&rt).await
+    state.toolchain.registry.force_refresh(&rt).await?;
+    state.toolchain.registry.get_versions(&rt).await
 }
 
 // 修改：list_available_versions 不再从 installer 硬编码返回
@@ -712,8 +712,8 @@ impl VersionResolver {
 for each bound_project:
     for each requirement in project.requirements:
         │
-        ├── 当前版本 = alias_manager.get_active(rt)
-        ├── 目标版本 = version_resolver.resolve(rt, spec)
+        ├── 当前版本 = services.aliases.get_active(rt)
+        ├── 目标版本 = services.resolver.resolve(rt, spec)
         │
         ├── 目标版本 == 当前版本? → ✅ 已对齐
         │
@@ -934,7 +934,7 @@ pub async fn check_version_updates(
 ### 4.1 命令树
 
 ```
-agent runtime
+agent toolchain      # 旧命令 agent runtime 保留为别名
 ├── ls [runtime-type] [--remote] [--installed]
 │   列出运行时版本
 │   --remote: 显示远程可用版本
@@ -1401,40 +1401,42 @@ impl RuntimeVersionFile {
 
 ### 7.1 完整文件结构
 
-> 注：本节的 `environment/` 路径为历史实现方案。当前实际分层见
-> [toolchain-separation.md](toolchain-separation.md)：运行时引擎位于 `toolchain/`，
-> 项目绑定位于 `project_env/`，CLI 位于 `cli/toolchain.rs`。
-
 ```
 src-tauri/src/
-├── environment/
-│   ├── mod.rs              # RuntimeManager 核心（已有，需扩展现有）
-│   ├── detector.rs         # 系统检测器（已有，加冲突检测）
-│   ├── installer.rs        # 安装器（已有，扩展新运行时）
-│   ├── manifest.rs         # 版本清单（已有）
-│   ├── registry.rs         # [新增] RuntimeRegistry + VersionSource trait
+├── toolchain/                  # 独立工具链引擎（不依赖 db/state/config/tauri）
+│   ├── mod.rs                  # 运行时类型与模块导出
+│   ├── services.rs             # RuntimeServices + RuntimeOptions（组合根）
+│   ├── detector.rs             # 系统检测器
+│   ├── installer.rs            # 安装器
+│   ├── manifest.rs             # 版本清单
+│   ├── registry.rs             # RuntimeRegistry + VersionSource trait
 │   ├── sources/
-│   │   ├── mod.rs          # [新增] 模块导出
-│   │   ├── node.rs         # [新增] NodeVersionSource
-│   │   ├── python.rs       # [新增] PythonVersionSource
-│   │   ├── go.rs           # [新增] GoVersionSource
-│   │   ├── rust.rs         # [新增] RustupVersionSource
-│   │   ├── java.rs         # [新增] JavaVersionSource
-│   │   ├── deno.rs         # [新增] DenoVersionSource
-│   │   └── bun.rs          # [新增] BunVersionSource (Phase 2)
-│   ├── cache.rs            # [新增] VersionCache
-│   ├── lifecycle.rs        # [新增] VersionLifecycle 判断
-│   ├── project.rs          # [新增] ProjectDetector + BoundProject
-│   ├── resolver.rs         # [新增] VersionResolver (semver)
-│   ├── alias.rs            # [新增] AliasManager
-│   └── cli.rs              # [新增] CLI 命令解析
+│   │   ├── mod.rs              # 模块导出
+│   │   ├── node.rs             # NodeVersionSource
+│   │   ├── python.rs           # PythonVersionSource
+│   │   ├── go.rs               # GoVersionSource
+│   │   ├── rust.rs             # RustupVersionSource
+│   │   ├── java.rs             # JavaVersionSource
+│   │   ├── deno.rs             # DenoVersionSource
+│   │   └── bun.rs              # BunVersionSource
+│   ├── lifecycle.rs            # VersionLifecycle 判断
+│   ├── resolver.rs             # VersionResolver (semver)
+│   └── alias.rs                # AliasManager
+│
+├── project_env/                # 应用侧项目绑定（依赖 db）
+│   ├── detector.rs             # ProjectDetector + BoundProject
+│   └── service.rs              # bound_projects 持久化 + 同步
+│
+├── cli/
+│   └── toolchain.rs            # `agent toolchain`（`runtime` 为兼容别名）
 │
 ├── commands/
-│   ├── environment.rs      # IPC 命令（现有 12 个 + 扩展）
+│   ├── toolchain.rs            # 运行时 IPC 命令
+│   ├── project_env.rs          # 项目绑定 IPC 命令
 │   └── ...
 │
 └── db/
-    └── models.rs           # 添加 runtime_version_cache, bound_projects 表
+    └── models.rs               # runtime_version_cache, bound_projects 表
 
 src-ui/src/
 ├── components/
@@ -1518,31 +1520,35 @@ Phase 4 (后续迭代)
 ### 7.3 关键接口变更
 
 ```rust
-// environment/mod.rs — 新增模块导出
+// toolchain/mod.rs — 模块导出
 pub mod registry;
 pub mod sources;
-pub mod cache;
 pub mod lifecycle;
-pub mod project;
 pub mod resolver;
 pub mod alias;
 
-// RuntimeManager 扩展
-impl RuntimeManager {
-    pub fn registry(&self) -> &RuntimeRegistry;
-    pub fn resolver(&self) -> &VersionResolver;
-    pub fn alias_manager(&self) -> &AliasManager;
-    pub fn project_detector(&self) -> &ProjectDetector;
+// toolchain/services.rs — 统一组合根
+pub struct RuntimeServices {
+    pub manager: Arc<RuntimeManager>,
+    pub registry: Arc<RuntimeRegistry>,
+    pub resolver: Arc<VersionResolver>,
+    pub aliases: Arc<AliasManager>,
 }
 
 // state.rs — 扩展 AppState
 pub struct AppState {
     // 现有...
-    pub runtime_registry: Arc<RuntimeRegistry>,
-    pub version_resolver: Arc<VersionResolver>,
-    pub alias_manager: Arc<AliasManager>,
-    pub project_detector: Arc<ProjectDetector>,
+    pub toolchain: RuntimeServices,
 }
+
+// project_env/service.rs — 项目绑定（依赖 db + toolchain）
+pub async fn bind(db: &Arc<Mutex<Database>>, path: &str) -> Result<BoundProject>;
+pub async fn sync(
+    services: &RuntimeServices,
+    db: &Arc<Mutex<Database>>,
+    id: &str,
+    active_managers: &HashMap<String, String>,
+) -> Result<SyncResult>;
 ```
 
 ---

@@ -160,7 +160,7 @@ impl RuntimeInstaller {
                 installed_at: Utc::now().to_rfc3339(),
             },
         );
-        write_manifest(&manifest_path, &manifest).map_err(|e| crate::error::AppError::Io(e))?;
+        write_manifest(&manifest_path, &manifest).map_err(crate::error::AppError::Io)?;
 
         emit_progress(
             &on_progress,
@@ -250,7 +250,7 @@ impl RuntimeInstaller {
 
                         Ok(RuntimeInfo {
                             runtime_type: rt,
-                            display_name: format!("Rust (rustup)"),
+                            display_name: "Rust (rustup)".to_string(),
                             source: RuntimeSource::BuiltIn,
                             version: Some(version_str),
                             installed_versions: vec![],
@@ -655,6 +655,8 @@ struct RuntimeDownloadInfo {
     version: String,
     ext: &'static str,
     extract_subdir: Option<String>,
+    /// Only read on Unix to make extracted binaries executable.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     executables: Vec<&'static str>,
 }
 
@@ -883,7 +885,7 @@ async fn download_file<F: Fn(InstallProgress) + Send + 'static>(
         .get(url)
         .send()
         .await
-        .map_err(|e| crate::error::AppError::Http(e))?;
+        .map_err(crate::error::AppError::Http)?;
     if !response.status().is_success() {
         return Err(crate::error::AppError::Http(
             response.error_for_status().unwrap_err(),
@@ -894,7 +896,7 @@ async fn download_file<F: Fn(InstallProgress) + Send + 'static>(
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| crate::error::AppError::Http(e))?;
+        let chunk = chunk.map_err(crate::error::AppError::Http)?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         if total_size > 0 {
@@ -917,7 +919,7 @@ fn extract_archive(bytes: &[u8], dest: &std::path::Path, ext: &str) -> Result<()
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
                 .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
             archive.extract(dest).map_err(|e| {
-                crate::error::AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+                crate::error::AppError::Io(std::io::Error::other(e))
             })?;
         }
         "tar.gz" | "tgz" => {
@@ -925,7 +927,7 @@ fn extract_archive(bytes: &[u8], dest: &std::path::Path, ext: &str) -> Result<()
             let mut archive = tar::Archive::new(decoder);
             archive
                 .unpack(dest)
-                .map_err(|e| crate::error::AppError::Io(e))?;
+                .map_err(crate::error::AppError::Io)?;
         }
         _ => {
             return Err(crate::error::AppError::InvalidInput(format!(
@@ -955,7 +957,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
         if entry.file_type()?.is_dir() {
             copy_dir_all(&entry.path(), &target)?;
         } else {
-            std::fs::copy(&entry.path(), &target)?;
+            std::fs::copy(entry.path(), &target)?;
         }
     }
     Ok(())

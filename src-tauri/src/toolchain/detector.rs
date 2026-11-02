@@ -10,6 +10,12 @@ use crate::toolchain::{FoundExecutable, PathConflict, RuntimeInfo, RuntimeSource
 
 pub struct RuntimeDetector;
 
+impl Default for RuntimeDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuntimeDetector {
     pub fn new() -> Self {
         Self

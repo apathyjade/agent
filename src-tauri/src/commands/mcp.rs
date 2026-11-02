@@ -137,7 +137,7 @@ pub async fn update_mcp_tool_config(
     enabled: bool,
     confirmation: String,
 ) -> Result<()> {
-    let mode = ConfirmationMode::from_str(&confirmation);
+    let mode = ConfirmationMode::parse(&confirmation);
 
     let needs_reconnect = {
         let mut config = state.config.lock().await;

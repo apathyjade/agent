@@ -7,21 +7,16 @@ use crate::toolchain::RuntimeType;
 // ── Confirmation Mode ──
 
 /// Confirmation mode for a specific MCP tool.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmationMode {
     /// Execute without asking (default for safe tools)
+    #[default]
     AutoAllow,
     /// Ask each time
     ConfirmOnce,
     /// Always reject
     Deny,
-}
-
-impl Default for ConfirmationMode {
-    fn default() -> Self {
-        ConfirmationMode::AutoAllow
-    }
 }
 
 impl ConfirmationMode {
@@ -34,7 +29,7 @@ impl ConfirmationMode {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "confirm_once" => ConfirmationMode::ConfirmOnce,
             "deny" => ConfirmationMode::Deny,

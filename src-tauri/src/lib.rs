@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 pub mod agent;
 pub mod api;
 pub mod cli;
@@ -26,10 +28,12 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
+// `tauri::generate_context!` expands to code that clippy sees as unwrap/expect.
+#[allow(clippy::disallowed_methods)]
 pub fn run() {
     env_logger::init();
 
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app: &mut tauri::App| {
@@ -234,6 +238,9 @@ pub fn run() {
             commands::orchestrator::orchestrate_message,
             commands::window::set_window_position,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    if let Err(error) = result {
+        log::error!("error while running tauri application: {}", error);
+    }
 }

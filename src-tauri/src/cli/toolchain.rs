@@ -136,6 +136,8 @@ impl ToolchainContext {
         }
     }
 
+    // `serde_json::json!` expands to code that clippy sees as an unwrap.
+    #[allow(clippy::disallowed_methods)]
     async fn ls(&self, runtime_type: Option<&str>, remote: bool, json: bool) -> Result<()> {
         let runtimes = match runtime_type {
             Some(filter) => {
@@ -296,6 +298,8 @@ impl ToolchainContext {
         Ok(())
     }
 
+    // `serde_json::json!` expands to code that clippy sees as an unwrap.
+    #[allow(clippy::disallowed_methods)]
     async fn status(&self, json: bool) -> Result<()> {
         let runtimes = self.services.detect_all().await;
         let available = runtimes.iter().filter(|info| info.available).count();
@@ -304,7 +308,7 @@ impl ToolchainContext {
         let defaults = self.services.defaults().await;
 
         if json {
-            let defaults: std::collections::BTreeMap<_, _> = defaults
+            let defaults_map: std::collections::BTreeMap<_, _> = defaults
                 .into_iter()
                 .map(|(rt, version)| (rt.to_string(), version))
                 .collect();
@@ -313,7 +317,7 @@ impl ToolchainContext {
                 "available": available,
                 "total": total,
                 "runtimes": runtimes,
-                "defaults": defaults,
+                "defaults": defaults_map,
                 "active_managers": self.config.active_managers,
             }))?;
             return Ok(());

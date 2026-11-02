@@ -4,6 +4,8 @@
 //! request: `create_rig_provider` must turn a [`ModelConfig`] into a Rig model
 //! on every supported wire.
 
+#![allow(clippy::disallowed_methods)]
+
 use agent_lib::api::rig::create_rig_provider;
 use agent_lib::config::{ModelConfig, ModelProvider};
 

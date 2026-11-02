@@ -49,6 +49,12 @@ pub struct RuntimeRegistry {
     cache: Arc<Mutex<HashMap<RuntimeType, CachedVersions>>>,
 }
 
+impl Default for RuntimeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuntimeRegistry {
     /// Create a new registry with all built-in version sources registered.
     pub fn new() -> Self {

@@ -79,17 +79,17 @@ impl VersionSource for BunVersionSource {
             .header("User-Agent", "agent-runtime-manager/1.0")
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let releases: Vec<GitHubRelease> = response
             .json()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = releases
             .into_iter()
             .filter(|r| !r.prerelease)
-            .filter_map(|r| {
+            .map(|r| {
                 let tag = r.tag_name.clone();
                 // Tags are like "bun-v1.2.0" — strip "bun-v" prefix
                 let version = tag
@@ -103,7 +103,7 @@ impl VersionSource for BunVersionSource {
                     r.tag_name, asset_name
                 );
 
-                Some(RuntimeVersion {
+                RuntimeVersion {
                     runtime_type: RuntimeType::Bun,
                     version,
                     display_name: format!("Bun {}", tag),
@@ -112,7 +112,7 @@ impl VersionSource for BunVersionSource {
                     is_stable: true,
                     release_date: r.published_at,
                     file_size: None,
-                })
+                }
             })
             .collect();
 

@@ -88,12 +88,12 @@ impl RustupVersionSource {
             .get(url)
             .send()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         let text = response
             .text()
             .await
-            .map_err(|e| crate::error::AppError::Http(e))?;
+            .map_err(crate::error::AppError::Http)?;
 
         // Parse the TOML to find "pkg.rust.version"
         // The format looks like:

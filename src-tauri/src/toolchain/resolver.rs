@@ -88,7 +88,7 @@ impl VersionResolver {
                         .split('.')
                         .next()
                         .and_then(|s| s.parse::<u64>().ok())
-                        .map_or(false, |m| m == major)
+                        .is_some_and(|m| m == major)
                 })
                 .max_by(|a, b| compare_versions(&a.version, &b.version))
             {
@@ -168,7 +168,7 @@ impl VersionResolver {
         // Try partial version matching: "20.18" matches "20.18.3"
         if version.starts_with(spec) && !spec.ends_with('.') {
             let next = version.chars().nth(spec.len());
-            if next == Some('.') || next == None {
+            if next == Some('.') || next.is_none() {
                 return Ok(true);
             }
         }

@@ -373,29 +373,29 @@ pub async fn install_manager_tool(manager_id: String, download_url: String) -> R
 }
 
 /// Suggest runtime info for a given CLI command (for MCP dialog).
+// `serde_json::json!` expands to code that clippy sees as an unwrap.
+#[allow(clippy::disallowed_methods)]
 #[tauri::command]
 pub async fn suggest_runtime_for_command(
     state: State<'_, AppState>,
     command: String,
 ) -> Result<serde_json::Value> {
-    let rt = RuntimeType::infer_from_command(&command);
-    match rt {
-        Some(runtime_type) => {
-            let info = state.toolchain.manager.detect(&runtime_type).await;
-            Ok(serde_json::json!({
-                "runtime_type": runtime_type,
-                "available": info.available,
-                "version": info.version,
-                "source": info.source,
-                "display_name": runtime_type.display_name(),
-            }))
-        }
-        None => Ok(serde_json::json!({
+    if let Some(runtime_type) = RuntimeType::infer_from_command(&command) {
+        let info = state.toolchain.manager.detect(&runtime_type).await;
+        Ok(serde_json::json!({
+            "runtime_type": runtime_type,
+            "available": info.available,
+            "version": info.version,
+            "source": info.source,
+            "display_name": runtime_type.display_name(),
+        }))
+    } else {
+        Ok(serde_json::json!({
             "runtime_type": null,
             "available": false,
             "display_name": null,
             "error": format!("无法从命令 '{}' 推断运行时类型", command),
-        })),
+        }))
     }
 }
 

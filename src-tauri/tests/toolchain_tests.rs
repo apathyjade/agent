@@ -1,4 +1,6 @@
-// ── Runtime Tests: Lifecycle, VersionSource, and Type Detection ──
+// ── Toolchain Tests: Lifecycle, VersionSource, and Type Detection ──
+
+#![allow(clippy::disallowed_methods)]
 
 use agent_lib::toolchain::lifecycle;
 use agent_lib::toolchain::lifecycle::VersionLifecycle;
