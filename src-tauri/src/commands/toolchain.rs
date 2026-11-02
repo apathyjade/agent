@@ -1,4 +1,7 @@
-// ── Runtime Environment IPC Commands ──
+// ── Toolchain IPC Commands ──
+//
+// Runtime detection, installation and version switching over IPC. Project
+// binding commands live in `commands/project_env.rs`.
 
 use tauri::{Emitter, State};
 
