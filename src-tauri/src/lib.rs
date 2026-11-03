@@ -41,7 +41,7 @@ pub fn run() {
             let state = AppState::new(app_handle)?;
             app.manage(state);
 
-            // Initialize memory, skills, runtimes, MCP
+            // Initialize memory, runtimes, MCP
             let app_handle_clone = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_handle_clone.state::<AppState>();
@@ -58,26 +58,12 @@ pub fn run() {
                     }
                 }
 
-                // 1. Initialize skills
-                {
-                    let skill_manager = state.skills.lock().await;
-                    if let Err(e) = skill_manager.cleanup_legacy_builtins().await {
-                        log::error!("Failed to clean up legacy builtin skills: {}", e);
-                    }
-                    if let Err(e) = skill_manager.reconcile().await {
-                        log::error!("Failed to reconcile skills: {}", e);
-                    }
-                    if let Err(e) = skill_manager.sync_enabled_to_tools().await {
-                        log::error!("Failed to sync enabled skills to tools: {}", e);
-                    }
-                }
-
-                // 2. Detect runtimes (cache for fast UI access)
+                // 1. Detect runtimes (cache for fast UI access)
                 {
                     state.toolchain.detect_all().await;
                 }
 
-                // 3. Auto-connect MCP servers
+                // 2. Auto-connect MCP servers
                 {
                     let config = state.config.lock().await;
                     let mcp_configs = config.mcp_servers.clone();
@@ -85,12 +71,12 @@ pub fn run() {
                     state.mcp.connect_all(&mcp_configs).await;
                 }
 
-                // 4. Load lifecycle config
+                // 3. Load lifecycle config
                 {
                     state.lifecycle.load_config().await;
                 }
 
-                // 5. Archive old sessions
+                // 4. Archive old sessions
                 {
                     if let Err(e) =
                         crate::lifecycle::archiver::run_archive_check(&state.lifecycle).await
@@ -144,16 +130,19 @@ pub fn run() {
             commands::get_settings,
             commands::list_tools,
             commands::toggle_tool,
-            commands::list_skills,
-            commands::get_skill_detail,
-            commands::install_skill_from_path,
-            commands::uninstall_skill,
-            commands::toggle_skill,
-            commands::configure_skill,
-            commands::reconcile_skills,
+            commands::get_skills_env,
+            commands::list_skill_agents,
+            commands::list_installed_skills,
+            commands::get_skill_content,
+            commands::preview_skill_source,
+            commands::detect_legacy_skills,
+            commands::import_legacy_skills,
+            commands::install_skills,
+            commands::remove_skill,
+            commands::check_skill_updates,
+            commands::update_skills,
             commands::list_market_top_skills,
             commands::search_market_skills,
-            commands::install_market_skill,
             commands::create_system_prompt,
             commands::list_system_prompts,
             commands::delete_system_prompt,

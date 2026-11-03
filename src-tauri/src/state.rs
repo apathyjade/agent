@@ -15,7 +15,7 @@ use crate::orchestrator::agent::OrchestratorAgent;
 use crate::orchestrator::dispatcher::Dispatcher;
 use crate::orchestrator::plan_types::ExecutionHandle;
 use crate::persona::PersonaManager;
-use crate::skills::SkillManager;
+use crate::skills::SkillsService;
 use crate::toolchain::RuntimeServices;
 use crate::tools::registry::ToolRegistry;
 use crate::workers::code_editor::CodeEditorWorker;
@@ -32,7 +32,7 @@ pub struct AppState {
     pub config: Arc<Mutex<AppConfig>>,
     pub providers: Arc<Mutex<ProviderRegistry>>,
     pub tools: Arc<Mutex<ToolRegistry>>,
-    pub skills: Arc<Mutex<SkillManager>>,
+    pub skills: SkillsService,
     pub memory: MemoryManager,
     pub persona: PersonaManager,
     pub mcp: McpServerManager,
@@ -55,7 +55,7 @@ impl AppState {
         let db_arc = Arc::new(Mutex::new(db));
         let tools_arc = Arc::new(Mutex::new(tools));
 
-        let skills = SkillManager::new(db_arc.clone(), tools_arc.clone());
+        let skills = SkillsService::new();
         // Pass the first available OpenAI API key for memory embedding.
         // Embedding is best-effort — if no key is available the memory
         // manager falls back to keyword search.
@@ -97,7 +97,7 @@ impl AppState {
             config: Arc::new(Mutex::new(config)),
             providers: providers_arc,
             tools: tools_arc,
-            skills: Arc::new(Mutex::new(skills)),
+            skills,
             memory,
             persona,
             mcp,
