@@ -114,3 +114,29 @@ src-tauri/src/
 1. `MultiTurnStreamItem` 为 `#[non_exhaustive]`，需 `_` 兜底分支（已处理）。
 2. 前端 `is_error` 判定（`"Tool execution error:"` 前缀）与 Rig 侧 `ToolResult.is_error` 语义对齐待确认。
 3. 取消能力（stream drop / max_turns）后续跟进。
+
+## 8. Deep-dive 第 2 项：ExecutionRuntime 拆分（2026-11-03）
+
+### 背景
+
+`orchestrator/runtime.rs` 原 659 行，`ExecutionRuntime` 同时承担计划编排（execute 主循环、取消/暂停、状态持久化）与步骤级执行（tool/llm/agent/pipeline/condition），职责混合。
+
+### 拆分结果
+
+```
+orchestrator/
+├── runtime.rs            # ExecutionRuntime 结构 + execute 计划编排 + emit_log + 状态持久化（约 307 行）
+└── runtime/
+    └── executor.rs       # step 级执行：execute_step / execute_pipeline / execute_tool /
+                          # execute_llm / execute_agent_task / run_agent / execute_condition（约 359 行）
+```
+
+- `runtime.rs` 顶部新增 `mod executor;`
+- 子模块方法标记 `pub(super)`，供父模块 `execute` 调用；私有字段在同一模块树内可访问。
+- `cargo check` 通过（0 error / 0 warning），orchestrator 单元测试通过。
+
+### 后续可继续拆分（Phase 1 剩余）
+
+1. `db/repository.rs`（1,595 行）按聚合拆分 repository。
+2. `commands/session.rs`（769 行）抽取 `SessionService` 应用服务层。
+3. 流式错误事件结构化（`StreamEvent::Error`）。
