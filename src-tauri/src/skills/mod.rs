@@ -17,6 +17,7 @@ use crate::tools::script_tool::ScriptTool;
 pub mod agents;
 pub mod cli;
 pub mod frontmatter;
+pub mod legacy;
 pub mod list;
 pub mod loader;
 pub mod market;
