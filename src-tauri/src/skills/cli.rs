@@ -103,7 +103,8 @@ pub fn resolve_command() -> CliCommand {
 /// Translate a resolved command into the concrete `(program, argv)` pair.
 ///
 /// Windows `.cmd`/`.bat` shims cannot be spawned directly, so they are wrapped
-/// in `cmd.exe /c`. Everything else is spawned as-is.
+/// in `cmd.exe /c`. The shim path is quoted so `cmd.exe` sees one token even
+/// when it contains spaces (`C:\Program Files\nodejs\npx.cmd`).
 pub fn spawn_parts(command: &CliCommand) -> (String, Vec<String>) {
     let mut args = command.prefix_args.clone();
     let is_script = command
@@ -116,7 +117,7 @@ pub fn spawn_parts(command: &CliCommand) -> (String, Vec<String>) {
     if cfg!(windows) && is_script {
         let mut wrapped = Vec::with_capacity(args.len() + 2);
         wrapped.push("/c".to_string());
-        wrapped.push(command.program.to_string_lossy().into_owned());
+        wrapped.push(format!("\"{}\"", command.program.to_string_lossy()));
         wrapped.append(&mut args);
         ("cmd.exe".to_string(), wrapped)
     } else {
@@ -194,7 +195,15 @@ pub async fn probe(command: &CliCommand) -> CliStatus {
         return status;
     }
 
-    // ── skills CLI ──
+    // The npx form is pinned to `skills@1.7.6`, and running it here would hit
+    // the network on a cold cache. Node alone is enough to declare it usable;
+    // the version is verified by the pinned invocation itself.
+    if !is_direct_skills(command) {
+        status.available = true;
+        return status;
+    }
+
+    // ── skills CLI (direct binary only) ──
     let (program, mut cli_args) = spawn_parts(command);
     cli_args.push("--version".to_string());
     let cli_result = execute(
@@ -292,8 +301,8 @@ async fn execute(
     display: &str,
 ) -> Result<CliOutput> {
     let mut cmd = Command::new(program);
-    cmd.args(args)
-        .stdin(Stdio::null())
+    append_args(&mut cmd, program, args);
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1")
@@ -336,6 +345,38 @@ async fn execute(
             code: output.status.code(),
         }),
     }
+}
+
+/// Feed `args` to the child, special-casing the `cmd.exe /c` wrapper.
+///
+/// `spawn_parts` already quotes the shim path; appending it with `raw_arg`
+/// keeps those quotes literal instead of letting the Windows argv builder
+/// escape them as `\"` (which `cmd.exe` would not understand).
+fn append_args(cmd: &mut Command, program: &str, args: &[String]) {
+    #[cfg(windows)]
+    {
+        if program.eq_ignore_ascii_case("cmd.exe") && args.len() >= 2 && args[0] == "/c" {
+            cmd.arg("/c");
+            cmd.raw_arg(&args[1]);
+            cmd.args(&args[2..]);
+            return;
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = program;
+    }
+    cmd.args(args);
+}
+
+/// True when the resolved program is a `skills` binary, not the npx shim.
+fn is_direct_skills(command: &CliCommand) -> bool {
+    command
+        .program
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.eq_ignore_ascii_case("skills"))
+        .unwrap_or(false)
 }
 
 fn npx_command(program: PathBuf) -> CliCommand {
@@ -474,6 +515,41 @@ mod tests {
         let (program, args) = spawn_parts(&cmd);
         assert_eq!(program, "cmd.exe");
         assert_eq!(args[0], "/c");
-        assert!(args[1].ends_with("npx.cmd"));
+        assert!(args[1].contains("npx.cmd"));
+        assert!(
+            args[1].starts_with('"') && args[1].ends_with('"'),
+            "shim path must be quoted: {}",
+            args[1]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quotes_shim_paths_containing_spaces() {
+        let cmd = CliCommand {
+            program: PathBuf::from(r"C:\Program Files\nodejs\npx.cmd"),
+            prefix_args: vec!["--yes".into(), "skills@1.7.6".into()],
+            display: "npx skills@1.7.6".into(),
+        };
+        let (program, args) = spawn_parts(&cmd);
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(args[1], r#""C:\Program Files\nodejs\npx.cmd""#);
+        assert_eq!(&args[2..], ["--yes", "skills@1.7.6"]);
+    }
+
+    #[test]
+    fn only_direct_skills_binaries_are_version_checked() {
+        let direct = CliCommand {
+            program: PathBuf::from("skills"),
+            prefix_args: Vec::new(),
+            display: "skills".into(),
+        };
+        let via_npx = CliCommand {
+            program: PathBuf::from("npx.cmd"),
+            prefix_args: vec!["--yes".into(), "skills@1.7.6".into()],
+            display: "npx skills@1.7.6".into(),
+        };
+        assert!(is_direct_skills(&direct));
+        assert!(!is_direct_skills(&via_npx));
     }
 }
