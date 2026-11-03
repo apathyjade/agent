@@ -23,13 +23,20 @@ pub struct SkillMd {
 /// Never panics: when the frontmatter is absent or malformed, all metadata is
 /// `None` and `body` falls back to the original content.
 pub fn parse(content: &str) -> SkillMd {
+    // Strip one leading UTF-8 BOM, which some editors prepend and which would
+    // otherwise hide the opening fence. The fallback paths still return the
+    // original content unchanged.
+    let source = content.strip_prefix('\u{feff}').unwrap_or(content);
+
     // Normalize line endings so the fence detection behaves identically for
     // LF and CRLF documents.
-    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
 
     let after_open = match normalized.strip_prefix("---") {
+        // A document that is only the fence character sequence has no body.
+        Some("") => return fallback(content),
         // The opening fence must be a standalone line, not e.g. `----`.
-        Some(rest) if rest.starts_with('\n') || rest.is_empty() => &rest[1..],
+        Some(rest) if rest.starts_with('\n') => &rest[1..],
         _ => return fallback(content),
     };
 
@@ -75,7 +82,9 @@ pub fn parse(content: &str) -> SkillMd {
     if let Value::Mapping(map) = &parsed {
         md.name = lookup(map, "name").and_then(scalar_to_string);
         md.description = lookup(map, "description").and_then(scalar_to_string);
-        md.version = lookup(map, "version").and_then(scalar_to_string);
+        // Version must stay textual: YAML would reformat `1.10` to `1.1`
+        // when round-tripped through a number.
+        md.version = lookup(map, "version").and_then(string_only);
         md.author = lookup(map, "author").and_then(scalar_to_string);
         md.tags = lookup(map, "tags").and_then(tags_to_vec);
     }
@@ -97,17 +106,27 @@ fn lookup<'a>(map: &'a serde_yaml::Mapping, key: &str) -> Option<&'a Value> {
 /// Convert a scalar YAML value to a string. Structured values are ignored.
 fn scalar_to_string(value: &Value) -> Option<String> {
     match value {
-        Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
+        Value::String(s) => trimmed_non_empty(s),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
+    }
+}
+
+/// Accept only textual scalars. Used where numeric coercion would be lossy.
+fn string_only(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => trimmed_non_empty(s),
+        _ => None,
+    }
+}
+
+fn trimmed_non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -173,5 +192,37 @@ mod tests {
         let md = parse("---\r\nname: x\r\n---\r\nBody");
         assert_eq!(md.name.as_deref(), Some("x"));
         assert!(md.body.contains("Body"));
+    }
+
+    #[test]
+    fn parses_lone_fence_without_panicking() {
+        let md = parse("---");
+        assert!(md.name.is_none());
+        assert!(md.description.is_none());
+        assert!(md.version.is_none());
+        assert!(md.author.is_none());
+        assert!(md.tags.is_none());
+        assert_eq!(md.body, "---");
+    }
+
+    #[test]
+    fn strips_leading_bom_before_frontmatter() {
+        let md = parse("\u{feff}---\nname: bom-skill\ndescription: Has a BOM\n---\nBody");
+        assert_eq!(md.name.as_deref(), Some("bom-skill"));
+        assert_eq!(md.description.as_deref(), Some("Has a BOM"));
+        assert_eq!(md.body, "Body");
+    }
+
+    #[test]
+    fn numeric_version_is_not_coerced() {
+        let md = parse("---\nname: numeric-version\nversion: 1.10\n---\nBody");
+        assert_eq!(md.name.as_deref(), Some("numeric-version"));
+        assert!(md.version.is_none());
+    }
+
+    #[test]
+    fn parses_comma_separated_tags() {
+        let md = parse("---\nname: tagsy\ntags: \"a, b\"\n---\nBody");
+        assert_eq!(md.tags.as_deref(), Some(&["a".to_string(), "b".to_string()][..]));
     }
 }
