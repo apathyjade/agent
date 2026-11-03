@@ -620,7 +620,9 @@ impl SkillsService {
         .await?;
 
         let entries = match list::parse_entries(&output.stdout) {
-            Ok(entries) => entries,
+            Ok(entries) => {
+                accept_listing(output.success, entries, cli_failure_detail(&output))?
+            }
             Err(err) => {
                 if output.success {
                     return Err(err);
@@ -634,8 +636,9 @@ impl SkillsService {
 
         if !output.success {
             log::warn!(
-                "`skills list` exited with code {:?}; using its JSON output anyway",
-                output.code
+                "`skills list` exited with code {:?} but returned {} entries; using them",
+                output.code,
+                entries.len()
             );
         }
 
@@ -660,14 +663,11 @@ impl SkillsService {
         let scope = normalize_scope(scope)?;
         let skills = self.list_installed(scope, project_path).await?;
 
-        let skill = skills
-            .into_iter()
-            .find(|skill| skill.name == name)
-            .ok_or_else(|| {
-                AppError::NotFound(format!("Skill '{}' not found in {} scope", name, scope))
-            })?;
+        let skill = find_target(&skills, name, scope).ok_or_else(|| {
+            AppError::NotFound(format!("Skill '{}' not found in {} scope", name, scope))
+        })?;
 
-        let path = skill.path.ok_or_else(|| {
+        let path = skill.path.clone().ok_or_else(|| {
             AppError::NotFound(format!(
                 "Skill '{}' has no installed path (status: {})",
                 name, skill.status
@@ -723,6 +723,42 @@ fn project_workdir(scope: &str, project_path: Option<&str>) -> Result<Option<Pat
         )));
     }
     Ok(Some(dir))
+}
+
+/// Find an installed skill by both name and scope.
+///
+/// The CLI can report the same skill name in both scopes, so matching on the
+/// name alone would return whichever row happened to come first. The requested
+/// scope is authoritative.
+fn find_target<'a>(
+    skills: &'a [InstalledSkill],
+    name: &str,
+    scope: &str,
+) -> Option<&'a InstalledSkill> {
+    skills
+        .iter()
+        .find(|skill| skill.name == name && skill.scope == scope)
+}
+
+/// Decide whether a `skills list` invocation is usable.
+///
+/// A zero exit is always accepted. A non-zero exit is accepted only when it
+/// still produced at least one entry; an empty listing from a failed run is
+/// indistinguishable from "no skills installed" in the UI, so it is returned
+/// as an error carrying the CLI failure detail.
+fn accept_listing(
+    success: bool,
+    entries: Vec<list::RawListEntry>,
+    failure_detail: String,
+) -> Result<Vec<list::RawListEntry>> {
+    if success || !entries.is_empty() {
+        return Ok(entries);
+    }
+
+    Err(AppError::Skill(format!(
+        "`skills list` failed: {}",
+        failure_detail
+    )))
 }
 
 /// Keep the first row of each `(scope, name)` pair.
@@ -840,6 +876,47 @@ mod tests {
         let deduped = dedupe_entries(entries);
         assert_eq!(deduped.len(), 3);
         assert_eq!(deduped[0].path.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn finds_target_by_name_and_scope() {
+        let skills = vec![
+            list::enrich(raw_entry("same", "global", Some("global-path".into()))),
+            list::enrich(raw_entry("same", "project", Some("project-path".into()))),
+        ];
+
+        let project = find_target(&skills, "same", "project").unwrap();
+        assert_eq!(project.scope, "project");
+        assert_eq!(project.path.as_deref(), Some("project-path"));
+
+        let global = find_target(&skills, "same", "global").unwrap();
+        assert_eq!(global.scope, "global");
+        assert_eq!(global.path.as_deref(), Some("global-path"));
+
+        assert!(find_target(&skills, "same", "other").is_none());
+        assert!(find_target(&skills, "absent", "global").is_none());
+    }
+
+    #[test]
+    fn rejects_failed_listing_only_when_empty() {
+        // A successful run may legitimately report no skills.
+        assert!(accept_listing(true, vec![], "ignored".into())
+            .unwrap()
+            .is_empty());
+
+        // A failed run that still printed entries keeps working.
+        let entries = vec![raw_entry("one", "global", Some("p".into()))];
+        assert_eq!(
+            accept_listing(false, entries, "ignored".into())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A failed run with an empty listing must surface the failure.
+        let err = accept_listing(false, vec![], "boom".into()).unwrap_err();
+        assert!(matches!(err, AppError::Skill(_)));
+        assert!(err.to_string().contains("boom"));
     }
 
     #[test]
