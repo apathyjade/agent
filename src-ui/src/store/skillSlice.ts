@@ -1,158 +1,224 @@
 import type { StateCreator } from 'zustand';
-import type { SkillInfo, SkillDetail, MarketSkill, ReconcileResult } from '../types';
+import type {
+  AgentOption,
+  CliStatus,
+  InstallSkillParams,
+  InstalledSkill,
+  LegacyImportResult,
+  LegacySkill,
+  MarketSkill,
+  SkillScope,
+  UpdateCheck,
+} from '../types';
 import * as api from '../api/tauri';
 
 export interface SkillSlice {
-  skills: SkillInfo[];
-  selectedSkillDetail: SkillDetail | null;
-  skillLoading: boolean;
-  skillError: string | null;
-  installDialogOpen: boolean;
-  reconciling: boolean;
+  cliStatus: CliStatus | null;
+  agents: AgentOption[];
+  scope: SkillScope;
+  projectPath: string | null;
+  installed: InstalledSkill[];
+  legacySkills: LegacySkill[];
   marketSkills: MarketSkill[];
-  marketLoading: boolean;
-  marketSearching: boolean;
+  skillContent: string | null;
+  loading: boolean;
+  /** Short name of the operation currently running, or null. */
+  busy: string | null;
+  error: string | null;
+  updates: UpdateCheck | null;
 
-  fetchSkills: () => Promise<void>;
-  toggleSkill: (id: string, enabled: boolean) => Promise<void>;
-  fetchSkillDetail: (id: string) => Promise<void>;
-  installSkill: (path: string) => Promise<void>;
-  uninstallSkill: (id: string) => Promise<void>;
-  configureSkill: (id: string, config: Record<string, unknown>) => Promise<void>;
-  clearSkillDetail: () => void;
-  setInstallDialogOpen: (open: boolean) => void;
-  clearSkillError: () => void;
-  reconcileSkills: () => Promise<ReconcileResult>;
+  fetchEnv: () => Promise<void>;
+  fetchAgents: () => Promise<void>;
+  fetchInstalled: () => Promise<void>;
+  fetchContent: (name: string, scope: SkillScope) => Promise<void>;
+  installSkill: (params: InstallSkillParams) => Promise<void>;
+  removeSkill: (name: string) => Promise<void>;
+  checkUpdates: () => Promise<void>;
+  updateAll: () => Promise<void>;
+  fetchLegacy: () => Promise<void>;
+  importLegacy: (paths: string[], agents: string[], copy: boolean) => Promise<LegacyImportResult>;
   fetchMarketTopSkills: () => Promise<void>;
   searchMarketSkills: (query: string) => Promise<void>;
-  installMarketSkill: (source: string) => Promise<void>;
+  setScope: (scope: SkillScope) => Promise<void>;
+  setProjectPath: (path: string | null) => Promise<void>;
+  clearSkillContent: () => void;
+  clearSkillError: () => void;
 }
 
 export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (set, get) => ({
-  skills: [],
-  selectedSkillDetail: null,
-  skillLoading: false,
-  skillError: null,
-  installDialogOpen: false,
-  reconciling: false,
+  cliStatus: null,
+  agents: [],
+  scope: 'global',
+  projectPath: null,
+  installed: [],
+  legacySkills: [],
   marketSkills: [],
-  marketLoading: false,
-  marketSearching: false,
+  skillContent: null,
+  loading: false,
+  busy: null,
+  error: null,
+  updates: null,
 
-  fetchSkills: async () => {
+  fetchEnv: async () => {
+    set({ error: null });
     try {
-      const skills = await api.listSkills();
-      set({ skills });
+      const cliStatus = await api.getSkillsEnv();
+      set({ cliStatus });
     } catch (err) {
-      set({ skillError: String(err) });
+      set({ error: String(err) });
     }
   },
 
-  toggleSkill: async (id, enabled) => {
+  fetchAgents: async () => {
+    set({ error: null });
     try {
-      await api.toggleSkill(id, enabled);
-      set((state: any) => ({
-        skills: state.skills.map((s: SkillInfo) =>
-          s.id === id ? { ...s, enabled } : s
-        ),
-      }));
+      const agents = await api.listSkillAgents();
+      set({ agents });
     } catch (err) {
-      set({ skillError: String(err) });
+      set({ error: String(err) });
     }
   },
 
-  fetchSkillDetail: async (id) => {
-    set({ skillLoading: true, skillError: null });
+  fetchInstalled: async () => {
+    set({ loading: true, error: null });
     try {
-      const detail = await api.getSkillDetail(id);
-      set({ selectedSkillDetail: detail, skillLoading: false });
+      const { scope, projectPath } = get();
+      const installed = await api.listInstalledSkills(scope, projectPath);
+      set({ installed });
     } catch (err) {
-      set({ skillError: String(err), skillLoading: false });
+      set({ installed: [], error: String(err) });
+    } finally {
+      set({ loading: false });
     }
   },
 
-  installSkill: async (path) => {
-    set({ skillLoading: true, skillError: null });
+  fetchContent: async (name, scope) => {
+    set({ busy: 'content', error: null, skillContent: null });
     try {
-      await api.installSkillFromPath(path);
-      await get().fetchSkills();
-      set({ skillLoading: false, installDialogOpen: false });
+      const skillContent = await api.getSkillContent(name, scope, get().projectPath);
+      set({ skillContent });
     } catch (err) {
-      set({ skillError: String(err), skillLoading: false });
+      set({ error: String(err) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  installSkill: async (params) => {
+    set({ busy: 'install', error: null });
+    try {
+      await api.installSkills({ ...params, projectPath: params.projectPath ?? get().projectPath });
+      await get().fetchInstalled();
+    } catch (err) {
+      set({ error: String(err) });
       throw err;
+    } finally {
+      set({ busy: null });
     }
   },
 
-  uninstallSkill: async (id) => {
-    set({ skillLoading: true, skillError: null });
+  removeSkill: async (name) => {
+    set({ busy: 'remove', error: null });
     try {
-      await api.uninstallSkill(id);
-      set({ selectedSkillDetail: null, skillLoading: false });
-      await get().fetchSkills();
+      const { scope, projectPath } = get();
+      await api.removeSkill(name, scope, projectPath);
+      await get().fetchInstalled();
     } catch (err) {
-      set({ skillError: String(err), skillLoading: false });
+      set({ error: String(err) });
+      throw err;
+    } finally {
+      set({ busy: null });
     }
   },
 
-  configureSkill: async (id, config) => {
-    set({ skillLoading: true, skillError: null });
+  checkUpdates: async () => {
+    set({ busy: 'update', error: null });
     try {
-      await api.configureSkill(id, config);
-      set({ skillLoading: false });
+      const { scope, projectPath } = get();
+      const updates = await api.checkSkillUpdates(scope, projectPath);
+      set({ updates });
     } catch (err) {
-      set({ skillError: String(err), skillLoading: false });
+      set({ error: String(err) });
+    } finally {
+      set({ busy: null });
     }
   },
 
-  reconcileSkills: async () => {
-    set({ reconciling: true, skillError: null });
+  updateAll: async () => {
+    set({ busy: 'update', error: null });
     try {
-      const result = await api.reconcileSkills();
-      await get().fetchSkills();
-      set({ reconciling: false });
+      const { scope, projectPath } = get();
+      await api.updateSkills(scope, projectPath);
+      await get().fetchInstalled();
+      await get().checkUpdates();
+    } catch (err) {
+      set({ error: String(err) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  fetchLegacy: async () => {
+    set({ busy: 'legacy', error: null });
+    try {
+      const legacySkills = await api.detectLegacySkills();
+      set({ legacySkills });
+    } catch (err) {
+      set({ error: String(err) });
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  importLegacy: async (paths, agents, copy) => {
+    set({ busy: 'legacy', error: null });
+    try {
+      const result = await api.importLegacySkills(paths, agents, copy);
+      await get().fetchInstalled();
+      await get().fetchLegacy();
       return result;
     } catch (err) {
-      set({ skillError: String(err), reconciling: false });
+      set({ error: String(err) });
       throw err;
+    } finally {
+      set({ busy: null });
     }
   },
 
   fetchMarketTopSkills: async () => {
-    set({ marketLoading: true, skillError: null });
+    set({ busy: 'market', error: null });
     try {
-      const skills = await api.listMarketTopSkills(30);
-      set({ marketSkills: skills, marketLoading: false });
+      const marketSkills = await api.listMarketTopSkills(30);
+      set({ marketSkills });
     } catch (err) {
-      set({ skillError: String(err), marketLoading: false });
+      set({ error: String(err) });
+    } finally {
+      set({ busy: null });
     }
   },
 
   searchMarketSkills: async (query) => {
-    set({ marketSearching: true, skillError: null });
+    set({ busy: 'market', error: null });
     try {
-      const skills = await api.searchMarketSkills(query, 30);
-      set({ marketSkills: skills, marketSearching: false });
+      const marketSkills = await api.searchMarketSkills(query, 30);
+      set({ marketSkills });
     } catch (err) {
-      set({ skillError: String(err), marketSearching: false });
+      set({ error: String(err) });
+    } finally {
+      set({ busy: null });
     }
   },
 
-  installMarketSkill: async (source) => {
-    set({ skillLoading: true, skillError: null });
-    try {
-      await api.installMarketSkill(source);
-      // Reconcile to pick up the newly installed skill from disk into DB
-      await get().reconcileSkills();
-      // Refresh local skills list
-      await get().fetchSkills();
-      set({ skillLoading: false });
-    } catch (err) {
-      set({ skillError: String(err), skillLoading: false });
-      throw err;
-    }
+  setScope: async (scope) => {
+    set({ scope });
+    await get().fetchInstalled();
   },
 
-  clearSkillDetail: () => set({ selectedSkillDetail: null }),
-  setInstallDialogOpen: (open) => set({ installDialogOpen: open }),
-  clearSkillError: () => set({ skillError: null }),
+  setProjectPath: async (path) => {
+    set({ projectPath: path });
+    await get().fetchInstalled();
+  },
+
+  clearSkillContent: () => set({ skillContent: null }),
+  clearSkillError: () => set({ error: null }),
 });
