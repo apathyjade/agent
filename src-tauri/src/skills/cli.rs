@@ -349,16 +349,18 @@ async fn execute(
 
 /// Feed `args` to the child, special-casing the `cmd.exe /c` wrapper.
 ///
-/// `spawn_parts` already quotes the shim path; appending it with `raw_arg`
-/// keeps those quotes literal instead of letting the Windows argv builder
-/// escape them as `\"` (which `cmd.exe` would not understand).
+/// `spawn_parts` already quotes the shim path; [`build_cmd_line`] quotes every
+/// remaining token and appends the result with `raw_arg`, so `cmd.exe` never
+/// sees an unquoted `&`, `|`, `^`, `<` or `>` from a user-supplied source or
+/// skill name. Appending raw also keeps the quotes literal instead of letting
+/// the Windows argv builder escape them as `\"` (which `cmd.exe` would not
+/// understand).
 fn append_args(cmd: &mut Command, program: &str, args: &[String]) {
     #[cfg(windows)]
     {
         if program.eq_ignore_ascii_case("cmd.exe") && args.len() >= 2 && args[0] == "/c" {
             cmd.arg("/c");
-            cmd.raw_arg(&args[1]);
-            cmd.args(&args[2..]);
+            cmd.raw_arg(build_cmd_line(&args[1..]));
             return;
         }
     }
@@ -367,6 +369,34 @@ fn append_args(cmd: &mut Command, program: &str, args: &[String]) {
         let _ = program;
     }
     cmd.args(args);
+}
+
+/// Assemble a `cmd.exe` command line with every token double-quoted.
+///
+/// `tokens[0]` is the shim path that [`spawn_parts`] already quoted; it is
+/// unquoted first so the result never contains doubled-up quotes. Embedded
+/// quotes are escaped as `\"` (cmd-style). The whole line is then wrapped in
+/// one extra pair of quotes: `cmd /c` strips the outermost pair before
+/// parsing, which is what leaves the remaining quoted tokens intact.
+#[cfg(windows)]
+fn build_cmd_line(tokens: &[String]) -> String {
+    let quoted: Vec<String> = tokens
+        .iter()
+        .enumerate()
+        .map(|(index, token)| {
+            let raw = if index == 0 {
+                token
+                    .strip_prefix('"')
+                    .and_then(|t| t.strip_suffix('"'))
+                    .unwrap_or(token.as_str())
+            } else {
+                token.as_str()
+            };
+            format!("\"{}\"", raw.replace('"', "\\\""))
+        })
+        .collect();
+
+    format!("\"{}\"", quoted.join(" "))
 }
 
 /// True when the resolved program is a `skills` binary, not the npx shim.
@@ -535,6 +565,32 @@ mod tests {
         assert_eq!(program, "cmd.exe");
         assert_eq!(args[1], r#""C:\Program Files\nodejs\npx.cmd""#);
         assert_eq!(&args[2..], ["--yes", "skills@1.7.6"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quotes_every_cmd_argument_and_escapes_quotes() {
+        let tokens = vec![
+            r#""C:\node\npx.cmd""#.to_string(),
+            "add".to_string(),
+            "a&b".to_string(),
+            "x|y".to_string(),
+            r#"say"hi"#.to_string(),
+        ];
+        let line = build_cmd_line(&tokens);
+
+        assert!(line.contains(r#""a&b""#), "line: {line}");
+        assert!(line.contains(r#""x|y""#), "line: {line}");
+        assert!(line.contains(r#""add""#), "line: {line}");
+        assert!(line.contains(r#""say\"hi""#), "line: {line}");
+        assert!(
+            line.starts_with("\"\"C:\\node\\npx.cmd\""),
+            "shim path must stay one token: {line}"
+        );
+        // cmd /c strips the outermost pair of quotes, leaving the fully
+        // quoted command line intact.
+        assert!(line.starts_with("\"\""), "line: {line}");
+        assert!(line.ends_with("\"\""), "line: {line}");
     }
 
     #[test]

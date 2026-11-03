@@ -858,6 +858,21 @@ pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
             "at least one agent is required".to_string(),
         ));
     }
+    // Skill and agent names become argv entries, so a flag-like value such as
+    // `-g` or an empty string must never reach the CLI.
+    for skill in &req.skills {
+        if skill.trim() == "*" {
+            continue;
+        }
+        if !is_valid_name(skill) {
+            return Err(AppError::Skill(format!("invalid skill name '{}'", skill)));
+        }
+    }
+    for agent in &req.agents {
+        if !is_valid_name(agent) {
+            return Err(AppError::Skill(format!("invalid agent '{}'", agent)));
+        }
+    }
 
     let mut args = vec![
         "add".to_string(),
@@ -868,10 +883,10 @@ pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
         // The CLI expands `*` to every skill in the source.
         args.push("*".to_string());
     } else {
-        args.extend(req.skills.iter().cloned());
+        args.extend(req.skills.iter().map(|s| s.trim().to_string()));
     }
     args.push("-a".to_string());
-    args.extend(req.agents.iter().cloned());
+    args.extend(req.agents.iter().map(|a| a.trim().to_string()));
     args.push("-y".to_string());
     if scope == "global" {
         args.push("-g".to_string());
@@ -970,8 +985,19 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
 pub fn interpret_check(code: Option<i32>, output: &str) -> (bool, bool) {
     match code {
         Some(0) => (false, false),
-        _ if output.to_lowercase().contains("update") => (true, false),
-        _ => (false, true),
+        _ => {
+            let output = output.to_lowercase();
+            let failed = ["failed", "error", "denied", "cannot"]
+                .iter()
+                .any(|keyword| output.contains(keyword));
+            if failed {
+                (false, true)
+            } else if output.contains("update") {
+                (true, false)
+            } else {
+                (false, true)
+            }
+        }
     }
 }
 
@@ -1061,7 +1087,7 @@ fn is_valid_name(name: &str) -> bool {
 /// preserving here; callers re-list to show the actual state afterwards.
 fn accept_mutation(output: cli::CliOutput) -> Result<String> {
     if output.success {
-        return Ok(output.stdout);
+        return Ok(output.stdout.trim().to_string());
     }
 
     Err(AppError::Skill(mutation_failure_detail(&output)))
@@ -1402,6 +1428,36 @@ mod mutation_tests {
     }
 
     #[test]
+    fn rejects_flag_like_skills_and_blank_agents() {
+        let mut r = req("global", false);
+        r.skills = vec!["-g".into()];
+        assert!(build_add_args(&r).is_err());
+
+        let mut r = req("global", false);
+        r.skills = vec!["--copy".into()];
+        assert!(build_add_args(&r).is_err());
+
+        let mut r = req("global", false);
+        r.agents = vec!["".into()];
+        assert!(build_add_args(&r).is_err());
+
+        let mut r = req("global", false);
+        r.agents = vec!["opencode".into(), "".into()];
+        assert!(build_add_args(&r).is_err());
+    }
+
+    #[test]
+    fn accepts_wildcard_and_trims_valid_values() {
+        let mut r = req("global", false);
+        r.skills = vec!["*".into()];
+        r.agents = vec![" opencode ".into()];
+        let args = build_add_args(&r).unwrap();
+        assert!(args.contains(&"*".to_string()));
+        assert!(args.contains(&"opencode".to_string()));
+        assert!(!args.contains(&" opencode ".to_string()));
+    }
+
+    #[test]
     fn builds_remove_check_update_args() {
         assert_eq!(
             build_remove_args("x", "global").unwrap(),
@@ -1434,6 +1490,33 @@ mod mutation_tests {
         );
         assert_eq!(interpret_check(Some(1), "failed to check y"), (false, true));
         assert_eq!(interpret_check(Some(0), "all good"), (false, false));
+    }
+
+    #[test]
+    fn failure_keywords_override_the_word_update() {
+        assert_eq!(
+            interpret_check(Some(1), "failed to check for updates"),
+            (false, true)
+        );
+        assert_eq!(
+            interpret_check(Some(1), "error: update denied"),
+            (false, true)
+        );
+        assert_eq!(
+            interpret_check(Some(1), "cannot reach registry for updates"),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn trims_successful_mutation_stdout() {
+        let output = cli::CliOutput {
+            stdout: "installed\n\n".into(),
+            stderr: String::new(),
+            success: true,
+            code: Some(0),
+        };
+        assert_eq!(accept_mutation(output).unwrap(), "installed");
     }
 
     #[test]
