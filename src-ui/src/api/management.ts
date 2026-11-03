@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
-  SkillInfo, SkillDetail, MarketSkill, ReconcileResult,
+  SkillScope, CliStatus, InstalledSkill, AgentOption, RepoSkillPreview,
+  LegacySkill, LegacyImportResult, UpdateCheck, InstallSkillParams,
+  MarketSkill,
   McpConnectionInfo, ConnectionStats,
   WorkflowInfo, WorkflowRunRecord,
   RuntimeInfo, RuntimeSuggestion, RuntimeVersion, InstalledVersion,
@@ -14,32 +16,69 @@ import type {
 
 // ── Skill Commands ──
 
-export async function listSkills(): Promise<SkillInfo[]> {
-  return invoke('list_skills');
+export async function getSkillsEnv(): Promise<CliStatus> {
+  return invoke('get_skills_env');
 }
 
-export async function getSkillDetail(id: string): Promise<SkillDetail> {
-  return invoke('get_skill_detail', { id });
+export async function listSkillAgents(): Promise<AgentOption[]> {
+  return invoke('list_skill_agents');
 }
 
-export async function installSkillFromPath(path: string): Promise<SkillInfo> {
-  return invoke('install_skill_from_path', { path });
+export async function listInstalledSkills(
+  scope: SkillScope,
+  projectPath?: string | null,
+): Promise<InstalledSkill[]> {
+  return invoke('list_installed_skills', { scope, projectPath: projectPath ?? null });
 }
 
-export async function uninstallSkill(id: string): Promise<void> {
-  return invoke('uninstall_skill', { id });
+export async function getSkillContent(
+  name: string,
+  scope: SkillScope,
+  projectPath?: string | null,
+): Promise<string> {
+  return invoke('get_skill_content', { name, scope, projectPath: projectPath ?? null });
 }
 
-export async function toggleSkill(id: string, enabled: boolean): Promise<void> {
-  return invoke('toggle_skill', { id, enabled });
+export async function previewSkillSource(source: string): Promise<RepoSkillPreview> {
+  return invoke('preview_skill_source', { source });
 }
 
-export async function configureSkill(id: string, config: Record<string, unknown>): Promise<void> {
-  return invoke('configure_skill', { id, config });
+export async function detectLegacySkills(): Promise<LegacySkill[]> {
+  return invoke('detect_legacy_skills');
 }
 
-export async function reconcileSkills(): Promise<ReconcileResult> {
-  return invoke('reconcile_skills');
+export async function importLegacySkills(
+  paths: string[],
+  agents: string[],
+  copy: boolean,
+): Promise<LegacyImportResult> {
+  return invoke('import_legacy_skills', { paths, agents, copy });
+}
+
+export async function installSkills(params: InstallSkillParams): Promise<string> {
+  return invoke('install_skills', { ...params, projectPath: params.projectPath ?? null });
+}
+
+export async function removeSkill(
+  name: string,
+  scope: SkillScope,
+  projectPath?: string | null,
+): Promise<string> {
+  return invoke('remove_skill', { name, scope, projectPath: projectPath ?? null });
+}
+
+export async function checkSkillUpdates(
+  scope: SkillScope,
+  projectPath?: string | null,
+): Promise<UpdateCheck> {
+  return invoke('check_skill_updates', { scope, projectPath: projectPath ?? null });
+}
+
+export async function updateSkills(
+  scope: SkillScope,
+  projectPath?: string | null,
+): Promise<string> {
+  return invoke('update_skills', { scope, projectPath: projectPath ?? null });
 }
 
 export async function listMarketTopSkills(limit?: number): Promise<MarketSkill[]> {
@@ -48,10 +87,6 @@ export async function listMarketTopSkills(limit?: number): Promise<MarketSkill[]
 
 export async function searchMarketSkills(query: string, limit?: number): Promise<MarketSkill[]> {
   return invoke('search_market_skills', { query, limit });
-}
-
-export async function installMarketSkill(source: string): Promise<string> {
-  return invoke('install_market_skill', { source });
 }
 
 // ── Workflow Commands ──
