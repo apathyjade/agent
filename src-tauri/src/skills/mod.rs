@@ -1,5 +1,7 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +21,7 @@ pub mod list;
 pub mod loader;
 pub mod market;
 pub mod scanner;
+pub use list::InstalledSkill;
 pub use loader::{SkillEntry, SkillMeta};
 
 /// Info returned to frontend (lightweight, no config values)
@@ -548,5 +551,347 @@ impl SkillManager {
             installed_at: record.installed_at.clone(),
             updated_at: record.updated_at.clone(),
         })
+    }
+}
+
+// ── Read side: CLI-backed skills service ──
+
+/// Lifetime of a successful environment probe.
+const ENV_CACHE_TTL: Duration = Duration::from_secs(300);
+/// Timeout for read-only CLI invocations.
+const CLI_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound for a `SKILL.md` read: 256 KiB.
+const MAX_CONTENT_BYTES: u64 = 256 * 1024;
+
+/// Read-only view of installed skills, backed by the official `skills` CLI.
+///
+/// The CLI owns the on-disk state; this service only parses its JSON output
+/// and merges in `SKILL.md` frontmatter.
+pub struct SkillsService {
+    cli: cli::CliCommand,
+    env_cache: Mutex<Option<(Instant, cli::CliStatus)>>,
+}
+
+impl SkillsService {
+    pub fn new() -> Self {
+        Self {
+            cli: cli::resolve_command(),
+            env_cache: Mutex::new(None),
+        }
+    }
+
+    /// Report CLI/Node availability. Successful probes are cached for five
+    /// minutes; failures are not, so a fixed environment is noticed at once.
+    pub async fn env_status(&self) -> cli::CliStatus {
+        let mut cache = self.env_cache.lock().await;
+        if let Some((checked_at, status)) = cache.as_ref() {
+            if checked_at.elapsed() < ENV_CACHE_TTL {
+                return status.clone();
+            }
+        }
+
+        let status = cli::probe(&self.cli).await;
+        *cache = if status.available {
+            Some((Instant::now(), status.clone()))
+        } else {
+            None
+        };
+        status
+    }
+
+    /// List installed skills for one scope.
+    ///
+    /// Project scope validates `project_path` and uses it as the CLI working
+    /// directory; global scope ignores it.
+    pub async fn list_installed(
+        &self,
+        scope: &str,
+        project_path: Option<&str>,
+    ) -> Result<Vec<InstalledSkill>> {
+        let scope = normalize_scope(scope)?;
+        let cwd = project_workdir(scope, project_path)?;
+
+        let output = cli::run(
+            &self.cli,
+            &build_list_args(scope),
+            cwd.as_deref(),
+            CLI_LIST_TIMEOUT,
+        )
+        .await?;
+
+        let entries = match list::parse_entries(&output.stdout) {
+            Ok(entries) => entries,
+            Err(err) => {
+                if output.success {
+                    return Err(err);
+                }
+                return Err(AppError::Skill(format!(
+                    "`skills list` failed: {}",
+                    cli_failure_detail(&output)
+                )));
+            }
+        };
+
+        if !output.success {
+            log::warn!(
+                "`skills list` exited with code {:?}; using its JSON output anyway",
+                output.code
+            );
+        }
+
+        let entries = dedupe_entries(entries);
+
+        // Enrichment touches the filesystem for every entry, so keep it off
+        // the async runtime even though the CLI call itself is awaited.
+        tokio::task::spawn_blocking(move || {
+            entries.into_iter().map(list::enrich).collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|err| AppError::Skill(format!("skill enrichment task failed: {err}")))
+    }
+
+    /// Read the `SKILL.md` body of one installed skill.
+    pub async fn content(
+        &self,
+        name: &str,
+        scope: &str,
+        project_path: Option<&str>,
+    ) -> Result<String> {
+        let scope = normalize_scope(scope)?;
+        let skills = self.list_installed(scope, project_path).await?;
+
+        let skill = skills
+            .into_iter()
+            .find(|skill| skill.name == name)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Skill '{}' not found in {} scope", name, scope))
+            })?;
+
+        let path = skill.path.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Skill '{}' has no installed path (status: {})",
+                name, skill.status
+            ))
+        })?;
+
+        tokio::task::spawn_blocking(move || read_content_file(Path::new(&path)))
+            .await
+            .map_err(|err| AppError::Skill(format!("skill content task failed: {err}")))?
+    }
+}
+
+impl Default for SkillsService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `--json` arguments for a list call. An unknown scope falls back to the
+/// project form; callers are expected to run [`normalize_scope`] first.
+pub fn build_list_args(scope: &str) -> Vec<String> {
+    match scope {
+        "global" => vec!["list".to_string(), "-g".to_string(), "--json".to_string()],
+        _ => vec!["list".to_string(), "--json".to_string()],
+    }
+}
+
+/// Accept only the two scopes the UI exposes.
+pub fn normalize_scope(scope: &str) -> Result<&str> {
+    match scope {
+        "global" | "project" => Ok(scope),
+        other => Err(AppError::SkillValidation(format!(
+            "unknown skill scope '{}': expected 'global' or 'project'",
+            other
+        ))),
+    }
+}
+
+/// Working directory for a list call; project scope must be a real directory.
+fn project_workdir(scope: &str, project_path: Option<&str>) -> Result<Option<PathBuf>> {
+    if scope != "project" {
+        return Ok(None);
+    }
+
+    let raw = project_path.ok_or_else(|| {
+        AppError::SkillValidation("project scope requires a project path".to_string())
+    })?;
+    let dir = PathBuf::from(raw);
+    if !dir.is_dir() {
+        return Err(AppError::SkillValidation(format!(
+            "project path '{}' is not an existing directory",
+            raw
+        )));
+    }
+    Ok(Some(dir))
+}
+
+/// Keep the first row of each `(scope, name)` pair.
+fn dedupe_entries(entries: Vec<list::RawListEntry>) -> Vec<list::RawListEntry> {
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .into_iter()
+        .filter(|entry| seen.insert((entry.scope.clone(), entry.name.clone())))
+        .collect()
+}
+
+/// One actionable line describing a failed CLI invocation.
+fn cli_failure_detail(output: &cli::CliOutput) -> String {
+    let stderr = output
+        .stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty());
+    match stderr {
+        Some(line) => line.to_string(),
+        None => output
+            .code
+            .map(|code| format!("exit code {code}"))
+            .unwrap_or_else(|| "unknown error".to_string()),
+    }
+}
+
+/// Read a skill's `SKILL.md`, truncating the text at 256 KiB.
+///
+/// `path` may be the skill directory or the file itself. A missing or
+/// unreadable file is reported as [`AppError::NotFound`].
+fn read_content_file(path: &Path) -> Result<String> {
+    let file_path = if path.is_dir() {
+        path.join("SKILL.md")
+    } else {
+        path.to_path_buf()
+    };
+
+    let file = std::fs::File::open(&file_path)
+        .map_err(|err| AppError::NotFound(format!("cannot read {}: {err}", file_path.display())))?;
+
+    let mut bytes = Vec::new();
+    file.take(MAX_CONTENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| AppError::Skill(format!("cannot read {}: {err}", file_path.display())))?;
+
+    if bytes.len() as u64 > MAX_CONTENT_BYTES {
+        bytes.truncate(MAX_CONTENT_BYTES as usize);
+    }
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_entry(name: &str, scope: &str, path: Option<String>) -> list::RawListEntry {
+        list::RawListEntry {
+            name: name.into(),
+            path,
+            scope: scope.into(),
+            agents: vec![],
+            source: None,
+            source_url: None,
+            source_type: None,
+            status: "tracked".into(),
+        }
+    }
+
+    #[test]
+    fn builds_list_args_for_scope() {
+        assert_eq!(build_list_args("global"), vec!["list", "-g", "--json"]);
+        assert_eq!(build_list_args("project"), vec!["list", "--json"]);
+    }
+
+    #[test]
+    fn rejects_unknown_scope() {
+        assert!(normalize_scope("both").is_err());
+        assert!(normalize_scope("GLOBAL").is_err());
+    }
+
+    #[test]
+    fn accepts_supported_scopes() {
+        assert_eq!(normalize_scope("global").unwrap(), "global");
+        assert_eq!(normalize_scope("project").unwrap(), "project");
+    }
+
+    #[test]
+    fn missing_entries_survive_enrichment() {
+        let entry = list::RawListEntry {
+            name: "gone".into(),
+            path: None,
+            scope: "global".into(),
+            agents: vec![],
+            source: None,
+            source_url: None,
+            source_type: None,
+            status: "missing".into(),
+        };
+        let skill = list::enrich(entry);
+        assert_eq!(skill.status, "missing");
+        assert!(skill.path.is_none());
+        assert!(!skill.has_skill_md);
+    }
+
+    #[test]
+    fn dedupes_entries_by_scope_and_name() {
+        let entries = vec![
+            raw_entry("dup", "global", Some("a".into())),
+            raw_entry("dup", "global", Some("b".into())),
+            raw_entry("dup", "project", Some("c".into())),
+            raw_entry("other", "global", None),
+        ];
+        let deduped = dedupe_entries(entries);
+        assert_eq!(deduped.len(), 3);
+        assert_eq!(deduped[0].path.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn project_scope_requires_an_existing_directory() {
+        // Global scope never passes a working directory.
+        assert!(project_workdir("global", None).unwrap().is_none());
+
+        assert!(project_workdir("project", None).is_err());
+        assert!(project_workdir("project", Some("this/path/does/not/exist")).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        let cwd = project_workdir("project", Some(&path)).unwrap();
+        assert_eq!(cwd.as_deref(), Some(dir.path()));
+
+        let file = dir.path().join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+        let file_path = file.to_string_lossy().into_owned();
+        assert!(project_workdir("project", Some(&file_path)).is_err());
+    }
+
+    #[test]
+    fn reads_skill_md_from_directory_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("SKILL.md"),
+            "---\nname: demo\n---\n\nHello there\n",
+        )
+        .unwrap();
+
+        let from_dir = read_content_file(dir.path()).unwrap();
+        assert!(from_dir.contains("Hello there"));
+
+        let from_file = read_content_file(&dir.path().join("SKILL.md")).unwrap();
+        assert_eq!(from_file, from_dir);
+    }
+
+    #[test]
+    fn truncates_oversized_skill_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let oversized = vec![b'a'; MAX_CONTENT_BYTES as usize + 10];
+        std::fs::write(dir.path().join("SKILL.md"), oversized).unwrap();
+
+        let text = read_content_file(dir.path()).unwrap();
+        assert_eq!(text.len(), MAX_CONTENT_BYTES as usize);
+    }
+
+    #[test]
+    fn reports_not_found_for_unreadable_skill_md() {
+        assert!(matches!(
+            read_content_file(Path::new("this/path/does/not/exist")),
+            Err(AppError::NotFound(_))
+        ));
     }
 }
