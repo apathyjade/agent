@@ -12,6 +12,7 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::script_tool::ScriptTool;
 
 // ── Re-export types used by commands ──
+pub mod agents;
 pub mod cli;
 pub mod frontmatter;
 pub mod list;
