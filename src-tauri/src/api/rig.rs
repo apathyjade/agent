@@ -35,7 +35,7 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use rig::agent::{AgentBuilder, MultiTurnStreamItem};
+use rig::agent::{AgentBuilder, MultiTurnStreamItem, StreamingResult};
 use rig::completion::Message;
 use rig::driver::DynModel;
 use rig::operation::Completion;
@@ -118,16 +118,41 @@ impl ProviderBox for RigProvider {
         preamble: &str,
         prompt: &str,
         tools: Vec<DynamicTool>,
+        max_turns: usize,
     ) -> Result<String> {
         let agent = self.agent_with_tools(preamble, tools).build();
 
-        // Rig's agent drives the tool loop internally: every requested call is
-        // dispatched through the tool set and answered until the model stops.
-        agent
+        // Rig's agent drives the tool loop internally: every requested tool
+        // call is dispatched through the tool set and answered until the model
+        // stops.
+        let response = agent
             .prompt(Message::user(prompt))
+            .max_turns(max_turns)
+            .run()
             .await
-            .map(|response| response.output())
-            .map_err(|e| AppError::Provider(format!("Rig agent error: {}", e)))
+            .map_err(|e| AppError::Provider(format!("Rig agent error: {}", e)))?;
+
+        Ok(response.output())
+    }
+
+    async fn chat_with_tools(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        history: &mut Vec<Message>,
+        tools: Vec<DynamicTool>,
+        max_turns: usize,
+    ) -> Result<String> {
+        let agent = self.agent_with_tools(preamble, tools).build();
+        let mut runner = agent.prompt(Message::user(prompt)).max_turns(max_turns);
+        runner = runner.history(history.clone());
+
+        let response = runner
+            .run()
+            .await
+            .map_err(|e| AppError::Provider(format!("Rig agent error: {}", e)))?;
+
+        Ok(response.output())
     }
 
     async fn stream_prompt(
@@ -143,10 +168,16 @@ impl ProviderBox for RigProvider {
         &self,
         preamble: &str,
         prompt: &str,
+        history: &mut Vec<Message>,
         tools: Vec<DynamicTool>,
-    ) -> Result<BoxStream<'static, Result<String>>> {
+        max_turns: usize,
+    ) -> Result<StreamingResult> {
         let agent = self.agent_with_tools(preamble, tools).build();
-        Ok(box_stream(agent.prompt(Message::user(prompt)).stream()))
+        let runner = agent
+            .prompt(Message::user(prompt))
+            .max_turns(max_turns)
+            .history(history.clone());
+        Ok(runner.stream())
     }
 }
 

@@ -2,6 +2,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use serde::{Serialize, Deserialize};
 
+use futures::StreamExt;
+use rig::agent::MultiTurnStreamItem;
 use rig::completion::Message;
 
 use crate::api::provider::ProviderRegistry;
@@ -68,13 +70,14 @@ impl ToolLoop {
     ///
     /// Accepts a `Vec<Message>` from callers that already construct message
     /// lists, extracts the system prompt and last user message, then delegates
-    /// to ProviderBox.
+    /// to ProviderBox. When tools are enabled the run goes through Rig's agent
+    /// tool loop (`prompt_with_tools` / `chat_with_tools`).
     pub async fn run(
         &self,
         model_id: &str,
         messages: Vec<Message>,
-        _tools_enabled: bool,
-        _allowed_tools: Option<Vec<String>>,
+        tools_enabled: bool,
+        allowed_tools: Option<Vec<String>>,
     ) -> Result<String> {
         let provider = {
             let registry = self.providers.lock().await;
@@ -82,18 +85,32 @@ impl ToolLoop {
         };
 
         let (preamble, prompt, mut history) = extract_chat_params(messages);
+        let tools = {
+            let registry = self.tools.lock().await;
+            if tools_enabled {
+                registry.to_rig_tools(allowed_tools.as_deref())
+            } else {
+                Vec::new()
+            }
+        };
+        let max_turns = self.max_iterations.max(1);
 
         if history.is_empty() {
-            provider.prompt(&preamble, &prompt).await
+            provider
+                .prompt_with_tools(&preamble, &prompt, tools, max_turns)
+                .await
         } else {
-            provider.chat(&preamble, &prompt, &mut history).await
+            provider
+                .chat_with_tools(&preamble, &prompt, &mut history, tools, max_turns)
+                .await
         }
     }
 
-    /// Streaming agent run — non-streaming fallback.
+    /// Streaming agent run with tool support.
     ///
-    /// Sends the full response as a single [`StreamEvent::Content`] event
-    /// followed by [`StreamEvent::Done`].
+    /// Consumes Rig's agent stream and forwards text deltas, tool calls,
+    /// tool results, and the final response to the caller via [`StreamEvent`]s
+    /// on the returned channel.
     pub async fn run_stream(
         &self,
         model_id: &str,
@@ -103,32 +120,80 @@ impl ToolLoop {
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         let (tx, rx) = mpsc::channel(32);
 
-        let providers = self.providers.clone();
-        let tools = self.tools.clone();
-        let mid = model_id.to_string();
-        let max_iter = self.max_iterations;
+        let provider = {
+            let registry = self.providers.lock().await;
+            registry.get(model_id)?
+        };
+        let (preamble, prompt, mut history) = extract_chat_params(messages);
+        let tools = {
+            let registry = self.tools.lock().await;
+            if tools_enabled {
+                registry.to_rig_tools(allowed_tools.as_deref())
+            } else {
+                Vec::new()
+            }
+        };
+        let max_turns = self.max_iterations.max(1);
 
         tokio::spawn(async move {
-            let loop_ = ToolLoop {
-                providers,
-                tools,
-                max_iterations: max_iter,
-            };
-
-            match loop_
-                .run(&mid, messages, tools_enabled, allowed_tools)
+            let stream = match provider
+                .stream_with_tools(&preamble, &prompt, &mut history, tools, max_turns)
                 .await
             {
-                Ok(content) => {
-                    let _ = tx.send(StreamEvent::Content(content)).await;
-                }
+                Ok(stream) => stream,
                 Err(e) => {
-                    let _ = tx
-                        .send(StreamEvent::Content(format!("\n[Error: {}]", e)))
-                        .await;
+                    let _ = tx.send(StreamEvent::Content(format!("\n[Error: {}]", e))).await;
+                    let _ = tx.send(StreamEvent::Done).await;
+                    return;
+                }
+            };
+
+            let mut stream = stream;
+            while let Some(item) = stream.next().await {
+                let item = match item {
+                    Ok(item) => item,
+                    Err(e) => {
+                        let _ = tx.send(StreamEvent::Content(format!("\n[Error: {}]", e))).await;
+                        break;
+                    }
+                };
+
+                match item {
+                    MultiTurnStreamItem::FinalResponse(response) => {
+                        let _ = tx.send(StreamEvent::Content(response.output())).await;
+                        let _ = tx.send(StreamEvent::Done).await;
+                        break;
+                    }
+                    MultiTurnStreamItem::StreamAssistantItem(rig::streaming::Item::Event(rig::streaming::StreamEvent::Text { text, .. })) => {
+                        let _ = tx.send(StreamEvent::Content(text)).await;
+                    }
+                    MultiTurnStreamItem::StreamAssistantItem(rig::streaming::Item::Unknown(_)) => {}
+                    MultiTurnStreamItem::ToolCall { tool_call } => {
+                        let _ = tx
+                            .send(StreamEvent::ToolCall(ToolCallInfo {
+                                id: tool_call.id.to_string(),
+                                name: tool_call.function.name.to_string(),
+                            }))
+                            .await;
+                    }
+                    MultiTurnStreamItem::ToolResult { tool_result } => {
+                        let result = tool_result
+                            .content
+                            .iter()
+                            .filter_map(|c| c.as_text())
+                            .collect::<Vec<&str>>()
+                            .join("\n");
+                        let _ = tx
+                            .send(StreamEvent::ToolResult(ToolResultInfo {
+                                call_id: tool_result.call.to_string(),
+                                name: tool_result.name.to_string(),
+                                result,
+                            }))
+                            .await;
+                    }
+                    _ => {}
                 }
             }
-            let _ = tx.send(StreamEvent::Done).await;
         });
 
         Ok(rx)
@@ -136,23 +201,29 @@ impl ToolLoop {
 
     /// Build a Rig Agent with a tool set and run it.
     ///
-    /// Currently delegates to [`ProviderBox::prompt()`]; tools are wired
-    /// through [`ProviderBox::prompt_with_tools()`] with
-    /// `ToolRegistry::to_rig_tools()`, which the orchestrator enables once
-    /// tool routing is switched over.
+    /// Tools are wired through [`ProviderBox::prompt_with_tools()`] with
+    /// `ToolRegistry::to_rig_tools()`; Rig's agent executes the requested tool
+    /// calls and feeds results back until it stops.
     pub async fn run_with_agent(
         &self,
         model_id: &str,
         system_prompt: &str,
         user_message: &str,
-        _allowed_tools: Option<Vec<String>>,
+        allowed_tools: Option<Vec<String>>,
     ) -> Result<String> {
         let provider = {
             let registry = self.providers.lock().await;
             registry.get(model_id)?
         };
+        let tools = {
+            let registry = self.tools.lock().await;
+            registry.to_rig_tools(allowed_tools.as_deref())
+        };
+        let max_turns = self.max_iterations.max(1);
 
-        provider.prompt(system_prompt, user_message).await
+        provider
+            .prompt_with_tools(system_prompt, user_message, tools, max_turns)
+            .await
     }
 }
 

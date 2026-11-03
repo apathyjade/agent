@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use rig::agent::StreamingResult;
 use rig::completion::Message;
 use rig::tool::DynamicTool;
 use crate::config::AppConfig;
@@ -43,6 +44,19 @@ pub trait ProviderBox: Send + Sync {
         preamble: &str,
         prompt: &str,
         tools: Vec<DynamicTool>,
+        max_turns: usize,
+    ) -> Result<String>;
+
+    /// Multi-turn chat with tool support.
+    /// Rig executes requested tool calls internally and feeds tool results
+    /// back into the history until the model stops.
+    async fn chat_with_tools(
+        &self,
+        preamble: &str,
+        prompt: &str,
+        history: &mut Vec<Message>,
+        tools: Vec<DynamicTool>,
+        max_turns: usize,
     ) -> Result<String>;
 
     /// Streamed one-shot prompt (no tools).
@@ -52,13 +66,17 @@ pub trait ProviderBox: Send + Sync {
         prompt: &str,
     ) -> Result<BoxStream<'static, Result<String>>>;
 
-    /// Streamed prompt with tool support.
+    /// Streamed prompt with tool support. Yields the raw agent stream items
+    /// (text deltas, tool calls, tool results) and terminates with the final
+    /// response or an error.
     async fn stream_with_tools(
         &self,
         preamble: &str,
         prompt: &str,
+        history: &mut Vec<Message>,
         tools: Vec<DynamicTool>,
-    ) -> Result<BoxStream<'static, Result<String>>>;
+        max_turns: usize,
+    ) -> Result<StreamingResult>;
 }
 
 // ---------------------------------------------------------------------------
