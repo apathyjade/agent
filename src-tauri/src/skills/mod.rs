@@ -865,12 +865,18 @@ pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
             continue;
         }
         if !is_valid_name(skill) {
-            return Err(AppError::Skill(format!("invalid skill name '{}'", skill)));
+            return Err(AppError::SkillValidation(format!(
+                "invalid skill name '{}'",
+                skill
+            )));
         }
     }
     for agent in &req.agents {
         if !is_valid_name(agent) {
-            return Err(AppError::Skill(format!("invalid agent '{}'", agent)));
+            return Err(AppError::SkillValidation(format!(
+                "invalid agent '{}'",
+                agent
+            )));
         }
     }
 
@@ -979,9 +985,11 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
 /// Classify a `skills check` result as `(has_updates, has_failures)`.
 ///
 /// The CLI uses exit code 1 both for "updates available" and for check
-/// failures. Per the design, a non-zero exit whose output mentions `update`
-/// counts as updates; every other non-zero exit counts as a failure. A missing
-/// exit code (killed process) is always a failure.
+/// failures. Failure keywords (`failed`, `error`, `denied`, `cannot`) take
+/// precedence over the word `update`, so "failed to check for updates" is a
+/// failure; otherwise a non-zero exit whose output mentions `update` counts as
+/// updates, and every other non-zero exit counts as a failure. A missing exit
+/// code (killed process) is always a failure.
 pub fn interpret_check(code: Option<i32>, output: &str) -> (bool, bool) {
     match code {
         Some(0) => (false, false),
@@ -1076,10 +1084,17 @@ fn dedupe_entries(entries: Vec<list::RawListEntry>) -> Vec<list::RawListEntry> {
         .collect()
 }
 
-/// Reject empty, flag-like and control-character skill names.
+/// Reject empty, flag-like, quoted and control-character skill/agent names.
+///
+/// Quotes are rejected for the same reason as in [`cli::is_valid_source`]:
+/// `\"` is not a cmd.exe escape, so a name containing `"` and `&`/`|` could
+/// break out of the quoting on the Windows `cmd.exe /c` path.
 fn is_valid_name(name: &str) -> bool {
     let trimmed = name.trim();
-    !trimmed.is_empty() && !trimmed.starts_with('-') && !name.chars().any(char::is_control)
+    !trimmed.is_empty()
+        && !trimmed.starts_with('-')
+        && !name.contains('"')
+        && !name.chars().any(char::is_control)
 }
 
 /// Accept a write invocation: stdout on success, an error with the CLI
@@ -1443,6 +1458,21 @@ mod mutation_tests {
 
         let mut r = req("global", false);
         r.agents = vec!["opencode".into(), "".into()];
+        assert!(build_add_args(&r).is_err());
+    }
+
+    #[test]
+    fn rejects_quotes_in_names_and_sources() {
+        assert!(!is_valid_name("a\"&calc"));
+        assert!(!cli::is_valid_source("https://x/a\"&calc"));
+        assert!(cli::is_valid_source("https://x/a?b=1&c=2"));
+
+        let mut r = req("global", false);
+        r.skills = vec!["a\"&calc".into()];
+        assert!(build_add_args(&r).is_err());
+
+        let mut r = req("global", false);
+        r.source = "https://x/a\"&calc".into();
         assert!(build_add_args(&r).is_err());
     }
 

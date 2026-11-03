@@ -277,9 +277,14 @@ pub fn parse_version(raw: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// Reject empty, flag-like and control-character sources before they reach the CLI.
+/// Reject empty, flag-like, quoted and control-character sources before they
+/// reach the CLI.
+///
+/// A literal `"` is rejected because `\"` is not a cmd.exe escape: on the
+/// Windows `cmd.exe /c` path a quote followed by `&`/`|` could break out of
+/// the argument quoting. `&`, `?` and `=` stay valid for URLs.
 pub fn is_valid_source(source: &str) -> bool {
-    if source.chars().any(char::is_control) {
+    if source.chars().any(char::is_control) || source.contains('"') {
         return false;
     }
     let trimmed = source.trim();
@@ -511,6 +516,7 @@ mod tests {
             "https://github.com/vercel-labs/agent-skills",
             "git@github.com:vercel-labs/agent-skills.git",
             "ssh://git@example.com/x.git",
+            "https://x/a?b=1&c=2",
             "./local-skills",
             r"C:\skills\local",
         ] {
@@ -525,6 +531,7 @@ mod tests {
         assert!(!is_valid_source("-g"));
         assert!(!is_valid_source("--all"));
         assert!(!is_valid_source("a\0b"));
+        assert!(!is_valid_source("https://x/a\"&calc"));
     }
 
     #[test]
