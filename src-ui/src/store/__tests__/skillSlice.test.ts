@@ -35,7 +35,7 @@ describe('skillSlice', () => {
     const store = testStore();
     await store.getState().fetchInstalled();
     expect(store.getState().installed).toHaveLength(1);
-    expect(store.getState().loading).toBe(false);
+    expect(store.getState().skillLoading).toBe(false);
   });
 
   it('refreshes after install', async () => {
@@ -51,7 +51,7 @@ describe('skillSlice', () => {
     vi.mocked(api.listInstalledSkills).mockRejectedValueOnce(new Error('boom'));
     const store = testStore();
     await store.getState().fetchInstalled();
-    expect(store.getState().error).toContain('boom');
+    expect(store.getState().skillError).toContain('boom');
   });
 
   it('switches scope and refetches installed skills', async () => {

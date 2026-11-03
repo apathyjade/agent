@@ -21,10 +21,10 @@ export interface SkillSlice {
   legacySkills: LegacySkill[];
   marketSkills: MarketSkill[];
   skillContent: string | null;
-  loading: boolean;
+  skillLoading: boolean;
   /** Short name of the operation currently running, or null. */
   busy: string | null;
-  error: string | null;
+  skillError: string | null;
   updates: UpdateCheck | null;
 
   fetchEnv: () => Promise<void>;
@@ -54,63 +54,63 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
   legacySkills: [],
   marketSkills: [],
   skillContent: null,
-  loading: false,
+  skillLoading: false,
   busy: null,
-  error: null,
+  skillError: null,
   updates: null,
 
   fetchEnv: async () => {
-    set({ error: null });
+    set({ skillError: null });
     try {
       const cliStatus = await api.getSkillsEnv();
       set({ cliStatus });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     }
   },
 
   fetchAgents: async () => {
-    set({ error: null });
+    set({ skillError: null });
     try {
       const agents = await api.listSkillAgents();
       set({ agents });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     }
   },
 
   fetchInstalled: async () => {
-    set({ loading: true, error: null });
+    set({ skillLoading: true, skillError: null });
     try {
       const { scope, projectPath } = get();
       const installed = await api.listInstalledSkills(scope, projectPath);
       set({ installed });
     } catch (err) {
-      set({ installed: [], error: String(err) });
+      set({ installed: [], skillError: String(err) });
     } finally {
-      set({ loading: false });
+      set({ skillLoading: false });
     }
   },
 
   fetchContent: async (name, scope) => {
-    set({ busy: 'content', error: null, skillContent: null });
+    set({ busy: 'content', skillError: null, skillContent: null });
     try {
       const skillContent = await api.getSkillContent(name, scope, get().projectPath);
       set({ skillContent });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     } finally {
       set({ busy: null });
     }
   },
 
   installSkill: async (params) => {
-    set({ busy: 'install', error: null });
+    set({ busy: 'install', skillError: null });
     try {
       await api.installSkills({ ...params, projectPath: params.projectPath ?? get().projectPath });
       await get().fetchInstalled();
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
       throw err;
     } finally {
       set({ busy: null });
@@ -118,13 +118,13 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
   },
 
   removeSkill: async (name) => {
-    set({ busy: 'remove', error: null });
+    set({ busy: 'remove', skillError: null });
     try {
       const { scope, projectPath } = get();
       await api.removeSkill(name, scope, projectPath);
       await get().fetchInstalled();
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
       throw err;
     } finally {
       set({ busy: null });
@@ -132,53 +132,53 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
   },
 
   checkUpdates: async () => {
-    set({ busy: 'update', error: null });
+    set({ busy: 'update', skillError: null });
     try {
       const { scope, projectPath } = get();
       const updates = await api.checkSkillUpdates(scope, projectPath);
       set({ updates });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     } finally {
       set({ busy: null });
     }
   },
 
   updateAll: async () => {
-    set({ busy: 'update', error: null });
+    set({ busy: 'update', skillError: null });
     try {
       const { scope, projectPath } = get();
       await api.updateSkills(scope, projectPath);
       await get().fetchInstalled();
       await get().checkUpdates();
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     } finally {
       set({ busy: null });
     }
   },
 
   fetchLegacy: async () => {
-    set({ busy: 'legacy', error: null });
+    set({ busy: 'legacy', skillError: null });
     try {
       const legacySkills = await api.detectLegacySkills();
       set({ legacySkills });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     } finally {
       set({ busy: null });
     }
   },
 
   importLegacy: async (paths, agents, copy) => {
-    set({ busy: 'legacy', error: null });
+    set({ busy: 'legacy', skillError: null });
     try {
       const result = await api.importLegacySkills(paths, agents, copy);
       await get().fetchInstalled();
       await get().fetchLegacy();
       return result;
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
       throw err;
     } finally {
       set({ busy: null });
@@ -186,24 +186,24 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
   },
 
   fetchMarketTopSkills: async () => {
-    set({ busy: 'market', error: null });
+    set({ busy: 'market', skillError: null });
     try {
       const marketSkills = await api.listMarketTopSkills(30);
       set({ marketSkills });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     } finally {
       set({ busy: null });
     }
   },
 
   searchMarketSkills: async (query) => {
-    set({ busy: 'market', error: null });
+    set({ busy: 'market', skillError: null });
     try {
       const marketSkills = await api.searchMarketSkills(query, 30);
       set({ marketSkills });
     } catch (err) {
-      set({ error: String(err) });
+      set({ skillError: String(err) });
     } finally {
       set({ busy: null });
     }
@@ -220,5 +220,5 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
   },
 
   clearSkillContent: () => set({ skillContent: null }),
-  clearSkillError: () => set({ error: null }),
+  clearSkillError: () => set({ skillError: null }),
 });
