@@ -252,6 +252,90 @@ impl Database {
         Ok(())
     }
 
+    /// Seeds a domain with its intents, activates the domain and records a
+    /// marker setting — all in one transaction. Either everything lands or
+    /// nothing does, so a crash or an error never leaves a half-seeded domain
+    /// behind (and never leaves the marker without the data it describes).
+    ///
+    /// Refuses to activate a domain with no enabled intent, mirroring
+    /// [`Self::set_active_intent_domain`].
+    pub fn seed_intent_domain_atomic(
+        &self,
+        domain: &IntentDomainRecord,
+        intents: &[IntentRecord],
+        marker_key: &str,
+        marker_value: &str,
+    ) -> Result<()> {
+        if !intents.iter().any(|i| i.enabled) {
+            return Err(AppError::InvalidInput(
+                "该领域没有启用的意图，无法激活".to_string(),
+            ));
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "INSERT INTO intent_domains (id, name, description, is_active, source, version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
+            params![
+                domain.id,
+                domain.name,
+                domain.description,
+                domain.source,
+                domain.version,
+                domain.created_at,
+                domain.updated_at,
+            ],
+        )?;
+
+        for i in intents {
+            tx.execute(
+                "INSERT INTO intents (id, domain_id, name, description, examples, workflow,
+                     allowed_tools, default_agent, scope, enabled, version, confidence_threshold,
+                     fallback_intent, path, auto_escalate, system_prompt_appendix, model_id,
+                     max_iterations, sort_order, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19, ?20, ?21)",
+                params![
+                    i.id,
+                    i.domain_id,
+                    i.name,
+                    i.description,
+                    serde_json::to_string(&i.examples)?,
+                    i.workflow,
+                    serde_json::to_string(&i.allowed_tools)?,
+                    i.default_agent,
+                    i.scope,
+                    i.enabled as i32,
+                    i.version,
+                    i.confidence_threshold,
+                    i.fallback_intent,
+                    i.path,
+                    i.auto_escalate as i32,
+                    i.system_prompt_appendix,
+                    i.model_id,
+                    i.max_iterations.map(|v| v as i64),
+                    i.sort_order,
+                    i.created_at,
+                    i.updated_at,
+                ],
+            )?;
+        }
+
+        tx.execute("UPDATE intent_domains SET is_active = 0", [])?;
+        tx.execute(
+            "UPDATE intent_domains SET is_active = 1 WHERE id = ?1",
+            params![domain.id],
+        )?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![marker_key, marker_value],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Updates the editable fields. The caller's `version` is ignored: the stored
     /// version is read and incremented by one. `domain_id` is immutable, and the update
     /// cannot disable the last enabled intent of a domain.

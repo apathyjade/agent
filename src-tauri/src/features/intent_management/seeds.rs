@@ -322,46 +322,18 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
 ///
 /// The "already seeded" marker is the `intent.seeded` row in the `settings`
 /// table, not the domain's existence: users may delete a built-in domain
-/// (§7), and that must stay deleted across restarts. Only a successful seed
-/// writes the marker, so a failed seed is retried on the next launch.
+/// (§7), and that must stay deleted across restarts.
 ///
-/// Ordering is load-bearing: domain → all 12 intents → activation, because
-/// `set_active_intent_domain` refuses a domain that has no enabled intents.
-/// On any failure the partially written domain (and its intents) is removed
-/// again, so the caller never observes a half-seeded domain.
+/// The domain, its 12 intents, the activation and the marker all land in one
+/// transaction ([`Database::seed_intent_domain_atomic`]), so an interrupted or
+/// failed seed leaves nothing behind and the next launch simply retries.
 pub fn seed_builtin_intents(db: &Database) -> Result<()> {
     if db.get_setting(SEEDED_SETTING)?.is_some() {
         return Ok(());
     }
 
     let (domain, intents) = builtin_software_dev();
-
-    // Insert the domain outside the rollback scope: if this fails, no row of
-    // ours exists, so the cleanup below must not touch the table.
-    db.insert_intent_domain(&domain)?;
-
-    let seed = || -> Result<()> {
-        for intent in &intents {
-            db.insert_intent(intent)?;
-        }
-        // Only now that enabled intents exist may the domain be activated.
-        db.set_active_intent_domain(DOMAIN_ID)?;
-        // Last step: the marker is written only for a fully seeded database,
-        // so a failure anywhere above leaves the next launch to retry.
-        db.set_setting(SEEDED_SETTING, "1")?;
-        Ok(())
-    };
-
-    if let Err(err) = seed() {
-        // Best effort: the domain is inactive at every failure point above,
-        // so `delete_intent_domain` removes both it and its intents.
-        if let Err(cleanup_err) = db.delete_intent_domain(DOMAIN_ID) {
-            log::warn!(
-                "Failed to roll back partially seeded intent domain {DOMAIN_ID}: {cleanup_err}"
-            );
-        }
-        return Err(err);
-    }
+    db.seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1")?;
 
     log::info!("Seeded built-in intent domain {DOMAIN_ID} with {} intents", intents.len());
     Ok(())
@@ -504,6 +476,67 @@ mod tests {
         seed_builtin_intents(&db).unwrap();
         seed_builtin_intents(&db).unwrap();
         assert_eq!(db.list_intent_domains().unwrap().len(), 1);
+        assert_eq!(db.count_intents(DOMAIN), 12);
+    }
+
+    /// The atomic seed must roll back on failure, not merely return `Err`:
+    /// the second attempt cannot re-insert the domain, and the first seed's
+    /// data must be exactly as it was.
+    #[test]
+    fn atomic_seed_rolls_back_on_second_attempt() {
+        let db = Database::new_test().unwrap();
+        let (domain, intents) = builtin_software_dev();
+        db.seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1")
+            .unwrap();
+
+        let err = db.seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1");
+
+        assert!(err.is_err(), "重复播种必须失败");
+        assert_eq!(db.list_intent_domains().unwrap().len(), 1);
+        assert_eq!(db.count_intents(DOMAIN), 12);
+        assert_eq!(
+            db.get_active_intent_domain().unwrap().map(|d| d.id),
+            Some(DOMAIN.to_string())
+        );
+    }
+
+    /// A failed seed must not write the marker, otherwise a legitimate retry
+    /// would be suppressed forever.
+    #[test]
+    fn failed_atomic_seed_leaves_no_marker() {
+        let db = Database::new_test().unwrap();
+        // A pre-existing row with the same id makes the insert conflict, which
+        // is the same shape as a leftover from an interrupted seed.
+        db.insert_intent_domain(&IntentDomainRecord {
+            id: DOMAIN.to_string(),
+            name: "程序开发".to_string(),
+            description: String::new(),
+            is_active: false,
+            source: "user".to_string(),
+            version: 1,
+            created_at: "2026-11-04T00:00:00Z".to_string(),
+            updated_at: "2026-11-04T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+        let (domain, intents) = builtin_software_dev();
+        assert!(db
+            .seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1")
+            .is_err());
+
+        assert!(
+            db.get_setting(SEEDED_SETTING).unwrap().is_none(),
+            "失败的播种不得写入标记"
+        );
+        assert_eq!(db.count_intents(DOMAIN), 0, "失败的事务不得留下意图");
+        assert!(
+            db.get_active_intent_domain().unwrap().is_none(),
+            "失败的事务不得激活领域"
+        );
+
+        // With the conflicting row gone, the retry is not blocked.
+        db.delete_intent_domain(DOMAIN).unwrap();
+        seed_builtin_intents(&db).unwrap();
         assert_eq!(db.count_intents(DOMAIN), 12);
     }
 
