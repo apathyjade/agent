@@ -6,6 +6,11 @@ use crate::core::error::Result;
 
 const DOMAIN_ID: &str = "builtin.software_dev";
 
+/// `settings` key recording that the built-in domain has been seeded.
+/// Seeding happens at most once per database, so a domain the user deleted
+/// is never resurrected.
+const SEEDED_SETTING: &str = "intent.seeded";
+
 /// The built-in 「程序开发」 domain and its 12 intents, transcribed verbatim
 /// from `docs/design/2026-11-04-intent-management-design.md` §6.3.
 ///
@@ -313,18 +318,19 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
     (domain, intents)
 }
 
-/// Seeds the built-in domain once.
+/// Seeds the built-in domain at most once per database.
+///
+/// The "already seeded" marker is the `intent.seeded` row in the `settings`
+/// table, not the domain's existence: users may delete a built-in domain
+/// (§7), and that must stay deleted across restarts. Only a successful seed
+/// writes the marker, so a failed seed is retried on the next launch.
 ///
 /// Ordering is load-bearing: domain → all 12 intents → activation, because
 /// `set_active_intent_domain` refuses a domain that has no enabled intents.
 /// On any failure the partially written domain (and its intents) is removed
 /// again, so the caller never observes a half-seeded domain.
 pub fn seed_builtin_intents(db: &Database) -> Result<()> {
-    let already_seeded = db
-        .list_intent_domains()?
-        .iter()
-        .any(|d| d.id == DOMAIN_ID);
-    if already_seeded {
+    if db.get_setting(SEEDED_SETTING)?.is_some() {
         return Ok(());
     }
 
@@ -340,6 +346,9 @@ pub fn seed_builtin_intents(db: &Database) -> Result<()> {
         }
         // Only now that enabled intents exist may the domain be activated.
         db.set_active_intent_domain(DOMAIN_ID)?;
+        // Last step: the marker is written only for a fully seeded database,
+        // so a failure anywhere above leaves the next launch to retry.
+        db.set_setting(SEEDED_SETTING, "1")?;
         Ok(())
     };
 
@@ -400,6 +409,36 @@ mod tests {
         "mcp_bridge",
     ];
 
+    const EXPECTED_NAMES: [&str; 12] = [
+        "规划方案",
+        "编写规格",
+        "实现功能",
+        "排查修复",
+        "测试相关",
+        "审查改动",
+        "重构",
+        "解释代码",
+        "查询项目",
+        "执行命令",
+        "需要澄清",
+        "闲聊对话",
+    ];
+
+    const EXPECTED_WORKFLOWS: [&str; 12] = [
+        "planning",
+        "spec_generation",
+        "code_change",
+        "bug_fix",
+        "testing",
+        "review",
+        "refactor",
+        "explain",
+        "knowledge_query",
+        "tool_execute",
+        "clarify",
+        "chat",
+    ];
+
     /// (id suffix, path, auto_escalate, confidence_threshold, fallback suffix)
     /// straight from design §6.3.
     const EXPECTED_ROUTING: [(&str, &str, bool, f64, &str); 12] = [
@@ -417,6 +456,48 @@ mod tests {
         ("chat", "fast", false, 0.6, ""),
     ];
 
+    /// Creates and activates a minimal user domain, so the built-in one can be
+    /// deleted (deleting the active domain is rejected by the repo guard).
+    fn create_user_domain(db: &Database) {
+        let ts = Utc::now().to_rfc3339();
+        db.insert_intent_domain(&IntentDomainRecord {
+            id: "user-domain".to_string(),
+            name: "我的领域".to_string(),
+            description: String::new(),
+            is_active: false,
+            source: "user".to_string(),
+            version: 1,
+            created_at: ts.clone(),
+            updated_at: ts.clone(),
+        })
+        .unwrap();
+        db.insert_intent(&IntentRecord {
+            id: "user-intent".to_string(),
+            domain_id: "user-domain".to_string(),
+            name: "我的意图".to_string(),
+            description: String::new(),
+            examples: Vec::new(),
+            workflow: "chat".to_string(),
+            allowed_tools: Vec::new(),
+            default_agent: String::new(),
+            scope: "global".to_string(),
+            enabled: true,
+            version: 1,
+            confidence_threshold: 0.5,
+            fallback_intent: String::new(),
+            path: "fast".to_string(),
+            auto_escalate: false,
+            system_prompt_appendix: String::new(),
+            model_id: String::new(),
+            max_iterations: None,
+            sort_order: 0,
+            created_at: ts.clone(),
+            updated_at: ts,
+        })
+        .unwrap();
+        db.set_active_intent_domain("user-domain").unwrap();
+    }
+
     #[test]
     fn seeding_is_idempotent() {
         let db = Database::new_test().unwrap();
@@ -424,6 +505,33 @@ mod tests {
         seed_builtin_intents(&db).unwrap();
         assert_eq!(db.list_intent_domains().unwrap().len(), 1);
         assert_eq!(db.count_intents(DOMAIN), 12);
+    }
+
+    /// Deletes are permanent: once the marker is set, a deleted built-in
+    /// domain must not come back on the next launch, and it must not steal
+    /// activation back from the user's own domain.
+    #[test]
+    fn deleted_builtin_domain_is_not_resurrected() {
+        let db = Database::new_test().unwrap();
+        seed_builtin_intents(&db).unwrap();
+        create_user_domain(&db);
+        db.delete_intent_domain(DOMAIN).unwrap();
+
+        seed_builtin_intents(&db).unwrap();
+
+        let domains = db.list_intent_domains().unwrap();
+        assert_eq!(domains.len(), 1, "被删除的内置领域不得复活");
+        assert_eq!(domains[0].id, "user-domain");
+        assert_eq!(db.count_intents(DOMAIN), 0);
+        assert_eq!(
+            db.get_active_intent_domain().unwrap().map(|d| d.id),
+            Some("user-domain".to_string()),
+            "再次播种不得抢走用户的活跃领域"
+        );
+        assert_eq!(
+            db.get_setting(SEEDED_SETTING).unwrap().as_deref(),
+            Some("1")
+        );
     }
 
     #[test]
@@ -472,6 +580,23 @@ mod tests {
         let expected: BTreeSet<&str> = EXPECTED_IDS.iter().copied().collect();
         let actual: BTreeSet<&str> = ids.iter().copied().collect();
         assert_eq!(actual, expected);
+
+        assert_eq!(
+            intents
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>(),
+            EXPECTED_NAMES.to_vec(),
+            "意图名字必须按 §6.3 顺序逐一对应"
+        );
+        assert_eq!(
+            intents
+                .iter()
+                .map(|i| i.workflow.as_str())
+                .collect::<Vec<_>>(),
+            EXPECTED_WORKFLOWS.to_vec(),
+            "workflow 必须按 §6.3 顺序逐一对应"
+        );
 
         for intent in &intents {
             assert!(!intent.name.trim().is_empty(), "{} 缺少名字", intent.id);
