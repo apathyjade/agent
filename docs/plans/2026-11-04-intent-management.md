@@ -292,7 +292,7 @@ git commit -m "feat(db): add intent repository with last-enabled guards"
 - Consumes: `IntentDomainRecord`、`IntentRecord`、`Database`。
 - Produces:
   - `pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>)` —— 领域 id `builtin.software_dev`，含 12 条意图，内容逐字取自设计文档 §6.3。
-  - `pub fn seed_builtin_intents(db: &Database) -> Result<()>` —— 若 `list_intent_domains()` 已包含 `builtin.software_dev` 则直接返回；否则插入领域与全部意图，并把领域设为活跃。
+  - `pub fn seed_builtin_intents(db: &Database) -> Result<()>` —— 若 `list_intent_domains()` 已包含 `builtin.software_dev` 则直接返回；否则按此顺序写入：**先插领域、再逐条插 12 个意图、最后才 `set_active_intent_domain`**。顺序不能反——Task 2 的守卫会拒绝激活零启用意图的领域。
 
 **为什么播种在 `app/state.rs`**：`core` 不能依赖 `features`（分层约束），所以不能在 `Database::new()` 里播种。`AppState::new` 允许依赖一切，且它天然在构造 `IntentRouter` 之前。
 
@@ -437,8 +437,11 @@ git commit -m "feat(intent): add intent JSON import/export with validation"
 - Produces:
   - `pub fn build_classifier_prompt(intents: &[IntentRecord]) -> String` —— 由数据生成，每条形如 `- id: <id>\n  name: <name>\n  when: <description>\n  examples: <a> | <b> | ...`；末尾要求模型输出 `{ "intent": "<id>", "confidence": 0.0-1.0, "reason": "..." }`。
   - `pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String, f32)>` —— 回退打分：对每条意图，命中任一 `example`（大小写不敏感子串）得 1.0；否则按 `description` 与本条 `name` 的中文二元组重合率算分；取最高分；全部为 0 返回 `None`。
-  - `pub fn apply_confidence(intents: &[IntentRecord], chosen: &str, score: f32) -> String` —— 若 `score < 该意图的 confidence_threshold`，返回 `fallback_intent`（非空且存在）否则返回该领域里 `id == "clarify"` 结尾的那条，再否则返回 `chosen`。
-  - 保留 `pub async fn classify(&self, ...)` 外壳，但内部改为调用上面三个函数；`LlmClassifier` 不再读 `OPENAI_API_KEY`。
+  - `pub fn apply_confidence(intents: &[IntentRecord], chosen: &str, score: f32) -> String` —— 若 `score < 该意图的 confidence_threshold`，返回 `fallback_intent`（非空且存在）否则返回该领域里 `id` 以 `.clarify` 结尾的那条，再否则返回 `chosen`。
+  - `impl LlmClassifier`：
+    - `pub fn new(providers: Arc<Mutex<ProviderRegistry>>, model_id: Option<String>) -> Self` —— **不再读 `OPENAI_API_KEY`**，也不再在构造时持有 key。
+    - `pub async fn classify(&self, message: &str, intents: &[IntentRecord]) -> Option<(String, f32)>` —— 用 `build_classifier_prompt(intents)` 组提示词，走 `resolve(model_id)` 拿 provider，结构化提取 `{ intent, confidence }`；provider 不存在、请求失败、JSON 解析失败、返回的 intent 不在 `intents` 里，四种情况一律返回 `None`，由调用方落回退打分。
+  - 旧的中英文关键词表与 `fallback_classify` **删除**——关键词能力由 `score_intents` 从数据的 `examples` 里提供。
 
 **注意**：本任务不碰 `IntentRouter`，也不删 `IntentConfig`；`classify` 暂时保留旧签名（用不了的数据由 Task 7 接）。
 
@@ -523,7 +526,8 @@ fn path_comes_from_the_intent_row() {}  // 插入 path=deep 的意图，断言 I
 fn config_projects_row_fields() {}      // enabled_tools / max_iterations / model_id / auto_escalate 逐项对上
 #[test]
 fn old_config_json_with_intent_routing_still_loads() {
-    // 写一份含 "intent_routing" 键的 JSON，AppConfig::load_from_str 不报错
+    // 直接 serde_json::from_str::<AppConfig>(r#"{"intent_routing":{...},"models":[]}"#)
+    // 断言 Ok（不 panic、不报 unknown field）
 }
 ```
 
