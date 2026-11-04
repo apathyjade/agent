@@ -181,24 +181,22 @@ impl Tool for McpTool {
 }
 ```
 
-#### 与现有 SkillManager 的关系
+#### 与技能管理的关系
 
-MCP Server 是一种特殊的 Skill 来源：
+技能（Skill）与 MCP 是两套独立机制，互不依赖：
 
-```
-SkillManager 现有能力:
-├── ScriptTool (type: script → skill.yaml)
-├── 未来: McpServer (type: mcp → mcp_config.json)
-└── 未来: Wasm (type: wasm → .wasm module)
+| 维度 | 技能 | MCP Server |
+|------|------|------------|
+| 形态 | `SKILL.md` 指令包（提示词 / 流程说明） | 运行时工具（JSON-RPC 子进程） |
+| 管理方式 | 外部 `skills` CLI 安装到各编码代理目录（`skills add` / `remove` / `update`） | 应用内 MCP 配置 + 连接管理 |
+| 使用方 | Claude Code / Codex / OpenCode 等外部代理直接读取 | 本应用 agent 通过 `ToolRegistry` 调用 |
+| 是否进入 ToolRegistry | 否 | 是 |
 
-统一入口: ToolRegistry.register_dynamic()
-```
+技能是「怎么写」的知识，MCP 是「能做什么」的能力。往技能目录里放 MCP 配置不会让本应用获得新工具；
+反过来注册一个 MCP 工具也不会改变外部代理的技能清单。
 
-两种设计选择：
-1. **MCP 作为 SkillEntry 的新变体**：`SkillEntry::Mcp { command, args }`
-2. **独立的 McpManager**：更干净，但需要另一套管理界面
-
-推荐方案：**独立 McpManager + 统一注册到 ToolRegistry**。Skill 和 MCP 的生命周期不同（Skill 是静态安装的，MCP 需要连接状态管理）。
+推荐方案：**独立 McpManager + 统一注册到 ToolRegistry**。MCP 需要连接状态与生命周期管理，
+而技能完全由外部 CLI 维护，本应用只做清单展示与命令行封装。
 
 ### 2.3 安全设计
 
@@ -230,7 +228,7 @@ MCP Server 以子进程运行，安全是桌面端的关键卖点：
 | 阶段 | 内容 | 工期 |
 |---|---|---|
 | **P0: MCP 客户端核心** | JSON-RPC stdio 通道、initialize/tools/list/tools/call、进程生命周期管理 | 3-4 天 |
-| **P1: ToolRegistry 集成** | McpTool 实现 Tool trait、连接时批量注册、断开时注销 | 1-2 天 |
+| **P1: ToolRegistry 集成** | McpTool 实现 AgentTool、连接时批量注册、断开时注销 | 1-2 天 |
 | **P2: 管理界面** | MCP 连接配置卡片、连接状态指示器、工具预览 | 2-3 天 |
 | **P3: MCP 市场** | 搜索界面、一键安装、版本管理 | 2-3 天 |
 | **P4: 安全与权限** | 权限模型、工具审批、沙箱（可选） | 2-3 天 |

@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react';
-import { X, Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, BrainCircuit, Settings, Server, FolderOpen } from 'lucide-react';
+import { X, Eye, EyeOff, Check, FileText, Cpu, ChevronRight, Star, Trash2, Plus, Sparkles, Server, FolderOpen } from 'lucide-react';
 import { Select } from 'antd';
 import { useStore } from '../../store';
-import { SkillDetailPanel } from '../management/SkillDetailPanel';
-import { SkillInstallDialog } from '../management/SkillInstallDialog';
 import { DirectoryPicker } from '../common/DirectoryPicker';
 
 interface SettingsModalProps {
@@ -12,10 +10,9 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'skills' | 'runtime'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'prompts' | 'runtime'>('providers');
   const {
     providers, fetchProviders, setupProvider, updateProviderConfig, removeProvider,
-    skills, fetchSkills, toggleSkill,
     systemPrompts, fetchSystemPrompts, deleteSystemPrompt, setDefaultSystemPrompt,
     models, fetchModels, defaultModel, setDefaultModel,
   } = useStore();
@@ -34,10 +31,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [newModels, setNewModels] = useState<string[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
-  const [showSkillDetail, setShowSkillDetail] = useState(false);
-  const [showSkillInstall, setShowSkillInstall] = useState(false);
-
   // Runtime install directory
   const { installDir, fetchInstallDir, setInstallDir } = useStore();
   const [editingDir, setEditingDir] = useState(false);
@@ -48,7 +41,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       fetchProviders();
       fetchSystemPrompts();
       fetchModels();
-      fetchSkills();
       fetchInstallDir();
     }
   }, [isOpen]);
@@ -142,7 +134,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const tabs = [
     { id: 'providers' as const, icon: <Cpu size={16} />, label: '模型提供商' },
     { id: 'prompts' as const, icon: <FileText size={16} />, label: '提示词' },
-    { id: 'skills' as const, icon: <BrainCircuit size={16} />, label: '技能' },
     { id: 'runtime' as const, icon: <Server size={16} />, label: '运行环境' },
   ];
 
@@ -458,54 +449,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             </>
           )}
 
-          {activeTab === 'skills' && (
-            <div className="space-y-3">
-              {skills.map((skill) => (
-                <div key={skill.id} className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
-                  <div className="w-9 h-9 rounded-lg bg-purple-100 dark:bg-purple-900/40 flex items-center justify-center flex-shrink-0">
-                    <BrainCircuit size={18} className="text-purple-600 dark:text-purple-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{skill.name}</h4>
-                      <span className="text-xs text-gray-400 flex-shrink-0">v{skill.version}</span>
-                      {skill.author && (
-                        <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded flex-shrink-0">{skill.author}</span>
-                      )}
-
-                    </div>
-                    <p className="text-xs text-gray-500 mt-0.5 truncate">{skill.description}</p>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <button
-                      onClick={() => { setSelectedSkillId(skill.id); setShowSkillDetail(true); }}
-                      className="p-1.5 rounded-lg hover:bg-gray-200 text-gray-400 hover:text-purple-600 transition-colors"
-                      title="配置"
-                    >
-                      <Settings size={14} />
-                    </button>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={skill.enabled}
-                        onChange={(e) => toggleSkill(skill.id, e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-sm"></div>
-                    </label>
-                  </div>
-                </div>
-              ))}
-              <button
-                onClick={() => setShowSkillInstall(true)}
-                className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-gray-200 rounded-xl text-sm text-gray-400 hover:text-purple-600 hover:border-purple-300 transition-colors"
-              >
-                <Plus size={16} />
-                安装 Skill
-              </button>
-            </div>
-          )}
-
           {activeTab === 'prompts' && (
             <div className="space-y-4">
               <PromptForm />
@@ -600,18 +543,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         </div>
       </div>
 
-      {showSkillDetail && selectedSkillId && (
-        <SkillDetailPanel
-          skillId={selectedSkillId}
-          onClose={() => { setShowSkillDetail(false); setSelectedSkillId(null); fetchSkills(); }}
-        />
-      )}
-
-      {showSkillInstall && (
-        <SkillInstallDialog
-          onClose={() => { setShowSkillInstall(false); fetchSkills(); }}
-        />
-      )}
     </div>
   );
 }

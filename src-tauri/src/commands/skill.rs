@@ -1,65 +1,142 @@
 use tauri::State;
-use serde_json::Value;
 
 use crate::error::Result;
+use crate::skills::agents::{self, AgentOption};
+use crate::skills::cli::CliStatus;
+use crate::skills::legacy::{LegacyImportResult, LegacySkill};
+use crate::skills::list::InstalledSkill;
 use crate::skills::market::MarketSkill;
-use crate::skills::scanner::ReconcileResult;
-use crate::skills::{SkillInfo, SkillDetail};
+use crate::skills::{InstallRequest, RepoSkillPreview, UpdateCheck};
 use crate::state::AppState;
 
+/// Scope used when the caller does not specify one.
+const DEFAULT_SCOPE: &str = "global";
+
 #[tauri::command]
-pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>> {
-    state.skills.lock().await.list().await
+pub async fn get_skills_env(state: State<'_, AppState>) -> Result<CliStatus> {
+    Ok(state.skills.env_status().await)
 }
 
 #[tauri::command]
-pub async fn get_skill_detail(state: State<'_, AppState>, id: String) -> Result<SkillDetail> {
-    state.skills.lock().await.get_detail(&id).await
+pub fn list_skill_agents() -> Vec<AgentOption> {
+    agents::all().to_vec()
 }
 
 #[tauri::command]
-pub async fn install_skill_from_path(state: State<'_, AppState>, path: String) -> Result<SkillInfo> {
-    state.skills.lock().await.install_from_path(&path).await
+pub async fn list_installed_skills(
+    state: State<'_, AppState>,
+    scope: Option<String>,
+    project_path: Option<String>,
+) -> Result<Vec<InstalledSkill>> {
+    let scope = scope.unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+    state
+        .skills
+        .list_installed(&scope, project_path.as_deref())
+        .await
 }
 
 #[tauri::command]
-pub async fn uninstall_skill(state: State<'_, AppState>, id: String) -> Result<()> {
-    state.skills.lock().await.uninstall(&id).await
+pub async fn get_skill_content(
+    state: State<'_, AppState>,
+    name: String,
+    scope: String,
+    project_path: Option<String>,
+) -> Result<String> {
+    state
+        .skills
+        .content(&name, &scope, project_path.as_deref())
+        .await
 }
 
 #[tauri::command]
-pub async fn toggle_skill(state: State<'_, AppState>, id: String, enabled: bool) -> Result<()> {
-    state.skills.lock().await.toggle(&id, enabled).await
+pub async fn preview_skill_source(
+    state: State<'_, AppState>,
+    source: String,
+) -> Result<RepoSkillPreview> {
+    state.skills.preview_source(&source).await
 }
 
 #[tauri::command]
-pub async fn configure_skill(state: State<'_, AppState>, id: String, config: Value) -> Result<()> {
-    state.skills.lock().await.configure(&id, config).await
+pub async fn detect_legacy_skills(state: State<'_, AppState>) -> Result<Vec<LegacySkill>> {
+    state.skills.detect_legacy().await
 }
 
 #[tauri::command]
-pub async fn reconcile_skills(state: State<'_, AppState>) -> Result<ReconcileResult> {
-    state.skills.lock().await.reconcile().await
+pub async fn import_legacy_skills(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    agents: Vec<String>,
+    copy: bool,
+) -> Result<LegacyImportResult> {
+    state.skills.import_legacy(&paths, &agents, copy).await
 }
 
 #[tauri::command]
-pub async fn list_market_top_skills(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<MarketSkill>> {
-    let _ = &*state.skills.lock().await;
+pub async fn install_skills(
+    state: State<'_, AppState>,
+    source: String,
+    skills: Vec<String>,
+    agents: Vec<String>,
+    scope: String,
+    project_path: Option<String>,
+    copy: bool,
+) -> Result<String> {
+    state
+        .skills
+        .install(InstallRequest {
+            source,
+            skills,
+            agents,
+            scope,
+            project_path,
+            copy,
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn remove_skill(
+    state: State<'_, AppState>,
+    name: String,
+    scope: String,
+    project_path: Option<String>,
+) -> Result<String> {
+    state
+        .skills
+        .remove(&name, &scope, project_path.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn check_skill_updates(
+    state: State<'_, AppState>,
+    scope: String,
+    project_path: Option<String>,
+) -> Result<UpdateCheck> {
+    state
+        .skills
+        .check_updates(&scope, project_path.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn update_skills(
+    state: State<'_, AppState>,
+    scope: String,
+    project_path: Option<String>,
+) -> Result<String> {
+    state.skills.update(&scope, project_path.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn list_market_top_skills(limit: Option<i64>) -> Result<Vec<MarketSkill>> {
     crate::skills::market::fetch_popular_skills(limit).await
 }
 
 #[tauri::command]
 pub async fn search_market_skills(
-    state: State<'_, AppState>,
     query: String,
     limit: Option<i64>,
 ) -> Result<Vec<MarketSkill>> {
-    let _ = &*state.skills.lock().await;
     crate::skills::market::search_skills(&query, limit).await
-}
-
-#[tauri::command]
-pub async fn install_market_skill(state: State<'_, AppState>, source: String) -> Result<String> {
-    let _ = &*state.skills.lock().await;
-    crate::skills::market::install_market_skill(&source).await
 }

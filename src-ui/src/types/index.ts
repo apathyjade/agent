@@ -97,31 +97,98 @@ export interface SystemPrompt {
   created_at: string;
 }
 
-export interface SkillInfo {
-  id: string;
+/** Where a skill is installed */
+export type SkillScope = 'global' | 'project';
+
+/** Result of probing the local `skills` CLI environment */
+export interface CliStatus {
+  available: boolean;
+  cli_version?: string | null;
+  node_version?: string | null;
+  command?: string | null;
+  error?: string | null;
+}
+
+/** A skill installed through the `skills` CLI, metadata merged from `SKILL.md` */
+export interface InstalledSkill {
   name: string;
   description: string;
-  version: string;
+  version?: string | null;
   author?: string | null;
-  icon?: string | null;
   tags?: string[] | null;
-  source: 'local' | 'registry' | 'scanned';
-  agent_sources?: string[] | null;
-  enabled: boolean;
-  installed_at: string;
-  updated_at: string;
+  path?: string | null;
+  scope: string;
+  agents: string[];
+  source?: string | null;
+  source_url?: string | null;
+  source_type?: string | null;
+  status: string;
+  has_skill_md: boolean;
 }
 
-export interface SkillDetail extends SkillInfo {
-  config_schema?: Record<string, unknown> | null;
-  config?: Record<string, unknown> | null;
-  source_path?: string | null;
-  entry_type: string;
-  entry_value: string;
+/** An agent the `skills` CLI can install into */
+export interface AgentOption {
+  /** Value accepted by the CLI's `--agent` flag */
+  id: string;
+  /** Human-readable name shown in the UI */
+  name: string;
+  /** Project-scoped install path, relative to the workspace root */
+  project_path: string;
+  /** User-scoped install path, relative to the home directory */
+  global_path?: string | null;
 }
 
-/** Agent source identifier — which AI agent's skill directory this was found in */
-export type AgentSource = 'generic' | 'claude-code' | 'opencode' | 'codex' | 'cursor' | 'workspace';
+/** One skill offered by a repository source */
+export interface RepoSkill {
+  name: string;
+  description?: string | null;
+}
+
+/** Result of previewing a repository source before installing */
+export interface RepoSkillPreview {
+  skills: RepoSkill[];
+  /** CLI output with ANSI escapes removed; manual-entry fallback */
+  raw: string;
+}
+
+/** One skill directory found under a legacy root */
+export interface LegacySkill {
+  name: string;
+  path: string;
+  /** True when the directory contains `SKILL.md` and can be imported */
+  importable: boolean;
+  /** Why the directory cannot be imported, when `importable` is false */
+  reason?: string | null;
+}
+
+/** One path that could not be imported, with the reason */
+export interface LegacyImportFailure {
+  path: string;
+  error: string;
+}
+
+/** Outcome of one bulk legacy import run */
+export interface LegacyImportResult {
+  imported: string[];
+  failed: LegacyImportFailure[];
+}
+
+/** Result of a `skills check` run */
+export interface UpdateCheck {
+  has_updates: boolean;
+  has_failures: boolean;
+  output: string;
+}
+
+/** Parameters for one `skills add` invocation */
+export interface InstallSkillParams {
+  source: string;
+  skills: string[];
+  agents: string[];
+  scope: SkillScope;
+  projectPath?: string | null;
+  copy: boolean;
+}
 
 /** A skill from the skills.sh marketplace search API */
 export interface MarketSkill {
@@ -222,14 +289,6 @@ export interface McpConnectionInfo {
   tools: McpToolInfo[];
   stats: ConnectionStats;
   error?: string | null;
-}
-
-/** Result of a reconcile scan operation */
-export interface ReconcileResult {
-  /** Skill IDs that were auto-added (found on disk, missing from DB) */
-  added: string[];
-  /** Skill IDs that were auto-removed (DB record, but files missing) */
-  removed: string[];
 }
 
 // ── Runtime Environment Types ──

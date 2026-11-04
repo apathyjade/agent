@@ -214,7 +214,7 @@ pub fn default_seed_memories() -> Vec<MemoryRecord> {
         },
         MemoryRecord {
             id: Uuid::new_v4().to_string(),
-            content: "Agent 项目的工具系统支持：calculator（计算器）、file_system（文件操作）、web_search（网络搜索）、code_executor（代码执行）、script_tool（脚本工具）。新工具通过实现 Tool trait 并注册到 ToolRegistry 添加。".to_string(),
+            content: "Agent 项目的工具系统支持：calculator（计算器）、file_system（文件操作）、web_search（网络搜索）、code_executor（代码执行）。新工具通过实现 AgentTool trait 并注册到 ToolRegistry 添加。".to_string(),
             memory_type: "project_context".to_string(),
             scope: "project:agent".to_string(),
             source: "builtin".to_string(),
