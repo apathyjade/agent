@@ -86,55 +86,59 @@ impl IntentRouter {
         // LLM first, then the data-driven scorer, then `clarify` (else the
         // first enabled intent). The classifier returns `None` on every
         // failure, so this chain always resolves to an id from `intents`.
+        //
+        // No-match case: route to `clarify` when the domain has one, else to
+        // the first enabled intent, scoring `0.0` because nothing matched.
         let (chosen, score) = match self.classifier.classify(content, &intents).await {
             Some(hit) => hit,
             None => match score_intents(content, &intents) {
                 Some(hit) => hit,
                 None => {
-                    let fallback = intents
+                    // `intents` is non-empty (enforced by the guard above).
+                    let record = intents
                         .iter()
                         .find(|intent| intent.id.ends_with(".clarify"))
-                        .or_else(|| intents.first());
-                    match fallback {
-                        Some(record) => (record.id.clone(), 1.0),
-                        None => return Self::fallback(),
-                    }
+                        .unwrap_or(&intents[0]);
+                    (record.id.clone(), 0.0)
                 }
             },
         };
 
         let intent_id = apply_confidence(&intents, &chosen, score);
+        // `apply_confidence` can only return an id from `intents`: it either
+        // echoes `chosen` (which came from `intents`) or names another row in
+        // the same slice. Index 0 keeps the lookup total without inventing a
+        // second degraded path.
         let record = intents
             .iter()
             .find(|intent| intent.id == intent_id)
-            .or_else(|| intents.first());
-        let Some(record) = record else {
-            return Self::fallback();
-        };
+            .unwrap_or(&intents[0]);
 
         Self::project(record, score)
     }
 
-    /// Resolve the final tool list by intersecting session tools with intent tools.
+    /// Resolve the final tool list from the session and intent restrictions.
+    ///
+    /// An explicit intent list is authoritative: it names the complete set of
+    /// tools the intent permits, so an empty intersection means no tools at all
+    /// (`Some(vec![])`), not "unrestricted". `None` on the intent side means the
+    /// intent imposes no restriction.
     pub fn resolve_tools(
         &self,
         session_tools: Option<Vec<String>>,
         intent_tools: Option<&Vec<String>>,
     ) -> Option<Vec<String>> {
         match (session_tools, intent_tools) {
-            (Some(session), Some(intent)) => {
-                let filtered: Vec<String> = session
+            (Some(session), Some(intent)) => Some(
+                session
                     .into_iter()
                     .filter(|t| intent.contains(t))
-                    .collect();
-                if filtered.is_empty() {
-                    None
-                } else {
-                    Some(filtered)
-                }
-            }
+                    .collect(),
+            ),
+            // No session-level restriction, but the intent still decides.
+            (None, Some(intent)) => Some(intent.clone()),
             (Some(session), None) => Some(session),
-            (None, _) => None,
+            (None, None) => None,
         }
     }
 
@@ -142,7 +146,9 @@ impl IntentRouter {
     fn fallback() -> IntentResult {
         IntentResult {
             id: FALLBACK_INTENT_ID.to_string(),
-            name: "chat".to_string(),
+            // Matches the seeded `builtin.software_dev.chat` display name so
+            // the synthetic and DB-backed chat paths log the same label.
+            name: "闲聊对话".to_string(),
             config: IntentConfig {
                 system_prompt_appendix: None,
                 enabled_tools: None,
@@ -170,11 +176,10 @@ impl IntentRouter {
             name: record.name.clone(),
             config: IntentConfig {
                 system_prompt_appendix: optional(&record.system_prompt_appendix),
-                enabled_tools: if record.allowed_tools.is_empty() {
-                    None
-                } else {
-                    Some(record.allowed_tools.clone())
-                },
+                // Never collapse an empty list to `None`: `None` means "any
+                // tool", but an empty `allowed_tools` means "no tool" (chat,
+                // clarify). The row is the only source of this list.
+                enabled_tools: Some(record.allowed_tools.clone()),
                 model_id: optional(&record.model_id),
                 max_iterations: record.max_iterations,
                 auto_escalate: record.auto_escalate,
@@ -276,6 +281,7 @@ mod tests {
         let result = router(db, false).classify(MATCHING_MESSAGE).await;
 
         assert_eq!(result.id, "builtin.software_dev.chat");
+        assert_eq!(result.name, "闲聊对话");
         assert_eq!(result.path, PathSelection::Fast);
         assert!(result.config.enabled_tools.is_none());
         assert!(result.config.max_iterations.is_none());
@@ -397,5 +403,106 @@ mod tests {
             router.resolve_tools(session, None),
             Some(vec!["calculator".to_string(), "web_search".to_string()])
         );
+    }
+
+    #[tokio::test]
+    async fn chat_intent_projects_an_empty_tool_list() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            // The seeded `chat` / `clarify` intents declare `allowed_tools: []`,
+            // which means "no tools" — not "unrestricted".
+            let mut intent = mk_intent("builtin.software_dev.chat", "test.domain", "fast");
+            intent.allowed_tools = Vec::new();
+            seed_active_domain(&guard, &intent);
+        }
+
+        let result = router(db, true).classify(MATCHING_MESSAGE).await;
+
+        assert_eq!(result.id, "builtin.software_dev.chat");
+        assert_eq!(result.config.enabled_tools, Some(Vec::new()));
+    }
+
+    #[test]
+    fn empty_intent_tool_list_permits_no_tools() {
+        let router = router(test_db(), true);
+        let session = Some(vec!["file_system".to_string(), "web_search".to_string()]);
+        let intent: Vec<String> = Vec::new();
+
+        // An empty intersection with an explicit intent list must not degrade
+        // to `None`, because `None` means "every tool is allowed".
+        assert_eq!(router.resolve_tools(session, Some(&intent)), Some(Vec::new()));
+    }
+
+    #[test]
+    fn intent_tool_list_is_authoritative_without_session_list() {
+        let router = router(test_db(), true);
+        let intent: Vec<String> = Vec::new();
+
+        // A session without its own list (the default) must not erase the
+        // intent's restriction; otherwise chat could still call tools.
+        assert_eq!(router.resolve_tools(None, Some(&intent)), Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn reroute_projects_the_fallback_intents_record() {
+        let db = test_db();
+        let mut alpha = mk_intent("test.alpha", "test.domain", "fast");
+        alpha.name = "alpha".to_string();
+        alpha.description = "实现功能".to_string();
+        alpha.examples = Vec::new();
+        alpha.allowed_tools = vec!["read_file".to_string()];
+        alpha.confidence_threshold = 0.9;
+        alpha.fallback_intent = "test.gamma".to_string();
+        alpha.sort_order = 0;
+
+        let mut beta = mk_intent("test.beta", "test.domain", "fast");
+        beta.name = "beta".to_string();
+        beta.description = "解释原理".to_string();
+        beta.examples = Vec::new();
+        beta.allowed_tools = vec!["web_search".to_string()];
+        beta.confidence_threshold = 0.9;
+        beta.fallback_intent = "test.alpha".to_string();
+        beta.sort_order = 10;
+
+        let mut gamma = mk_intent("test.gamma", "test.domain", "deep");
+        gamma.name = "gamma".to_string();
+        gamma.description = "闲聊对话".to_string();
+        gamma.examples = Vec::new();
+        gamma.allowed_tools = vec!["file_system".to_string(), "calculator".to_string()];
+        gamma.confidence_threshold = 0.5;
+        gamma.fallback_intent = String::new();
+        gamma.sort_order = 20;
+
+        {
+            let guard = db.lock().await;
+            guard
+                .insert_intent_domain(&mk_domain("test.domain"))
+                .expect("insert domain");
+            for intent in [&alpha, &beta, &gamma] {
+                guard.insert_intent(intent).expect("insert intent");
+            }
+            guard
+                .set_active_intent_domain("test.domain")
+                .expect("activate domain");
+        }
+
+        // No example matches; the only score comes from the bigram overlap
+        // between the message and alpha's description (0.3), which is below
+        // alpha's 0.9 threshold and therefore reroutes to gamma.
+        let result = router(db, true).classify("实现功能代码").await;
+
+        assert_eq!(result.id, "test.gamma");
+        assert_eq!(
+            result.path,
+            PathSelection::Deep,
+            "path must come from the reroute target's row, not from alpha or first()"
+        );
+        assert_eq!(
+            result.config.enabled_tools,
+            Some(vec!["file_system".to_string(), "calculator".to_string()]),
+            "tool list must come from the reroute target's row"
+        );
+        assert!((result.confidence - 0.3).abs() < 0.2, "pre-reroute score");
     }
 }

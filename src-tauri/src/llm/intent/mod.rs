@@ -38,6 +38,9 @@ pub struct IntentResult {
     pub name: String,
     pub config: IntentConfig,
     pub path: PathSelection,
-    /// Score that produced this decision, `0.0` for the plain-chat fallback.
+    /// Classification score of the detected intent. After a confidence-based
+    /// reroute this still carries the pre-reroute score (that is why the
+    /// reroute happened), not the fallback intent's own score. `0.0` for the
+    /// plain-chat fallback and for "nothing matched" routings.
     pub confidence: f32,
 }
