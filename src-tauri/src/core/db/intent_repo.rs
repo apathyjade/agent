@@ -49,15 +49,16 @@ impl Database {
         Ok(domain)
     }
 
+    /// Always inserts the domain as inactive (`is_active = 0`), regardless of the record;
+    /// activation must go through [`Self::set_active_intent_domain`].
     pub fn insert_intent_domain(&self, d: &IntentDomainRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO intent_domains (id, name, description, is_active, source, version, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
             params![
                 d.id,
                 d.name,
                 d.description,
-                d.is_active as i32,
                 d.source,
                 d.version,
                 d.created_at,
@@ -168,8 +169,6 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::db::models::IntentDomainRecord;
-    use crate::core::error::AppError;
 
     /// Fixed timestamp so tests exercise exactly what the caller supplies.
     const TEST_TS: &str = "2026-11-04T00:00:00Z";
@@ -276,6 +275,19 @@ mod tests {
             db.get_active_intent_domain().unwrap().map(|d| d.id),
             Some("domain-b".to_string())
         );
+    }
+
+    #[test]
+    fn insert_domain_never_inserts_active() {
+        let db = Database::new_test().unwrap();
+        let mut domain = mk_domain("forced-active", "伪活跃领域");
+        domain.is_active = true;
+
+        db.insert_intent_domain(&domain).unwrap();
+
+        let stored = db.get_intent_domain("forced-active").unwrap().unwrap();
+        assert!(!stored.is_active, "insert_intent_domain 必须强制写入 is_active = 0");
+        assert!(db.get_active_intent_domain().unwrap().is_none());
     }
 
     #[test]
