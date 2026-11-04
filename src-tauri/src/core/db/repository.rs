@@ -8,7 +8,7 @@ use crate::core::db::models::{ExecutionPlanRecord, PlanStepRecord, WorkflowRunRe
 use crate::core::error::Result;
 
 pub struct Database {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Database {
@@ -171,6 +171,44 @@ impl Database {
                 auto_select INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (persona_id, project_path)
             );
+
+            CREATE TABLE IF NOT EXISTS intent_domains (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'user',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS intents (
+                id TEXT PRIMARY KEY,
+                domain_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                examples TEXT NOT NULL DEFAULT '[]',
+                workflow TEXT NOT NULL DEFAULT '',
+                allowed_tools TEXT NOT NULL DEFAULT '[]',
+                default_agent TEXT NOT NULL DEFAULT '',
+                scope TEXT NOT NULL DEFAULT 'global',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                version INTEGER NOT NULL DEFAULT 1,
+                confidence_threshold REAL NOT NULL DEFAULT 0.7,
+                fallback_intent TEXT NOT NULL DEFAULT '',
+                path TEXT NOT NULL DEFAULT 'fast',
+                auto_escalate INTEGER NOT NULL DEFAULT 0,
+                system_prompt_appendix TEXT NOT NULL DEFAULT '',
+                model_id TEXT NOT NULL DEFAULT '',
+                max_iterations INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(domain_id, name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_intents_domain ON intents(domain_id, sort_order);
 
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
             ",

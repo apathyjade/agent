@@ -188,3 +188,43 @@ pub struct WorkflowRunRecord {
     pub started_at: String,
     pub finished_at: Option<String>,
 }
+
+/// DB record for intent_domains table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentDomainRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub is_active: bool,
+    pub source: String,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// DB record for intents table.
+/// `examples` and `allowed_tools` are stored as JSON text in SQLite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentRecord {
+    pub id: String,
+    pub domain_id: String,
+    pub name: String,
+    pub description: String,
+    pub examples: Vec<String>,
+    pub workflow: String,
+    pub allowed_tools: Vec<String>,
+    pub default_agent: String,
+    pub scope: String,
+    pub enabled: bool,
+    pub version: i64,
+    pub confidence_threshold: f64,
+    pub fallback_intent: String,
+    pub path: String,
+    pub auto_escalate: bool,
+    pub system_prompt_appendix: String,
+    pub model_id: String,
+    pub max_iterations: Option<usize>,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
