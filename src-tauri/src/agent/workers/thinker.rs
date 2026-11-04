@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
+use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const COT_SYSTEM_PROMPT: &str = r#"You are a deep thinking module. Structure your reasoning in these phases:
 

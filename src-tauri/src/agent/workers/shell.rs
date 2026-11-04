@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
+use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const SHELL_SYSTEM_PROMPT: &str = r#"You are a shell command executor. Execute commands and provide analysis of the output."#;
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::core::error::{AppError, Result};
-use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerFeedback, WorkerResult};
+use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerFeedback, WorkerResult};
 
 /// Manages worker registration and dispatch.
 pub struct Dispatcher {
@@ -56,7 +56,7 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workers::WorkerAgent;
+    use crate::agent::workers::WorkerAgent;
     use async_trait::async_trait;
 
     struct MockWorker(WorkerKind);

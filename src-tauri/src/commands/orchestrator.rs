@@ -2,8 +2,8 @@ use tauri::{Emitter, AppHandle, State};
 use tokio::sync::mpsc;
 
 use crate::core::error::Result;
-use crate::orchestrator::agent::OrchestrationEvent;
-use crate::orchestrator::event_bridge::spawn_event_bridge;
+use crate::agent::orchestrator::agent::OrchestrationEvent;
+use crate::agent::orchestrator::event_bridge::spawn_event_bridge;
 use crate::state::AppState;
 
 /// IPC command: invoke the OrchestratorAgent with a natural language goal.

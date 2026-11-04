@@ -5,12 +5,12 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::core::error::{AppError, Result};
-use crate::tools::calculator::CalculatorTool;
-use crate::tools::code_executor::CodeExecutorTool;
-use crate::tools::file_system::FileSystemTool;
-use crate::tools::run_workflow::RunWorkflowTool;
-use crate::tools::web_search::WebSearchTool;
-use crate::tools::r#trait::{AgentTool, ToolInfo};
+use crate::agent::tools::calculator::CalculatorTool;
+use crate::agent::tools::code_executor::CodeExecutorTool;
+use crate::agent::tools::file_system::FileSystemTool;
+use crate::agent::tools::run_workflow::RunWorkflowTool;
+use crate::agent::tools::web_search::WebSearchTool;
+use crate::agent::tools::base::{AgentTool, ToolInfo};
 
 /// Aliases for tool names, mapping common alternative names to registered tool names
 fn tool_aliases() -> HashMap<&'static str, &'static str> {
@@ -103,7 +103,7 @@ impl ToolRegistry {
     ///
     /// Rig 0.45 has no object-safe tool trait, so each registered tool is
     /// erased into a `DynamicTool` whose callback forwards to
-    /// [`AgentTool::call`](crate::tools::r#trait::AgentTool::call).
+    /// [`AgentTool::call`](crate::agent::tools::base::AgentTool::call).
     pub fn to_rig_tools(&self, allowed: Option<&[String]>) -> Vec<rig::tool::DynamicTool> {
         use rig::message::ToolName;
         use rig::tool::{ToolExecutionError, ToolOutput};

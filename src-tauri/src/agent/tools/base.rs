@@ -63,7 +63,7 @@ pub struct ToolSpec {
 /// homogeneous, storable collection (built-in tools plus MCP tools), so it
 /// keeps its own object-safe contract and converts to [`DynamicTool`] when a
 /// tool set is handed to Rig — see
-/// [`ToolRegistry::to_rig_tools`](crate::tools::registry::ToolRegistry::to_rig_tools).
+/// [`ToolRegistry::to_rig_tools`](crate::agent::tools::registry::ToolRegistry::to_rig_tools).
 pub trait AgentTool: Send + Sync {
     /// Unique registration and provider-facing name.
     fn name(&self) -> String;

@@ -8,7 +8,7 @@ use rig::completion::Message;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::ToolRegistry;
 
 // ================================================================
 // IPC types — kept unchanged for Tauri frontend compatibility.

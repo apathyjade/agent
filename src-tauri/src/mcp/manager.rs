@@ -17,12 +17,12 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
-use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
+use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 use crate::core::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
 use crate::runtime::toolchain::RuntimeManager;
-use crate::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::ToolRegistry;
 
 // ── Public types ──
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::workers::{SubTask, WorkerKind};
+use crate::agent::workers::{SubTask, WorkerKind};
 
 /// Status of a single task node in the DAG.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -196,7 +196,7 @@ impl TaskGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workers::WorkerKind;
+    use crate::agent::workers::WorkerKind;
 
     #[test]
     fn test_empty_graph_is_complete() {

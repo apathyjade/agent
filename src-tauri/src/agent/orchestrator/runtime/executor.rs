@@ -74,11 +74,11 @@ impl ExecutionRuntime {
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
         // 加载工作流
-        let workflow = crate::orchestrator::pipeline_adapter::PipelineAdapter::load_by_name(name)?;
+        let workflow = crate::agent::orchestrator::pipeline_adapter::PipelineAdapter::load_by_name(name)?;
 
         // 转换为 ExecutionPlan
         let vars = _params.clone();
-        let sub_plan = crate::orchestrator::pipeline_adapter::PipelineAdapter::convert(
+        let sub_plan = crate::agent::orchestrator::pipeline_adapter::PipelineAdapter::convert(
             &workflow,
             "sub",
             &vars,

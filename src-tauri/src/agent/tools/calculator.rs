@@ -4,7 +4,7 @@ use std::pin::Pin;
 
 use crate::core::error::{AppError, Result};
 
-use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
+use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 pub struct CalculatorTool;
 

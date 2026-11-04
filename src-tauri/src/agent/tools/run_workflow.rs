@@ -2,9 +2,9 @@ use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::orchestrator::pipeline_adapter::PipelineAdapter;
+use crate::agent::orchestrator::pipeline_adapter::PipelineAdapter;
 
-use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
+use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 /// Tool that loads and describes a YAML workflow.
 /// Does NOT execute the workflow — returns the plan for the LLM to process.

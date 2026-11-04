@@ -4,8 +4,8 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::tools::registry::ToolRegistry;
-use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
+use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const MCP_SYSTEM_PROMPT: &str = r#"You are an MCP (Model Context Protocol) bridge agent. Your job is to
 help users interact with tools exposed by connected MCP servers.

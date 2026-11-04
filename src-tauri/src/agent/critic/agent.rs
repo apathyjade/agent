@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use crate::llm::provider::ProviderRegistry;
 use crate::llm::util::extract_json;
 use crate::core::error::Result;
-use crate::workers::{SubTask, WorkerResult};
+use crate::agent::workers::{SubTask, WorkerResult};
 
 /// Critique decision from the reviewer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -209,7 +209,7 @@ impl Reviewable for CriticAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workers::WorkerKind;
+    use crate::agent::workers::WorkerKind;
 
     fn make_task(id: &str, label: &str, instruction: &str) -> SubTask {
         SubTask {

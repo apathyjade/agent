@@ -6,13 +6,13 @@ use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::agent::r#loop::ToolLoop;
+use crate::agent::fast_loop::ToolLoop;
 use crate::llm::provider::ProviderRegistry;
 use rig::completion::Message;
 use crate::core::db::repository::Database;
-use crate::orchestrator::plan_error::ExecutionError;
-use crate::orchestrator::plan_types::*;
-use crate::tools::registry::ToolRegistry;
+use crate::agent::orchestrator::plan_error::ExecutionError;
+use crate::agent::orchestrator::plan_types::*;
+use crate::agent::tools::registry::ToolRegistry;
 use tauri::Emitter;
 
 mod executor;

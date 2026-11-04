@@ -4,7 +4,7 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
-use crate::critic::agent::CriticAgent;
+use crate::agent::critic::agent::CriticAgent;
 use crate::core::db::repository::Database;
 use crate::lifecycle::LifecycleManager;
 use crate::llm::intent::router::IntentRouter;
@@ -12,20 +12,20 @@ use crate::llm::model::ModelProvider;
 use crate::llm::provider::ProviderRegistry;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
-use crate::orchestrator::agent::OrchestratorAgent;
-use crate::orchestrator::dispatcher::Dispatcher;
-use crate::orchestrator::plan_types::ExecutionHandle;
+use crate::agent::orchestrator::agent::OrchestratorAgent;
+use crate::agent::orchestrator::dispatcher::Dispatcher;
+use crate::agent::orchestrator::plan_types::ExecutionHandle;
 use crate::persona::PersonaManager;
 use crate::skills::SkillsService;
 use crate::runtime::toolchain::RuntimeServices;
-use crate::tools::registry::ToolRegistry;
-use crate::workers::code_editor::CodeEditorWorker;
-use crate::workers::code_explorer::CodeExplorerWorker;
-use crate::workers::mcp_bridge::MCPBridgeWorker;
-use crate::workers::memory::MemoryWorker;
-use crate::workers::shell::ShellWorker;
-use crate::workers::thinker::ThinkerWorker;
-use crate::workers::web::WebWorker;
+use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::workers::code_editor::CodeEditorWorker;
+use crate::agent::workers::code_explorer::CodeExplorerWorker;
+use crate::agent::workers::mcp_bridge::MCPBridgeWorker;
+use crate::agent::workers::memory::MemoryWorker;
+use crate::agent::workers::shell::ShellWorker;
+use crate::agent::workers::thinker::ThinkerWorker;
+use crate::agent::workers::web::WebWorker;
 
 pub struct AppState {
     pub app_handle: AppHandle,

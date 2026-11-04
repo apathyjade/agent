@@ -63,7 +63,7 @@ pub async fn maybe_generate_summary(
         .join("\n\n");
 
     let original_tokens: i32 = to_summarize.iter()
-        .map(|m| crate::agent::r#loop::estimate_tokens(&m.content) as i32)
+        .map(|m| crate::agent::fast_loop::estimate_tokens(&m.content) as i32)
         .sum();
 
     drop(db);
@@ -78,7 +78,7 @@ pub async fn maybe_generate_summary(
     let p = provider.get(&actual_model)?;
     let summary_text = p.prompt("", &prompt).await?;
     let summary_text = summary_text.trim().to_string();
-        let summary_tokens = crate::agent::r#loop::estimate_tokens(&summary_text) as i32;
+        let summary_tokens = crate::agent::fast_loop::estimate_tokens(&summary_text) as i32;
 
     let summary = SessionSummary {
         id: Uuid::new_v4().to_string(),

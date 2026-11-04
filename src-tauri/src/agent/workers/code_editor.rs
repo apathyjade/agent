@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
+use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const EDITOR_SYSTEM_PROMPT: &str = r#"You are a code editing agent. Your job is to modify files in a codebase.
 

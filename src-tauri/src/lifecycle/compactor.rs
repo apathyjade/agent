@@ -53,7 +53,7 @@ pub fn compress_context(
 
     let mut total_tokens: usize = system_msgs
         .iter()
-        .map(|m| crate::agent::r#loop::estimate_tokens(&message_text(m)))
+        .map(|m| crate::agent::fast_loop::estimate_tokens(&message_text(m)))
         .sum();
 
     // If system messages alone exceed limit, truncate them (unlikely but safe)
@@ -65,7 +65,7 @@ pub fn compress_context(
 
     // Walk messages from newest to oldest, collecting until we hit the token limit
     for msg in conv_msgs.into_iter().rev() {
-        let msg_tokens = crate::agent::r#loop::estimate_tokens(&message_text(&msg));
+        let msg_tokens = crate::agent::fast_loop::estimate_tokens(&message_text(&msg));
         if total_tokens + msg_tokens > max_tokens {
             // Over limit — drop remaining older messages
             break;

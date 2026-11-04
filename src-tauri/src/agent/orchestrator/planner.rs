@@ -5,9 +5,9 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::llm::util::extract_json;
-use crate::orchestrator::plan_error::ExecutionError;
-use crate::orchestrator::plan_types::*;
-use crate::tools::registry::ToolRegistry;
+use crate::agent::orchestrator::plan_error::ExecutionError;
+use crate::agent::orchestrator::plan_types::*;
+use crate::agent::tools::registry::ToolRegistry;
 
 /// LLM Planner — 将用户自然语言目标转为 ExecutionPlan
 pub struct LlmPlanner {

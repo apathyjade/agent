@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
+use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 use crate::workspace::search::SearchEngine;
 
 const EXPLORER_SYSTEM_PROMPT: &str = r#"You are a code exploration agent. Your job is to understand codebases.

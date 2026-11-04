@@ -10,7 +10,7 @@ use crate::core::error::{AppError, Result};
 use crate::pipeline::models::{
     StepDef, StepProgress, TriggerDef, WorkflowDef, WorkflowRunRecord,
 };
-use crate::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::ToolRegistry;
 
 pub struct PipelineEngine {
     tools: Arc<Mutex<ToolRegistry>>,

@@ -2,14 +2,14 @@ use chrono::Utc;
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::agent::r#loop::ToolLoop;
+use crate::agent::fast_loop::ToolLoop;
 use rig::completion::Message;
 use crate::commands::{StreamChunk, ToolCallEvent};
 use crate::core::db::models::{Session as DbSession, Message as DbMessage};
 use crate::core::error::{AppError, Result};
-use crate::orchestrator::planner::LlmPlanner;
-use crate::orchestrator::runtime::ExecutionRuntime;
-use crate::orchestrator::plan_types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
+use crate::agent::orchestrator::planner::LlmPlanner;
+use crate::agent::orchestrator::runtime::ExecutionRuntime;
+use crate::agent::orchestrator::plan_types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
 use crate::llm::intent::PathSelection;
 use crate::persona::PersonaResolution;
 use crate::state::AppState;
@@ -430,7 +430,7 @@ pub async fn send_message_stream(
                 {
                     let db = state.db.lock().await;
                     let status_json = serde_json::to_string(
-                        &crate::orchestrator::plan_types::ExecStatus::Running { step_index: 0, started_at: Utc::now().to_rfc3339() }
+                        &crate::agent::orchestrator::plan_types::ExecStatus::Running { step_index: 0, started_at: Utc::now().to_rfc3339() }
                     ).unwrap_or_default();
                     let _ = db.update_session_execution(&session_id, "autonomous", &status_json, Some(&plan_id));
                 }
@@ -634,7 +634,7 @@ pub async fn send_message_stream(
 
     while let Some(chunk) = stream.recv().await {
         match chunk {
-            crate::agent::r#loop::StreamEvent::Content(text) => {
+            crate::agent::fast_loop::StreamEvent::Content(text) => {
                 full_content.push_str(&text);
                 let _ = app_handle.emit("stream_chunk", StreamChunk {
                     content: text,
@@ -643,7 +643,7 @@ pub async fn send_message_stream(
                     phase: None,
                 });
             }
-            crate::agent::r#loop::StreamEvent::ToolCall(tool_call) => {
+            crate::agent::fast_loop::StreamEvent::ToolCall(tool_call) => {
                 let _ = app_handle.emit("stream_chunk", StreamChunk {
                     content: String::new(),
                     done: false,
@@ -656,7 +656,7 @@ pub async fn send_message_stream(
                     phase: Some("executing_tool".to_string()),
                 });
             }
-            crate::agent::r#loop::StreamEvent::ToolResult(tool_result) => {
+            crate::agent::fast_loop::StreamEvent::ToolResult(tool_result) => {
                 // Persist tool result message to DB
                 {
                     let db = state.db.lock().await;
@@ -694,7 +694,7 @@ pub async fn send_message_stream(
                     phase: Some("thinking".to_string()),
                 });
             }
-            crate::agent::r#loop::StreamEvent::Done => {
+            crate::agent::fast_loop::StreamEvent::Done => {
                 let _ = app_handle.emit("stream_chunk", StreamChunk {
                     content: String::new(),
                     done: true,

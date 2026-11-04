@@ -1,7 +1,7 @@
 use tauri::{Emitter, AppHandle};
 use tokio::sync::mpsc;
 
-use crate::orchestrator::agent::{OrchestrationEvent, OrchestrationPhase};
+use crate::agent::orchestrator::agent::{OrchestrationEvent, OrchestrationPhase};
 
 /// Spawn a task that forwards OrchestrationEvents from a channel to Tauri events.
 ///

@@ -1,7 +1,7 @@
 #![allow(clippy::disallowed_methods)]
 
-use agent_lib::tools::calculator::CalculatorTool;
-use agent_lib::tools::r#trait::AgentTool;
+use agent_lib::agent::tools::calculator::CalculatorTool;
+use agent_lib::agent::tools::base::AgentTool;
 use serde_json::json;
 
 #[tokio::test]

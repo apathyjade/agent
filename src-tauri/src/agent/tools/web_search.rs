@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
+use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 pub struct WebSearchTool;
 

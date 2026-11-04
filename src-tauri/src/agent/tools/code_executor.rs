@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
+use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 pub struct CodeExecutorTool;
 

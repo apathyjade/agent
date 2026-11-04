@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
-use crate::critic::{CriticAgent, CritiqueDecision};
+use crate::agent::critic::{CriticAgent, CritiqueDecision};
 use crate::core::error::{AppError, Result};
-use crate::orchestrator::dispatcher::Dispatcher;
-use crate::orchestrator::task_graph::{NodeStatus, TaskGraph};
-use crate::workers::WorkerKind;
+use crate::agent::orchestrator::dispatcher::Dispatcher;
+use crate::agent::orchestrator::task_graph::{NodeStatus, TaskGraph};
+use crate::agent::workers::WorkerKind;
 
 /// Phase of the orchestration lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -389,7 +389,7 @@ impl OrchestratorAgent {
     pub async fn process_goal(&self, goal: &str, model_id: Option<&str>) -> Result<String> {
         let mut graph = TaskGraph::new("goal_1".into(), goal.into());
 
-        let mut node = crate::orchestrator::task_graph::TaskNode::new(
+        let mut node = crate::agent::orchestrator::task_graph::TaskNode::new(
             "task_1".into(),
             format!("Process: {}", goal),
             WorkerKind::Thinker,
@@ -407,10 +407,10 @@ impl OrchestratorAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::critic::CriticAgent;
-    use crate::orchestrator::dispatcher::Dispatcher;
-    use crate::orchestrator::task_graph::TaskNode;
-    use crate::workers::{SubTask, WorkerAgent, WorkerResult};
+    use crate::agent::critic::CriticAgent;
+    use crate::agent::orchestrator::dispatcher::Dispatcher;
+    use crate::agent::orchestrator::task_graph::TaskNode;
+    use crate::agent::workers::{SubTask, WorkerAgent, WorkerResult};
     use async_trait::async_trait;
     use std::sync::Arc;
     use tokio::sync::Mutex;

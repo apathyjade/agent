@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::core::error::{AppError, Result};
 use crate::state::AppState;
-use crate::tools::r#trait::ToolInfo;
+use crate::agent::tools::base::ToolInfo;
 
 #[tauri::command]
 pub async fn list_tools(state: State<'_, AppState>) -> Result<Vec<ToolInfo>> {

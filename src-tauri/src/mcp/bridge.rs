@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use serde_json::Value;
 
-use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
+use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 /// A tool exposed by an MCP server, wrapped to implement [`AgentTool`].
 pub struct McpToolBridge {
