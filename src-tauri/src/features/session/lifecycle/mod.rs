@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::core::db::repository::Database;
 use crate::llm::provider::ProviderRegistry;
-use crate::lifecycle::config::LifecycleConfig;
+use crate::features::session::lifecycle::config::LifecycleConfig;
 
 #[derive(Clone)]
 pub struct LifecycleManager {

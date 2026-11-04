@@ -1,12 +1,12 @@
 use tauri::State;
 
 use crate::core::error::Result;
-use crate::pipeline::models::{StepProgress, WorkflowInfo, WorkflowRunRecord};
+use crate::features::workflow::models::{StepProgress, WorkflowInfo, WorkflowRunRecord};
 use crate::state::AppState;
 
 #[tauri::command]
 pub async fn list_workflows(_state: State<'_, AppState>) -> Result<Vec<WorkflowInfo>> {
-    crate::pipeline::scanner::list_workflows()
+    crate::features::workflow::scanner::list_workflows()
 }
 
 #[tauri::command]
@@ -15,7 +15,7 @@ pub async fn run_workflow(
     name: String,
 ) -> Result<String> {
     // Find the workflow by name in scanned files
-    let workflows = crate::pipeline::scanner::scan_workflow_files()?;
+    let workflows = crate::features::workflow::scanner::scan_workflow_files()?;
     let (path, workflow) = workflows
         .into_iter()
         .find(|(_, wf)| wf.name == name)
@@ -40,7 +40,7 @@ pub async fn run_workflow(
     });
 
     // Create engine with providers and event channel
-    let engine = crate::pipeline::PipelineEngine::new(
+    let engine = crate::features::workflow::PipelineEngine::new(
         state.tools.clone(),
         state.db.clone(),
         state.providers.clone(),

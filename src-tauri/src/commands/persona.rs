@@ -1,8 +1,8 @@
 use tauri::State;
 
 use crate::core::error::Result;
-use crate::memory::MemoryInfo;
-use crate::persona::{CreatePersonaParams, PersonaInfo, PersonaResolution, UpdatePersonaParams};
+use crate::features::memory::MemoryInfo;
+use crate::features::persona::{CreatePersonaParams, PersonaInfo, PersonaResolution, UpdatePersonaParams};
 use crate::state::AppState;
 
 /// Which persona to use (for IPC round-trip: manual name or "auto").

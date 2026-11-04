@@ -1,5 +1,5 @@
 use crate::core::error::Result;
-use crate::lifecycle::LifecycleManager;
+use crate::features::session::lifecycle::LifecycleManager;
 
 /// Run archive check on startup. Archives sessions past the configured inactivity threshold.
 pub async fn run_archive_check(lifecycle: &LifecycleManager) -> Result<()> {

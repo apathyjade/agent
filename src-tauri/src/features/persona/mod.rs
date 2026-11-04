@@ -100,7 +100,7 @@ impl PersonaManager {
 
     /// Seed default personas if none exist.
     pub async fn seed_defaults(&self) -> Result<usize> {
-        let default_personas = crate::persona::seeds::default_personas();
+        let default_personas = crate::features::persona::seeds::default_personas();
         let db = self.db.lock().await;
         let existing = db.list_personas()?;
         if !existing.is_empty() {

@@ -10,7 +10,7 @@ use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 /// A worker that stores and retrieves memories directly via the SQLite database.
 ///
-/// Unlike the high-level [`crate::memory::MemoryManager`], this worker operates
+/// Unlike the high-level [`crate::features::memory::MemoryManager`], this worker operates
 /// at the storage layer — it does not use embeddings or vector search.
 ///
 /// ## Commands

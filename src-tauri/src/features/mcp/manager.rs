@@ -20,7 +20,7 @@ use tokio::time::{sleep, Duration};
 use crate::agent::tools::base::{AgentTool, ToolError, ToolSpec};
 
 use crate::core::error::{AppError, Result};
-use crate::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
+use crate::features::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
 use crate::runtime::toolchain::RuntimeManager;
 use crate::agent::tools::registry::ToolRegistry;
 

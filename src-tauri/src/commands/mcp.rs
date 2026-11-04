@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use tauri::State;
 
 use crate::core::error::{AppError, Result};
-use crate::mcp::config::{ConfirmationMode, McpServerConfig, StartupPolicy, ToolConfig};
-use crate::mcp::manager::{ConnectionInfo, ConnectionStats};
+use crate::features::mcp::config::{ConfirmationMode, McpServerConfig, StartupPolicy, ToolConfig};
+use crate::features::mcp::manager::{ConnectionInfo, ConnectionStats};
 use crate::state::AppState;
 
 #[tauri::command]

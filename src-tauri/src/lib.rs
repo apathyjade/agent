@@ -5,16 +5,10 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod core;
-pub mod lifecycle;
+pub mod features;
 pub mod llm;
-pub mod mcp;
-pub mod memory;
-pub mod persona;
-pub mod pipeline;
 pub mod runtime;
-pub mod skills;
 pub mod state;
-pub mod workspace;
 
 use tauri::Manager;
 
@@ -71,7 +65,7 @@ pub fn run() {
                 // 4. Archive old sessions
                 {
                     if let Err(e) =
-                        crate::lifecycle::archiver::run_archive_check(&state.lifecycle).await
+                        crate::features::session::lifecycle::archiver::run_archive_check(&state.lifecycle).await
                     {
                         log::error!("Failed to run archive check: {}", e);
                     }

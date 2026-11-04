@@ -1,5 +1,5 @@
 use crate::core::error::Result;
-use crate::lifecycle::LifecycleManager;
+use crate::features::session::lifecycle::LifecycleManager;
 
 /// Generate a title for a session if:
 /// 1. title_source != 'manual'

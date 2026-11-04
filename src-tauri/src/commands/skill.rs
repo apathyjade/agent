@@ -1,12 +1,12 @@
 use tauri::State;
 
 use crate::core::error::Result;
-use crate::skills::agents::{self, AgentOption};
-use crate::skills::cli::CliStatus;
-use crate::skills::legacy::{LegacyImportResult, LegacySkill};
-use crate::skills::list::InstalledSkill;
-use crate::skills::market::MarketSkill;
-use crate::skills::{InstallRequest, RepoSkillPreview, UpdateCheck};
+use crate::features::skills::agents::{self, AgentOption};
+use crate::features::skills::cli::CliStatus;
+use crate::features::skills::legacy::{LegacyImportResult, LegacySkill};
+use crate::features::skills::list::InstalledSkill;
+use crate::features::skills::market::MarketSkill;
+use crate::features::skills::{InstallRequest, RepoSkillPreview, UpdateCheck};
 use crate::state::AppState;
 
 /// Scope used when the caller does not specify one.
@@ -130,7 +130,7 @@ pub async fn update_skills(
 
 #[tauri::command]
 pub async fn list_market_top_skills(limit: Option<i64>) -> Result<Vec<MarketSkill>> {
-    crate::skills::market::fetch_popular_skills(limit).await
+    crate::features::skills::market::fetch_popular_skills(limit).await
 }
 
 #[tauri::command]
@@ -138,5 +138,5 @@ pub async fn search_market_skills(
     query: String,
     limit: Option<i64>,
 ) -> Result<Vec<MarketSkill>> {
-    crate::skills::market::search_skills(&query, limit).await
+    crate::features::skills::market::search_skills(&query, limit).await
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::core::error::{AppError, Result};
 use crate::llm::intent::IntentRouterConfig;
 use crate::llm::model::{ModelConfig, ModelProvider};
-use crate::mcp::config::McpServerConfig;
+use crate::features::mcp::config::McpServerConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {

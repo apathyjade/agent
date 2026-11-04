@@ -11,7 +11,7 @@ use crate::agent::orchestrator::planner::LlmPlanner;
 use crate::agent::orchestrator::runtime::ExecutionRuntime;
 use crate::agent::orchestrator::plan_types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
 use crate::llm::intent::PathSelection;
-use crate::persona::PersonaResolution;
+use crate::features::persona::PersonaResolution;
 use crate::state::AppState;
 
 /// Rebuild a persisted tool result as a Rig user message.
@@ -268,7 +268,7 @@ pub async fn send_message(
     // Compress context if a context window limit is configured
     if let Some(ctx) = context_window {
         let db = state.db.lock().await;
-        api_messages = crate::lifecycle::compactor::compress_context(
+        api_messages = crate::features::session::lifecycle::compactor::compress_context(
             &db, &session_id, api_messages, ctx,
         )?;
     }
@@ -302,7 +302,7 @@ pub async fn send_message(
     let sid = session_id.clone();
     let mid = sess.model_id.clone();
     tokio::spawn(async move {
-        let _ = crate::lifecycle::titler::maybe_generate_title(
+        let _ = crate::features::session::lifecycle::titler::maybe_generate_title(
             &lifecycle, &sid, &mid,
         ).await;
     });
@@ -311,7 +311,7 @@ pub async fn send_message(
     let sid2 = session_id.clone();
     let mid2 = sess.model_id.clone();
     tokio::spawn(async move {
-        let _ = crate::lifecycle::summarizer::maybe_generate_summary(
+        let _ = crate::features::session::lifecycle::summarizer::maybe_generate_summary(
             &lifecycle2, &sid2, &mid2,
         ).await;
     });
@@ -598,7 +598,7 @@ pub async fn send_message_stream(
     // Compress context if a context window limit is configured
     if let Some(ctx) = context_window {
         let db = state.db.lock().await;
-        api_messages = crate::lifecycle::compactor::compress_context(
+        api_messages = crate::features::session::lifecycle::compactor::compress_context(
             &db, &session_id, api_messages, ctx,
         )?;
     }
@@ -725,7 +725,7 @@ pub async fn send_message_stream(
     let sid = session_id.clone();
     let mid = sess.model_id.clone();
     tokio::spawn(async move {
-        let _ = crate::lifecycle::titler::maybe_generate_title(
+        let _ = crate::features::session::lifecycle::titler::maybe_generate_title(
             &lifecycle, &sid, &mid,
         ).await;
     });
@@ -734,7 +734,7 @@ pub async fn send_message_stream(
     let sid2 = session_id.clone();
     let mid2 = sess.model_id.clone();
     tokio::spawn(async move {
-        let _ = crate::lifecycle::summarizer::maybe_generate_summary(
+        let _ = crate::features::session::lifecycle::summarizer::maybe_generate_summary(
             &lifecycle2, &sid2, &mid2,
         ).await;
     });

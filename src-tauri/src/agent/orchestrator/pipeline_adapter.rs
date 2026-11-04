@@ -5,7 +5,7 @@ use chrono::Utc;
 
 use crate::agent::orchestrator::plan_error::ExecutionError;
 use crate::agent::orchestrator::plan_types::*;
-use crate::pipeline::models::{StepDef, WorkflowDef};
+use crate::features::workflow::models::{StepDef, WorkflowDef};
 
 /// 将 YAML 工作流定义转为 ExecutionPlan
 pub struct PipelineAdapter;
@@ -132,7 +132,7 @@ impl PipelineAdapter {
     }
 
     fn scan_dirs() -> Result<Vec<(PathBuf, WorkflowDef)>, ExecutionError> {
-        let dirs = crate::pipeline::scanner::scan_workflow_files()
+        let dirs = crate::features::workflow::scanner::scan_workflow_files()
             .map_err(|e| ExecutionError::Internal(format!("Failed to scan workflows: {}", e)))?;
         Ok(dirs)
     }

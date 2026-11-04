@@ -2,7 +2,7 @@ use tauri::State;
 use crate::core::error::Result;
 use crate::state::AppState;
 use crate::core::db::models::SessionSummary;
-use crate::lifecycle::config::LifecycleConfig;
+use crate::features::session::lifecycle::config::LifecycleConfig;
 
 #[tauri::command]
 pub async fn get_session_summaries(
@@ -23,7 +23,7 @@ pub async fn force_generate_summary(
         .ok_or_else(|| crate::core::error::AppError::NotFound("Session not found".to_string()))?;
     drop(db);
 
-    crate::lifecycle::summarizer::maybe_generate_summary(
+    crate::features::session::lifecycle::summarizer::maybe_generate_summary(
         &state.lifecycle,
         &session_id,
         &session.model_id,

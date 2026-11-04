@@ -62,7 +62,7 @@ impl AgentTool for RunWorkflowTool {
                 .steps
                 .iter()
                 .map(|s| match s {
-                    crate::pipeline::models::StepDef::ToolCall {
+                    crate::features::workflow::models::StepDef::ToolCall {
                         id, tool, params, ..
                     } => {
                         json!({
@@ -72,7 +72,7 @@ impl AgentTool for RunWorkflowTool {
                             "params": params,
                         })
                     }
-                    crate::pipeline::models::StepDef::LlmCall {
+                    crate::features::workflow::models::StepDef::LlmCall {
                         id, prompt, ..
                     } => {
                         json!({
@@ -81,7 +81,7 @@ impl AgentTool for RunWorkflowTool {
                             "prompt_preview": prompt.chars().take(100).collect::<String>(),
                         })
                     }
-                    crate::pipeline::models::StepDef::Condition {
+                    crate::features::workflow::models::StepDef::Condition {
                         id, condition, ..
                     } => {
                         json!({

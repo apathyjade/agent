@@ -3,7 +3,7 @@ use chrono::Utc;
 
 use crate::core::db::models::SessionSummary;
 use crate::core::error::Result;
-use crate::lifecycle::LifecycleManager;
+use crate::features::session::lifecycle::LifecycleManager;
 
 /// Generate a summary chunk for new messages since last summarized point.
 /// Called asynchronously after send_message_stream completes.

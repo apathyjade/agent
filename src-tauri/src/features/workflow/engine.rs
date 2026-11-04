@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::{AppError, Result};
-use crate::pipeline::models::{
+use crate::features::workflow::models::{
     StepDef, StepProgress, TriggerDef, WorkflowDef, WorkflowRunRecord,
 };
 use crate::agent::tools::registry::ToolRegistry;
@@ -283,7 +283,7 @@ impl PipelineEngine {
     async fn execute_with_retry<F, Fut>(
         &self,
         step_id: &str,
-        retry: &Option<crate::pipeline::models::RetryConfig>,
+        retry: &Option<crate::features::workflow::models::RetryConfig>,
         on_error: &str,
         timeout_seconds: Option<u64>,
         f: F,
