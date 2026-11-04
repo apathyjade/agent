@@ -253,20 +253,34 @@ impl Database {
     }
 
     /// Updates the editable fields. The caller's `version` is ignored: the stored
-    /// version is read and incremented by one. `domain_id` is immutable.
+    /// version is read and incremented by one. `domain_id` is immutable, and the update
+    /// cannot disable the last enabled intent of a domain.
     pub fn update_intent(&self, i: &IntentRecord) -> Result<()> {
-        let old_version: Option<i64> = self
+        let row: Option<(i64, String, i64)> = self
             .conn
             .query_row(
-                "SELECT version FROM intents WHERE id = ?1",
+                "SELECT version, domain_id, enabled FROM intents WHERE id = ?1",
                 params![i.id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let old_version = match old_version {
+        let (old_version, domain_id, current_enabled) = match row {
             Some(v) => v,
             None => return Err(AppError::NotFound(format!("意图不存在: {}", i.id))),
         };
+
+        if current_enabled != 0 && !i.enabled {
+            let enabled_count: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
+                params![domain_id],
+                |row| row.get(0),
+            )?;
+            if enabled_count <= 1 {
+                return Err(AppError::InvalidInput(
+                    "不能停用领域内最后一个启用的意图".to_string(),
+                ));
+            }
+        }
 
         let changed = self.conn.execute(
             "UPDATE intents SET name = ?2, description = ?3, examples = ?4, workflow = ?5,
@@ -586,6 +600,28 @@ mod tests {
 
         assert!(db.get_intent("only-intent").unwrap().is_some());
         assert_eq!(db.count_enabled_intents("guard-domain").unwrap(), 1);
+    }
+
+    #[test]
+    fn update_cannot_disable_last_enabled_intent() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
+            .unwrap();
+        let intent = mk_intent("only-intent", "guard-domain", "唯一意图");
+        db.insert_intent(&intent).unwrap();
+
+        let mut disabled = intent.clone();
+        disabled.enabled = false;
+
+        let err = db.update_intent(&disabled).unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => assert_eq!(msg, "不能停用领域内最后一个启用的意图"),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+
+        let stored = db.get_intent("only-intent").unwrap().unwrap();
+        assert!(stored.enabled, "守卫失败后该意图必须仍然启用");
+        assert_eq!(stored.version, 1, "被拒绝的更新不得改动版本");
     }
 
     #[test]
