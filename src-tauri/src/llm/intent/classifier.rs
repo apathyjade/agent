@@ -149,7 +149,9 @@ pub fn apply_confidence(intents: &[IntentRecord], chosen: &str, score: f32) -> S
         return chosen.to_string();
     };
 
-    if f64::from(score) >= chosen_intent.confidence_threshold {
+    // Compare in one domain: widening `0.7f32` to `f64` yields 0.699999988…,
+    // which would wrongly fail a threshold of 0.7.
+    if score >= chosen_intent.confidence_threshold as f32 {
         return chosen.to_string();
     }
 
@@ -171,8 +173,9 @@ pub fn apply_confidence(intents: &[IntentRecord], chosen: &str, score: f32) -> S
 /// Parse an LLM reply into `(intent_id, confidence)`.
 ///
 /// Tolerates markdown fences and surrounding prose: the first JSON object that
-/// carries both `intent` and `confidence` is used. Returns `None` when no such
-/// object exists or when its `intent` is not one of `intents`.
+/// carries both `intent` and `confidence` with a finite score is used. Objects
+/// naming an unknown id, or carrying a non-finite score, are skipped. Returns
+/// `None` when no usable object remains.
 pub fn parse_classification_reply(reply: &str, intents: &[IntentRecord]) -> Option<(String, f32)> {
     for (start, _) in reply.match_indices('{') {
         let Some(end) = matching_brace_end(reply, start) else {
@@ -188,8 +191,10 @@ pub fn parse_classification_reply(reply: &str, intents: &[IntentRecord]) -> Opti
             continue;
         };
 
+        // An unknown id only disqualifies this object; a model that restates
+        // the candidate list may answer with a valid object later in the reply.
         if !intents.iter().any(|item| item.id == intent) {
-            return None;
+            continue;
         }
         return Some((intent.to_string(), confidence));
     }
@@ -201,6 +206,11 @@ fn parse_confidence(value: &serde_json::Value) -> Option<f32> {
     let raw = value
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))?;
+    // `clamp` does not sanitise NaN, and NaN would poison every later
+    // comparison, so non-finite values make this object unusable.
+    if !raw.is_finite() {
+        return None;
+    }
     Some((raw as f32).clamp(0.0, 1.0))
 }
 
@@ -430,5 +440,67 @@ mod tests {
     fn parse_reply_rejects_unknown_intent() {
         let reply = "{\"intent\": \"builtin.software_dev.nope\", \"confidence\": 0.99}";
         assert_eq!(parse_classification_reply(reply, &fixtures()), None);
+    }
+
+    #[test]
+    fn threshold_equal_to_score_is_not_rerouted() {
+        let intents = fixtures();
+        // `0.7f32` widens to 0.699999988…; if the comparison mixes f32 and
+        // f64 this intent is wrongly judged low-confidence and rerouted.
+        assert_eq!(
+            apply_confidence(&intents, "builtin.software_dev.implement", 0.7f32),
+            "builtin.software_dev.implement"
+        );
+    }
+
+    #[test]
+    fn bigram_overlap_scores_positive_without_example_match() {
+        let intents = fixtures();
+        // No example matches; the overlap comes from 重构 / 结构 in the
+        // refactor intent's description.
+        let scored = score_intents("重构这个结构", &intents);
+        let (id, score) = scored.expect("bigram overlap should score");
+        assert_eq!(id, "builtin.software_dev.refactor");
+        assert!(score > 0.0, "expected a positive score, got {score}");
+    }
+
+    #[test]
+    fn missing_fallback_falls_back_to_clarify() {
+        let intents = vec![
+            intent(
+                "builtin.software_dev.implement",
+                "实现功能",
+                "把需求实现为代码",
+                &[],
+                0.9,
+                "",
+            ),
+            intent(
+                "builtin.software_dev.clarify",
+                "澄清需求",
+                "当意图不明确时向用户提问",
+                &[],
+                0.7,
+                "",
+            ),
+        ];
+        assert_eq!(
+            apply_confidence(&intents, "builtin.software_dev.implement", 0.1),
+            "builtin.software_dev.clarify"
+        );
+    }
+
+    #[test]
+    fn non_finite_confidence_is_rejected() {
+        for raw in ["NaN", "inf", "-inf"] {
+            let reply = format!(
+                "{{\"intent\": \"builtin.software_dev.implement\", \"confidence\": \"{raw}\"}}"
+            );
+            assert_eq!(
+                parse_classification_reply(&reply, &fixtures()),
+                None,
+                "confidence {raw} must be rejected"
+            );
+        }
     }
 }
