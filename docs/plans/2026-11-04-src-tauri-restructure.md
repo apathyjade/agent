@@ -22,6 +22,7 @@
 - `cargo clippy --all-targets` 警告数 ≤ 88（基线）。
 - 依赖规则对 `#[cfg(test)]` 代码同样生效。
 - **所有命令从仓库根目录执行**，不使用 `cd`：cargo 一律带 `--manifest-path src-tauri/Cargo.toml`，文件路径一律带 `src-tauri/` 前缀。
+- **改写脚本必须用 `& .\scripts\rewrite-crate-paths.ps1 -Map 'a','b'` 形式在当前会话内调用。** 不要写成 `powershell -NoProfile -File ... -Map 'a','b'`：PS 5.1 会把整个逗号列表当成**一个**字符串传进去，脚本解析出的 `From` 会变成一段垃圾模式，从而破坏源码。
 
 ## Review Focus
 
@@ -110,7 +111,7 @@ Expected: `error[E0583]: file not found for module 'error'`（`lib.rs` 仍声明
 - [ ] **Step 5: 改写路径**
 
 ```bash
-powershell -NoProfile -File .\scripts\rewrite-crate-paths.ps1 -Map 'crate::error=crate::core::error','crate::keychain=crate::core::keychain','crate::db=crate::core::db'
+& .\scripts\rewrite-crate-paths.ps1 -Map 'crate::error=crate::core::error','crate::keychain=crate::core::keychain','crate::db=crate::core::db'
 ```
 
 - [ ] **Step 6: 更新 `lib.rs` 模块声明**
@@ -197,7 +198,7 @@ Expected: `file not found for module 'toolchain'`。
 - [ ] **Step 3: 改写路径**
 
 ```bash
-powershell -NoProfile -File .\scripts\rewrite-crate-paths.ps1 -Map 'crate::toolchain=crate::runtime::toolchain','crate::project_env=crate::runtime::project_env','agent_lib::toolchain=agent_lib::runtime::toolchain','agent_lib::project_env=agent_lib::runtime::project_env'
+& .\scripts\rewrite-crate-paths.ps1 -Map 'crate::toolchain=crate::runtime::toolchain','crate::project_env=crate::runtime::project_env','agent_lib::toolchain=agent_lib::runtime::toolchain','agent_lib::project_env=agent_lib::runtime::project_env'
 ```
 
 - [ ] **Step 4: 更新 `lib.rs` 与新建 `runtime/mod.rs`**
@@ -326,7 +327,7 @@ Get-ChildItem -Recurse src-tauri/src -Filter *.rs | ForEach-Object {
 - [ ] **Step 5: 改写路径**
 
 ```bash
-powershell -NoProfile -File .\scripts\rewrite-crate-paths.ps1 -Map 'crate::config::ModelConfig=crate::llm::model::ModelConfig','crate::config::ModelProvider=crate::llm::model::ModelProvider','crate::api=crate::llm','crate::intent=crate::llm::intent','agent_lib::api=agent_lib::llm'
+& .\scripts\rewrite-crate-paths.ps1 -Map 'crate::config::ModelConfig=crate::llm::model::ModelConfig','crate::config::ModelProvider=crate::llm::model::ModelProvider','crate::api=crate::llm','crate::intent=crate::llm::intent','agent_lib::api=agent_lib::llm'
 ```
 
 - [ ] **Step 6: 手工修正 3 处 grouped import**
@@ -409,7 +410,7 @@ Expected: `file not found for module 'tools'`。
 - [ ] **Step 3: 改写路径（顺序不可调换）**
 
 ```bash
-powershell -NoProfile -File .\scripts\rewrite-crate-paths.ps1 -Map 'crate::agent::r#loop=crate::agent::fast_loop','crate::tools::r#trait=crate::agent::tools::base','crate::tools=crate::agent::tools','crate::workers=crate::agent::workers','crate::critic=crate::agent::critic','crate::orchestrator=crate::agent::orchestrator','agent_lib::tools::r#trait=agent_lib::agent::tools::base','agent_lib::tools=agent_lib::agent::tools'
+& .\scripts\rewrite-crate-paths.ps1 -Map 'crate::agent::r#loop=crate::agent::fast_loop','crate::tools::r#trait=crate::agent::tools::base','crate::tools=crate::agent::tools','crate::workers=crate::agent::workers','crate::critic=crate::agent::critic','crate::orchestrator=crate::agent::orchestrator','agent_lib::tools::r#trait=agent_lib::agent::tools::base','agent_lib::tools=agent_lib::agent::tools'
 ```
 
 - [ ] **Step 4: 更新模块声明**
@@ -499,7 +500,7 @@ Expected: `file not found for module 'memory'`。
 - [ ] **Step 3: 改写路径**
 
 ```bash
-powershell -NoProfile -File .\scripts\rewrite-crate-paths.ps1 -Map 'crate::pipeline=crate::features::workflow','crate::lifecycle=crate::features::session::lifecycle','crate::memory=crate::features::memory','crate::persona=crate::features::persona','crate::skills=crate::features::skills','crate::mcp=crate::features::mcp','crate::workspace=crate::features::workspace'
+& .\scripts\rewrite-crate-paths.ps1 -Map 'crate::pipeline=crate::features::workflow','crate::lifecycle=crate::features::session::lifecycle','crate::memory=crate::features::memory','crate::persona=crate::features::persona','crate::skills=crate::features::skills','crate::mcp=crate::features::mcp','crate::workspace=crate::features::workspace'
 ```
 
 - [ ] **Step 4: 更新模块声明**
@@ -584,7 +585,7 @@ Expected: `file not found for module 'config'`。
 - [ ] **Step 3: 改写路径**
 
 ```bash
-powershell -NoProfile -File .\scripts\rewrite-crate-paths.ps1 -Map 'crate::config=crate::app::config','crate::cli=crate::app::cli','crate::state=crate::app::state','crate::commands=crate::app::commands','agent_lib::config=agent_lib::app::config','agent_lib::cli=agent_lib::app::cli'
+& .\scripts\rewrite-crate-paths.ps1 -Map 'crate::config=crate::app::config','crate::cli=crate::app::cli','crate::state=crate::app::state','crate::commands=crate::app::commands','agent_lib::config=agent_lib::app::config','agent_lib::cli=agent_lib::app::cli'
 ```
 
 - [ ] **Step 4: 更新 `app/commands/mod.rs`**
