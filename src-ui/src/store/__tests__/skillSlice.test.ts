@@ -66,4 +66,41 @@ describe('skillSlice', () => {
     await store.getState().fetchContent('x', 'global');
     expect(store.getState().skillContent).toBe('# skill');
   });
+
+  it('rethrows install failures and clears busy', async () => {
+    vi.mocked(api.installSkills).mockRejectedValueOnce(new Error('install failed'));
+    const store = testStore();
+    await expect(
+      store.getState().installSkill({
+        source: 'o/r', skills: ['x'], agents: ['opencode'], scope: 'global', copy: false,
+      }),
+    ).rejects.toThrow('install failed');
+    expect(store.getState().busy).toBeNull();
+    expect(store.getState().skillError).toContain('install failed');
+  });
+
+  it('keeps a post-update refresh error visible', async () => {
+    vi.mocked(api.updateSkills).mockResolvedValueOnce('ok');
+    vi.mocked(api.listInstalledSkills).mockRejectedValueOnce(new Error('refresh failed'));
+    const store = testStore();
+    await store.getState().updateAll();
+    expect(store.getState().skillError).toContain('refresh failed');
+    expect(store.getState().busy).toBeNull();
+    expect(store.getState().installed).toHaveLength(0);
+  });
+
+  it('returns the import result and refreshes both lists', async () => {
+    vi.mocked(api.importLegacySkills).mockResolvedValueOnce({ imported: ['old'], failed: [] });
+    vi.mocked(api.detectLegacySkills).mockResolvedValueOnce([
+      { name: 'old', path: 'C:/skills/old', importable: true },
+    ]);
+    const store = testStore();
+    const result = await store.getState().importLegacy(['C:/skills/old'], ['opencode'], false);
+    expect(result).toEqual({ imported: ['old'], failed: [] });
+    expect(api.listInstalledSkills).toHaveBeenCalled();
+    expect(api.detectLegacySkills).toHaveBeenCalled();
+    expect(store.getState().installed).toHaveLength(1);
+    expect(store.getState().legacySkills).toHaveLength(1);
+    expect(store.getState().busy).toBeNull();
+  });
 });
