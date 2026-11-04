@@ -185,7 +185,7 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS intents (
                 id TEXT PRIMARY KEY,
-                domain_id TEXT NOT NULL,
+                domain_id TEXT NOT NULL REFERENCES intent_domains(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 examples TEXT NOT NULL DEFAULT '[]',
