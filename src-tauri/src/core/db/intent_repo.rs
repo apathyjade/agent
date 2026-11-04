@@ -269,17 +269,10 @@ impl Database {
             None => return Err(AppError::NotFound(format!("意图不存在: {}", i.id))),
         };
 
-        if current_enabled != 0 && !i.enabled {
-            let enabled_count: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
-                params![domain_id],
-                |row| row.get(0),
-            )?;
-            if enabled_count <= 1 {
-                return Err(AppError::InvalidInput(
-                    "不能停用领域内最后一个启用的意图".to_string(),
-                ));
-            }
+        if current_enabled != 0 && !i.enabled && self.count_enabled_intents(&domain_id)? <= 1 {
+            return Err(AppError::InvalidInput(
+                "不能停用领域内最后一个启用的意图".to_string(),
+            ));
         }
 
         let changed = self.conn.execute(
@@ -333,17 +326,10 @@ impl Database {
             None => return Err(AppError::NotFound(format!("意图不存在: {id}"))),
         };
 
-        if enabled != 0 {
-            let enabled_count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
-                params![domain_id],
-                |row| row.get(0),
-            )?;
-            if enabled_count <= 1 {
-                return Err(AppError::InvalidInput(
-                    "不能删除领域内最后一个启用的意图".to_string(),
-                ));
-            }
+        if enabled != 0 && self.count_enabled_intents(&domain_id)? <= 1 {
+            return Err(AppError::InvalidInput(
+                "不能删除领域内最后一个启用的意图".to_string(),
+            ));
         }
 
         tx.execute("DELETE FROM intents WHERE id = ?1", params![id])?;
@@ -351,38 +337,32 @@ impl Database {
         Ok(())
     }
 
-    /// Enables or disables an intent. Refuses to disable the last enabled intent of a domain.
-    pub fn set_intent_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    /// Enables or disables an intent, bumping `version` and `updated_at`.
+    /// Refuses to disable the last enabled intent of a domain.
+    pub fn set_intent_enabled(&self, id: &str, enabled: bool, updated_at: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
-        let row: Option<(String, i64)> = tx
+        let row: Option<(String, i64, i64)> = tx
             .query_row(
-                "SELECT domain_id, enabled FROM intents WHERE id = ?1",
+                "SELECT domain_id, enabled, version FROM intents WHERE id = ?1",
                 params![id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let (domain_id, current_enabled) = match row {
+        let (domain_id, current_enabled, old_version) = match row {
             Some(v) => v,
             None => return Err(AppError::NotFound(format!("意图不存在: {id}"))),
         };
 
-        if !enabled && current_enabled != 0 {
-            let enabled_count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
-                params![domain_id],
-                |row| row.get(0),
-            )?;
-            if enabled_count <= 1 {
-                return Err(AppError::InvalidInput(
-                    "不能删除领域内最后一个启用的意图".to_string(),
-                ));
-            }
+        if !enabled && current_enabled != 0 && self.count_enabled_intents(&domain_id)? <= 1 {
+            return Err(AppError::InvalidInput(
+                "不能停用领域内最后一个启用的意图".to_string(),
+            ));
         }
 
         tx.execute(
-            "UPDATE intents SET enabled = ?2 WHERE id = ?1",
-            params![id, enabled as i32],
+            "UPDATE intents SET enabled = ?2, version = ?3, updated_at = ?4 WHERE id = ?1",
+            params![id, enabled as i32, old_version + 1, updated_at],
         )?;
         tx.commit()?;
         Ok(())
@@ -569,15 +549,95 @@ mod tests {
     }
 
     #[test]
+    fn disable_succeeds_when_another_enabled_intent_remains() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
+            .unwrap();
+        db.insert_intent(&mk_intent("intent-a", "guard-domain", "意图甲"))
+            .unwrap();
+        db.insert_intent(&mk_intent("intent-b", "guard-domain", "意图乙"))
+            .unwrap();
+
+        db.set_intent_enabled("intent-a", false, TEST_TS).unwrap();
+
+        let stored = db.get_intent("intent-a").unwrap().unwrap();
+        assert!(!stored.enabled, "停用后库里必须确实变为停用");
+        assert_eq!(stored.version, 2, "set_intent_enabled 必须递增版本");
+        assert_eq!(stored.updated_at, TEST_TS);
+        assert_eq!(db.count_enabled_intents("guard-domain").unwrap(), 1);
+        assert_eq!(
+            db.list_enabled_intents("guard-domain")
+                .unwrap()
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["intent-b"]
+        );
+    }
+
+    #[test]
+    fn delete_succeeds_when_another_enabled_intent_remains() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
+            .unwrap();
+        db.insert_intent(&mk_intent("intent-a", "guard-domain", "意图甲"))
+            .unwrap();
+        db.insert_intent(&mk_intent("intent-b", "guard-domain", "意图乙"))
+            .unwrap();
+
+        db.delete_intent("intent-a").unwrap();
+
+        assert!(db.get_intent("intent-a").unwrap().is_none(), "被删除的行必须消失");
+        assert_eq!(db.count_enabled_intents("guard-domain").unwrap(), 1);
+    }
+
+    #[test]
+    fn list_enabled_intents_filters_and_orders() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("list-domain", "列表领域"))
+            .unwrap();
+
+        let mut first = mk_intent("intent-10", "list-domain", "意图十");
+        first.sort_order = 10;
+        let mut second = mk_intent("intent-20", "list-domain", "意图二十");
+        second.sort_order = 20;
+        second.enabled = false;
+        let mut third = mk_intent("intent-30", "list-domain", "意图三十");
+        third.sort_order = 30;
+
+        db.insert_intent(&first).unwrap();
+        db.insert_intent(&second).unwrap();
+        db.insert_intent(&third).unwrap();
+
+        let enabled = db.list_enabled_intents("list-domain").unwrap();
+        assert_eq!(enabled.len(), 2, "停用的意图必须被过滤掉");
+        assert_eq!(
+            enabled.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["intent-10", "intent-30"],
+            "启用意图必须按 sort_order 升序"
+        );
+
+        assert_eq!(
+            db.list_intents("list-domain")
+                .unwrap()
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["intent-10", "intent-20", "intent-30"],
+            "list_intents 必须按 sort_order 升序"
+        );
+    }
+
+    #[test]
     fn disabling_last_enabled_intent_is_rejected() {
         let db = Database::new_test().unwrap();
         db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
             .unwrap();
         insert_enabled_intent(&db, "only-intent", "guard-domain", true);
 
-        let err = db.set_intent_enabled("only-intent", false).unwrap_err();
+        let err = db.set_intent_enabled("only-intent", false, TEST_TS).unwrap_err();
         match err {
-            AppError::InvalidInput(msg) => assert_eq!(msg, "不能删除领域内最后一个启用的意图"),
+            AppError::InvalidInput(msg) => assert_eq!(msg, "不能停用领域内最后一个启用的意图"),
             other => panic!("expected InvalidInput, got {other:?}"),
         }
 
