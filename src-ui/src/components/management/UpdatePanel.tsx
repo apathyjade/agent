@@ -12,8 +12,16 @@ import {
 import { useStore } from '../../store';
 
 export function UpdatePanel() {
-  const { updates, busy, checkUpdates, updateAll, skillError, clearSkillError, scope, projectPath } =
-    useStore();
+  const {
+    updates,
+    busy,
+    checkSkillUpdates,
+    updateAll,
+    skillError,
+    clearSkillError,
+    scope,
+    projectPath,
+  } = useStore();
   const [rawOpen, setRawOpen] = useState(false);
 
   const isBusy = busy === 'update';
@@ -22,7 +30,7 @@ export function UpdatePanel() {
   const handleCheck = async () => {
     if (needsProject) return;
     clearSkillError();
-    await checkUpdates();
+    await checkSkillUpdates();
   };
 
   const handleUpdateAll = async () => {
@@ -32,7 +40,7 @@ export function UpdatePanel() {
     if (useStore.getState().skillError) {
       return;
     }
-    await checkUpdates();
+    await checkSkillUpdates();
   };
 
   if (needsProject) {

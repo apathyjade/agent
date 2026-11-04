@@ -21,6 +21,7 @@ vi.mock('../../api/tauri', () => ({
 
 import * as api from '../../api/tauri';
 import { createSkillSlice, type SkillSlice } from '../skillSlice';
+import { useStore } from '../index';
 
 function testStore() {
   return create<SkillSlice>()((...args) => createSkillSlice(...args));
@@ -54,12 +55,25 @@ describe('skillSlice', () => {
     expect(store.getState().skillError).toContain('boom');
   });
 
+  it('exposes checkSkillUpdates so the runtime checkUpdates cannot shadow it', async () => {
+    const slice = testStore();
+    expect('checkSkillUpdates' in slice.getState()).toBe(true);
+    expect('checkUpdates' in slice.getState()).toBe(false);
+
+    // The combined store must resolve to the skill action, not the runtime one.
+    vi.mocked(api.checkSkillUpdates).mockClear();
+    await useStore.getState().checkSkillUpdates();
+    expect(api.checkSkillUpdates).toHaveBeenCalled();
+  });
+
   it('switches scope and refetches installed skills when a project is selected', async () => {
     const store = testStore();
     await store.getState().setProjectPath('C:/work/app');
     vi.mocked(api.listInstalledSkills).mockClear();
+    store.setState({ updates: { has_updates: true, has_failures: false, output: 'stale' } });
     await store.getState().setScope('project');
     expect(store.getState().scope).toBe('project');
+    expect(store.getState().updates).toBeNull();
     expect(api.listInstalledSkills).toHaveBeenCalledWith('project', 'C:/work/app');
   });
 
@@ -67,7 +81,10 @@ describe('skillSlice', () => {
     const store = testStore();
     await store.getState().fetchInstalled();
     expect(store.getState().installed).toHaveLength(1);
-    store.setState({ skillError: 'stale error' });
+    store.setState({
+      skillError: 'stale error',
+      updates: { has_updates: true, has_failures: false, output: 'stale' },
+    });
     vi.mocked(api.listInstalledSkills).mockClear();
 
     await store.getState().setScope('project');
@@ -75,6 +92,7 @@ describe('skillSlice', () => {
     expect(store.getState().scope).toBe('project');
     expect(store.getState().installed).toEqual([]);
     expect(store.getState().skillError).toBeNull();
+    expect(store.getState().updates).toBeNull();
     expect(api.listInstalledSkills).not.toHaveBeenCalled();
   });
 

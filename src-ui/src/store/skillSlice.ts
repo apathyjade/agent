@@ -33,7 +33,7 @@ export interface SkillSlice {
   fetchContent: (name: string, scope: SkillScope) => Promise<void>;
   installSkill: (params: InstallSkillParams) => Promise<void>;
   removeSkill: (name: string) => Promise<void>;
-  checkUpdates: () => Promise<void>;
+  checkSkillUpdates: () => Promise<void>;
   updateAll: () => Promise<void>;
   fetchLegacy: () => Promise<void>;
   importLegacy: (paths: string[], agents: string[], copy: boolean) => Promise<LegacyImportResult>;
@@ -153,7 +153,7 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
       }
     },
 
-    checkUpdates: async () => {
+    checkSkillUpdates: async () => {
       set({ busy: 'update', skillError: null });
       try {
         const { scope, projectPath } = get();
@@ -228,7 +228,8 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
     },
 
     setScope: async (scope) => {
-      set({ scope });
+      // Update results belong to the previous scope; drop them on switch.
+      set({ scope, updates: null });
       // Project scope without a chosen directory is an empty state, not an
       // error: there is nothing to list yet and the backend would reject it.
       if (scope === 'project' && !get().projectPath) {
@@ -239,7 +240,7 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
     },
 
     setProjectPath: async (path) => {
-      set({ projectPath: path });
+      set({ projectPath: path, updates: null });
       if (!path) {
         set({ installed: [], skillError: null, skillLoading: false });
         return;

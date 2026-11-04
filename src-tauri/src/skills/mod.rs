@@ -195,7 +195,8 @@ impl SkillsService {
     ///
     /// The listing format is human-oriented and therefore not a stable
     /// interface: an unparseable or failed run returns an empty `skills` list
-    /// plus the raw output, so the UI can fall back to manual skill entry.
+    /// plus the raw output, and the UI falls back to installing the whole
+    /// repository.
     pub async fn preview_source(&self, source: &str) -> Result<RepoSkillPreview> {
         if !cli::is_valid_source(source) {
             return Err(AppError::SkillValidation(format!(
@@ -434,6 +435,7 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
         .any(|line| is_available_skills_header(strip_frame_glyphs(line).trim()));
 
     let mut rows: Vec<(usize, String)> = Vec::new();
+    let mut header_depth: Option<usize> = None;
     let mut started = !has_header;
 
     for line in lines {
@@ -442,14 +444,19 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
         if text.is_empty() {
             continue;
         }
+        let depth = stripped.chars().take_while(|c| *c == ' ').count();
         if is_available_skills_header(text) {
             started = true;
+            header_depth = Some(depth);
             continue;
         }
-        if !started || is_noise_line(text) {
+        if !started
+            || is_noise_line(text)
+            || is_rule_line(text)
+            || !text.chars().any(char::is_alphanumeric)
+        {
             continue;
         }
-        let depth = stripped.chars().take_while(|c| *c == ' ').count();
         rows.push((depth, text.to_string()));
     }
 
@@ -487,7 +494,13 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
             continue;
         }
 
-        // Anything else is a name without a description.
+        // A bare line at the header depth is leftover chrome, not a skill.
+        if header_depth.is_some_and(|header| *depth <= header) {
+            i += 1;
+            continue;
+        }
+
+        // Anything else at a skill depth is a name without a description.
         skills.push(RepoSkill {
             name: text.clone(),
             description: None,
@@ -513,9 +526,10 @@ fn split_inline_row(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// The explicit start-of-listing header.
+/// A start-of-listing header, including variants such as
+/// `Available Skills:` or `Available Skills (5)`.
 fn is_available_skills_header(text: &str) -> bool {
-    text.eq_ignore_ascii_case("Available Skills")
+    text.trim().to_lowercase().starts_with("available skills")
 }
 
 /// Header/progress lines that must never be mistaken for a skill.
@@ -526,6 +540,7 @@ fn is_noise_line(text: &str) -> bool {
         || (lower.starts_with("found ") && lower.contains("skill"))
         || [
             "source:",
+            "local path",
             "fetching",
             "selected",
             "installing",
@@ -535,6 +550,12 @@ fn is_noise_line(text: &str) -> bool {
         ]
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+}
+
+/// A pure border/rule line: only box-drawing characters, dashes or spaces.
+fn is_rule_line(text: &str) -> bool {
+    text.chars()
+        .all(|c| c.is_whitespace() || c == '-' || ('\u{2500}'..='\u{257F}').contains(&c))
 }
 
 /// Frame glyphs the CLI puts before every content line. `ℹ` prefixes the
@@ -1157,6 +1178,40 @@ Use --skill <name> to install specific skills
         assert!(skills
             .iter()
             .all(|skill| !skill.name.contains("Found 9 skills")));
+    }
+
+    #[test]
+    fn ignores_noise_before_header_and_border_lines() {
+        let raw = "\
+ℹ  Local path validated
+ℹ  Found 1 skill
+│  Available Skills
+│    find-skills
+│      Helps users discover and install agent skills
+│  Use --skill <name> to install specific skills
+";
+        let skills = parse_available_skills(raw);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "find-skills");
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("Helps users discover and install agent skills")
+        );
+    }
+
+    #[test]
+    fn skips_rule_and_symbol_only_lines() {
+        let raw = "
+  Available Skills
+  ──────────────
+  ●
+  alpha
+    First skill
+";
+        let skills = parse_available_skills(raw);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "alpha");
+        assert_eq!(skills[0].description.as_deref(), Some("First skill"));
     }
 
     #[test]
