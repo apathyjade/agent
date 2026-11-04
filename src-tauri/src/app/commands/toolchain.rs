@@ -6,7 +6,7 @@
 use tauri::{Emitter, State};
 
 use crate::core::error::Result;
-use crate::state::AppState;
+use crate::app::state::AppState;
 use crate::runtime::toolchain::manager_detector::{self, VersionManager};
 use crate::runtime::toolchain::registry::RuntimeVersion;
 use crate::runtime::toolchain::{

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::core::db::models::SystemPrompt;
 use crate::core::error::Result;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn create_system_prompt(

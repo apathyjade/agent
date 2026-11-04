@@ -1,9 +1,9 @@
 use tauri::State;
 
 use crate::llm::model::ModelConfig;
-use crate::commands::ModelInfo;
+use crate::app::commands::ModelInfo;
 use crate::core::error::{AppError, Result};
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn get_models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>> {

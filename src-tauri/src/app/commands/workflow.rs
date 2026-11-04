@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::core::error::Result;
 use crate::features::workflow::models::{StepProgress, WorkflowInfo, WorkflowRunRecord};
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn list_workflows(_state: State<'_, AppState>) -> Result<Vec<WorkflowInfo>> {

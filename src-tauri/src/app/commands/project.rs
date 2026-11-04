@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::core::db::models::{Project, Session as DbSession};
 use crate::core::error::Result;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {

@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::core::error::{AppError, Result};
-use crate::state::AppState;
+use crate::app::state::AppState;
 use crate::agent::tools::base::ToolInfo;
 
 #[tauri::command]

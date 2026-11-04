@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use crate::core::error::Result;
 use crate::agent::orchestrator::agent::OrchestrationEvent;
 use crate::agent::orchestrator::event_bridge::spawn_event_bridge;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 /// IPC command: invoke the OrchestratorAgent with a natural language goal.
 /// Routes the message through the hierarchical agent system for deep reasoning.
@@ -27,7 +27,7 @@ pub async fn orchestrate_message(
 
     // Emit done event
     let _ = app_handle.emit("orchestrator_done", &result);
-    let _ = app_handle.emit("stream_chunk", crate::commands::StreamChunk {
+    let _ = app_handle.emit("stream_chunk", crate::app::commands::StreamChunk {
         content: result.clone(),
         done: true,
         tool_calls: None,

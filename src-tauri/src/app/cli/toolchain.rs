@@ -10,7 +10,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tokio::sync::Mutex;
 
-use crate::config::AppConfig;
+use crate::app::config::AppConfig;
 use crate::core::db::repository::Database;
 use crate::core::error::Result;
 use crate::runtime::project_env::{service as project_service, ProjectRuntimeRequirement};

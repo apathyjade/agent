@@ -10,7 +10,7 @@ use crate::core::error::Result;
 use crate::runtime::project_env::{
     service as project_service, BoundProject, ProjectDetector, ProjectScanResult, SyncResult,
 };
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 /// Scan a project directory for runtime version requirements.
 #[tauri::command]

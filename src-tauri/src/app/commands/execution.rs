@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::orchestrator::runtime::ExecutionRuntime;
 use crate::agent::orchestrator::plan_types::*;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn execute_plan(

@@ -5,7 +5,7 @@ use tauri::State;
 use crate::core::error::{AppError, Result};
 use crate::features::mcp::config::{ConfirmationMode, McpServerConfig, StartupPolicy, ToolConfig};
 use crate::features::mcp::manager::{ConnectionInfo, ConnectionStats};
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn list_mcp_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionInfo>> {

@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::core::error::Result;
 use crate::features::memory::{CreateMemoryParams, MemoryInfo, UpdateMemoryParams};
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn create_memory(

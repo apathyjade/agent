@@ -7,7 +7,7 @@
 #[test]
 fn test_cli_compiles() {
     // Verify the CLI types exist and are constructible
-    use agent_lib::cli::toolchain::ToolchainAction;
+    use agent_lib::app::cli::toolchain::ToolchainAction;
     let _ls = ToolchainAction::Ls {
         runtime_type: None,
         remote: false,
@@ -21,7 +21,7 @@ fn test_cli_compiles() {
 
 #[test]
 fn test_toolchain_action_variants() {
-    use agent_lib::cli::toolchain::{ProjectAction, ToolchainAction};
+    use agent_lib::app::cli::toolchain::{ProjectAction, ToolchainAction};
 
     let use_action = ToolchainAction::Use {
         runtime_type: "bun".into(),
@@ -63,7 +63,7 @@ fn test_toolchain_action_variants() {
 
 #[test]
 fn test_cli_toolchain_command_and_runtime_alias() {
-    use agent_lib::cli::{Cli, Command};
+    use agent_lib::app::cli::{Cli, Command};
     use clap::Parser;
 
     let cli = Cli::try_parse_from(["agent", "toolchain", "ls"]).unwrap();

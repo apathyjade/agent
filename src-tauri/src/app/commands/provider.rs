@@ -5,7 +5,7 @@ use tauri::State;
 use crate::llm::model::{ModelConfig, ModelProvider};
 use crate::core::error::{AppError, Result};
 use crate::core::keychain;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderStatus {
@@ -32,7 +32,7 @@ pub async fn list_providers_cmd(state: State<'_, AppState>) -> Result<Vec<Provid
     let registered_ids = provider_registry.get_registered_model_ids();
     drop(provider_registry);
 
-    let providers = crate::commands::PROVIDER_OPTIONS.iter().map(|(id, name, base_url, default_model)| {
+    let providers = crate::app::commands::PROVIDER_OPTIONS.iter().map(|(id, name, base_url, default_model)| {
         let models: Vec<&ModelConfig> = config.models.iter()
             .filter(|m| m.provider.to_string() == *id)
             .collect();
@@ -46,7 +46,7 @@ pub async fn list_providers_cmd(state: State<'_, AppState>) -> Result<Vec<Provid
         let available_models: Vec<AvailableModel> = if models.is_empty() || !has_configured {
             // No actively-configured models for this provider;
             // show the full known model list from PROVIDER_MODELS so the user can pick.
-            crate::commands::PROVIDER_MODELS.iter()
+            crate::app::commands::PROVIDER_MODELS.iter()
                 .find(|(pid, _)| *pid == *id)
                 .map(|(_, model_ids)| model_ids.iter().map(|mid| AvailableModel {
                     id: mid.to_string(),

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::agent::fast_loop::ToolLoop;
 use rig::completion::Message;
-use crate::commands::{StreamChunk, ToolCallEvent};
+use crate::app::commands::{StreamChunk, ToolCallEvent};
 use crate::core::db::models::{Session as DbSession, Message as DbMessage};
 use crate::core::error::{AppError, Result};
 use crate::agent::orchestrator::planner::LlmPlanner;
@@ -12,7 +12,7 @@ use crate::agent::orchestrator::runtime::ExecutionRuntime;
 use crate::agent::orchestrator::plan_types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
 use crate::llm::intent::PathSelection;
 use crate::features::persona::PersonaResolution;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 /// Rebuild a persisted tool result as a Rig user message.
 ///

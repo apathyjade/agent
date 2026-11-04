@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use tauri::State;
 
 use crate::core::error::Result;
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 #[tauri::command]
 pub async fn update_settings(

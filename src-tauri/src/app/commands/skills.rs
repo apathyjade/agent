@@ -7,7 +7,7 @@ use crate::features::skills::legacy::{LegacyImportResult, LegacySkill};
 use crate::features::skills::list::InstalledSkill;
 use crate::features::skills::market::MarketSkill;
 use crate::features::skills::{InstallRequest, RepoSkillPreview, UpdateCheck};
-use crate::state::AppState;
+use crate::app::state::AppState;
 
 /// Scope used when the caller does not specify one.
 const DEFAULT_SCOPE: &str = "global";

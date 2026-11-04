@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-use crate::config::AppConfig;
+use crate::app::config::AppConfig;
 use crate::agent::critic::agent::CriticAgent;
 use crate::core::db::repository::Database;
 use crate::features::session::lifecycle::LifecycleManager;

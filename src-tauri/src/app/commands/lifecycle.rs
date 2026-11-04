@@ -1,6 +1,6 @@
 use tauri::State;
 use crate::core::error::Result;
-use crate::state::AppState;
+use crate::app::state::AppState;
 use crate::core::db::models::SessionSummary;
 use crate::features::session::lifecycle::config::LifecycleConfig;
 
