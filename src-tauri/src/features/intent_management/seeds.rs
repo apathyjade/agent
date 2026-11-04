@@ -396,6 +396,21 @@ mod tests {
         "闲聊对话",
     ];
 
+    const EXPECTED_DESCRIPTIONS: [&str; 12] = [
+        "要方案、拆解或步骤，且明确不是现在改代码。与 spec 的区别：产出是口头/对话形式的计划，不是可存档的文档。",
+        "要一份可存档的需求或技术文档。与 plan 的区别：成果是文档，要落盘。",
+        "明确要新增或修改代码行为。没有失败现象、也不是纯结构调整时选它。",
+        "有具体失败现象——报错、测试挂、行为不对——要先定位根因再修。与 implement 的区别：先有症状。",
+        "围绕测试本身：补用例、修用例、跑用例、看覆盖。改的是测试而不是被测代码时选它。",
+        "对已有改动或代码做质量判断，本身不改代码。要有对象——一个 diff、一个 PR、一段实现。",
+        "改结构不改外部行为。明确说了「行为不变」「整理结构」「去重」时选它。",
+        "要理解现有实现或报错的含义，不要改动。与 lookup 的区别：要的是「为什么」而不是「在哪」。",
+        "查事实：项目约定、文件位置、配置项、历史写法。要的是「在哪」「是什么」，不是「为什么」。",
+        "直接要跑命令、构建、装依赖、起服务。诉求是「执行」而不是「改代码」。",
+        "信息不足或指代不明，无法安全路由；正确反应是先反问，而不是猜着做。",
+        "寒暄、感谢、与项目无关的日常对话。不需要工具，也不应触发任何工程动作。",
+    ];
+
     const EXPECTED_WORKFLOWS: [&str; 12] = [
         "planning",
         "spec_generation",
@@ -428,25 +443,13 @@ mod tests {
         ("chat", "fast", false, 0.6, ""),
     ];
 
-    /// Creates and activates a minimal user domain, so the built-in one can be
-    /// deleted (deleting the active domain is rejected by the repo guard).
-    fn create_user_domain(db: &Database) {
+    /// Minimal enabled intent record with a caller-chosen id/domain.
+    fn mk_intent(id: &str, domain_id: &str) -> IntentRecord {
         let ts = Utc::now().to_rfc3339();
-        db.insert_intent_domain(&IntentDomainRecord {
-            id: "user-domain".to_string(),
-            name: "我的领域".to_string(),
-            description: String::new(),
-            is_active: false,
-            source: "user".to_string(),
-            version: 1,
-            created_at: ts.clone(),
-            updated_at: ts.clone(),
-        })
-        .unwrap();
-        db.insert_intent(&IntentRecord {
-            id: "user-intent".to_string(),
-            domain_id: "user-domain".to_string(),
-            name: "我的意图".to_string(),
+        IntentRecord {
+            id: id.to_string(),
+            domain_id: domain_id.to_string(),
+            name: id.to_string(),
             description: String::new(),
             examples: Vec::new(),
             workflow: "chat".to_string(),
@@ -465,8 +468,26 @@ mod tests {
             sort_order: 0,
             created_at: ts.clone(),
             updated_at: ts,
+        }
+    }
+
+    /// Creates and activates a minimal user domain, so the built-in one can be
+    /// deleted (deleting the active domain is rejected by the repo guard).
+    fn create_user_domain(db: &Database) {
+        let ts = Utc::now().to_rfc3339();
+        db.insert_intent_domain(&IntentDomainRecord {
+            id: "user-domain".to_string(),
+            name: "我的领域".to_string(),
+            description: String::new(),
+            is_active: false,
+            source: "user".to_string(),
+            version: 1,
+            created_at: ts.clone(),
+            updated_at: ts,
         })
         .unwrap();
+        db.insert_intent(&mk_intent("user-intent", "user-domain"))
+            .unwrap();
         db.set_active_intent_domain("user-domain").unwrap();
     }
 
@@ -479,29 +500,45 @@ mod tests {
         assert_eq!(db.count_intents(DOMAIN), 12);
     }
 
-    /// The atomic seed must roll back on failure, not merely return `Err`:
-    /// the second attempt cannot re-insert the domain, and the first seed's
-    /// data must be exactly as it was.
+    /// The atomic seed must roll back writes that already landed, not merely
+    /// return `Err`. Here the first intent insert hits a primary-key conflict
+    /// from an intent parked in another domain, i.e. the failure happens after
+    /// the built-in domain row was inserted — exactly the round-1 shape where
+    /// a partially seeded domain used to survive.
     #[test]
-    fn atomic_seed_rolls_back_on_second_attempt() {
+    fn atomic_seed_rolls_back_a_partially_applied_attempt() {
         let db = Database::new_test().unwrap();
-        let (domain, intents) = builtin_software_dev();
-        db.seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1")
+        create_user_domain(&db);
+        // Foreign keys are OFF, so this intent may live in the user domain
+        // while squatting on an id the built-in seed needs. Primary keys are
+        // global, so the seed's first intent insert must conflict.
+        db.insert_intent(&mk_intent("builtin.software_dev.plan", "user-domain"))
             .unwrap();
 
+        let (domain, intents) = builtin_software_dev();
         let err = db.seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1");
 
-        assert!(err.is_err(), "重复播种必须失败");
-        assert_eq!(db.list_intent_domains().unwrap().len(), 1);
-        assert_eq!(db.count_intents(DOMAIN), 12);
+        assert!(err.is_err(), "意图主键冲突必须让整个播种失败");
+        assert!(
+            db.get_intent_domain(DOMAIN).unwrap().is_none(),
+            "已写入的领域行必须被回滚"
+        );
+        assert_eq!(db.count_intents(DOMAIN), 0, "回滚后不得留下任何内置意图");
         assert_eq!(
             db.get_active_intent_domain().unwrap().map(|d| d.id),
-            Some(DOMAIN.to_string())
+            Some("user-domain".to_string()),
+            "用户领域必须仍然是活跃领域"
+        );
+        assert_eq!(db.count_intents("user-domain"), 2, "用户领域的数据不得被动到");
+        assert!(
+            db.get_setting(SEEDED_SETTING).unwrap().is_none(),
+            "失败的事务不得写入标记"
         );
     }
 
     /// A failed seed must not write the marker, otherwise a legitimate retry
-    /// would be suppressed forever.
+    /// would be suppressed forever. (This failure happens on the first write,
+    /// so it does not exercise rollback — see the test above for that.)
     #[test]
     fn failed_atomic_seed_leaves_no_marker() {
         let db = Database::new_test().unwrap();
@@ -629,6 +666,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             EXPECTED_WORKFLOWS.to_vec(),
             "workflow 必须按 §6.3 顺序逐一对应"
+        );
+        assert_eq!(
+            intents
+                .iter()
+                .map(|i| i.description.as_str())
+                .collect::<Vec<_>>(),
+            EXPECTED_DESCRIPTIONS.to_vec(),
+            "描述是分类提示词的来源，必须按 §6.3 顺序逐字对应"
         );
 
         for intent in &intents {
