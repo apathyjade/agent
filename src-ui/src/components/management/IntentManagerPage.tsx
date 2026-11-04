@@ -56,10 +56,18 @@ function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-async function copyToClipboard(text: string): Promise<void> {
+/** Order-insensitive comparison for values that are semantically a set. */
+function sameSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const values = new Set(a);
+  return b.every((value) => values.has(value));
+}
+
+/** Returns false only when the legacy execCommand fallback reports failure. */
+async function copyToClipboard(text: string): Promise<boolean> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
-    return;
+    return true;
   }
   const el = document.createElement('textarea');
   el.value = text;
@@ -67,8 +75,9 @@ async function copyToClipboard(text: string): Promise<void> {
   el.style.opacity = '0';
   document.body.appendChild(el);
   el.select();
-  document.execCommand('copy');
+  const ok = document.execCommand('copy');
   document.body.removeChild(el);
+  return ok;
 }
 
 // ── Field primitives ──
@@ -357,6 +366,16 @@ function IntentEditorDrawer({
     [siblings, editing?.id],
   );
 
+  // Keep tool names that came in through import even though the picker only
+  // labels the five built-in tools. Unknown values stay visible and removable.
+  const toolOptions = useMemo(() => {
+    const known = TOOL_OPTIONS.map((option) => ({ ...option }));
+    const extras = (editing?.allowed_tools ?? [])
+      .filter((value) => !TOOL_OPTIONS.some((option) => option.value === value))
+      .map((value) => ({ value, label: value }));
+    return [...known, ...extras];
+  }, [editing]);
+
   const toggleTool = (value: string) => {
     setSelectedTools((prev) =>
       prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value],
@@ -372,9 +391,9 @@ function IntentEditorDrawer({
       ? Math.min(1, Math.max(0, threshold))
       : 0.7;
     const examples = parseExamples(examplesText);
-    const allowedTools = TOOL_OPTIONS.map((option) => option.value).filter((value) =>
-      selectedTools.includes(value),
-    );
+    const allowedTools = toolOptions
+      .map((option) => option.value)
+      .filter((value) => selectedTools.includes(value));
 
     setSaving(true);
     setFormError('');
@@ -385,7 +404,7 @@ function IntentEditorDrawer({
         if (name.trim() !== editing.name) patch.name = name.trim();
         if (description !== editing.description) patch.description = description;
         if (!sameList(examples, editing.examples)) patch.examples = examples;
-        if (!sameList(allowedTools, editing.allowed_tools)) patch.allowed_tools = allowedTools;
+        if (!sameSet(allowedTools, editing.allowed_tools)) patch.allowed_tools = allowedTools;
         if (path !== editing.path) patch.path = path;
         if (normalizedThreshold !== editing.confidence_threshold) {
           patch.confidence_threshold = normalizedThreshold;
@@ -468,13 +487,19 @@ function IntentEditorDrawer({
 
         <div>
           <label className={labelClass}>名称 *</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
+          <input
+            value={name}
+            aria-label="名称"
+            onChange={(e) => setName(e.target.value)}
+            className={inputClass}
+          />
         </div>
 
         <div>
           <label className={labelClass}>描述</label>
           <textarea
             value={description}
+            aria-label="描述"
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
             placeholder="分类器的主要依据，写清与相邻意图的区别"
@@ -486,6 +511,7 @@ function IntentEditorDrawer({
           <label className={labelClass}>示例（每行一条）</label>
           <textarea
             value={examplesText}
+            aria-label="示例"
             onChange={(e) => setExamplesText(e.target.value)}
             rows={4}
             placeholder={'帮我做个登录页\n把这个需求拆一下'}
@@ -496,7 +522,7 @@ function IntentEditorDrawer({
         <div>
           <label className={labelClass}>工具白名单</label>
           <div className="grid grid-cols-2 gap-2">
-            {TOOL_OPTIONS.map((option) => {
+            {toolOptions.map((option) => {
               const checked = selectedTools.includes(option.value);
               return (
                 <label
@@ -510,10 +536,13 @@ function IntentEditorDrawer({
                   <input
                     type="checkbox"
                     checked={checked}
+                    aria-label={`工具 ${option.label}`}
                     onChange={() => toggleTool(option.value)}
                     className="rounded border-gray-300 dark:border-gray-600"
                   />
-                  <span className="text-xs text-gray-700 dark:text-gray-200">{option.label}</span>
+                  <span className="text-xs text-gray-700 dark:text-gray-200 truncate">
+                    {option.label}
+                  </span>
                   <code className="text-[10px] text-gray-400 dark:text-gray-500 ml-auto">
                     {option.value}
                   </code>
@@ -528,6 +557,7 @@ function IntentEditorDrawer({
             <label className={labelClass}>路径</label>
             <select
               value={path}
+              aria-label="路径"
               onChange={(e) => setPath(e.target.value)}
               className={inputClass}
             >
@@ -546,6 +576,7 @@ function IntentEditorDrawer({
               max={1}
               step={0.05}
               value={threshold}
+              aria-label="置信度阈值"
               onChange={(e) => setThreshold(Number(e.target.value))}
               className={inputClass}
             />
@@ -556,6 +587,7 @@ function IntentEditorDrawer({
           <label className={labelClass}>兜底意图</label>
           <select
             value={fallback}
+            aria-label="兜底意图"
             onChange={(e) => setFallback(e.target.value)}
             className={inputClass}
           >
@@ -575,6 +607,7 @@ function IntentEditorDrawer({
           <label className={labelClass}>系统提示词附录</label>
           <textarea
             value={appendix}
+            aria-label="系统提示词附录"
             onChange={(e) => setAppendix(e.target.value)}
             rows={3}
             placeholder="追加到该意图系统提示词末尾的内容"
@@ -731,6 +764,7 @@ export function IntentManagerPage() {
     if (!deleteTarget) return;
     const target = deleteTarget;
     setBusyId(target.id);
+    setError('');
     try {
       await api.deleteIntentDomain(target.id);
       setDeleteTarget(null);
@@ -762,7 +796,11 @@ export function IntentManagerPage() {
     if (!activeDomain) return;
     try {
       const json = await api.exportIntentDomain(activeDomain.id);
-      await copyToClipboard(json);
+      const copiedOk = await copyToClipboard(json);
+      if (!copiedOk) {
+        setError('已生成导出内容，但复制到剪贴板失败，请检查系统权限后重试。');
+        return;
+      }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
       setError('');

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 vi.mock('../../../api/intent', () => ({
@@ -124,5 +124,54 @@ describe('IntentManagerPage', () => {
     await user.click(screen.getByRole('button', { name: '确认删除' }));
 
     expect(await screen.findByText(/领域内仍有意图/)).toBeTruthy();
+  });
+
+  it('sends only the changed field when editing a description', async () => {
+    vi.mocked(api.listIntentDomains).mockResolvedValue([makeDomain()]);
+    vi.mocked(api.getActiveIntentDomain).mockResolvedValue(makeDomain());
+    vi.mocked(api.listIntents).mockResolvedValue([
+      makeIntent({
+        id: 'intent-1',
+        name: '规划方案',
+        description: '旧描述',
+        allowed_tools: ['file_system', 'custom_tool'],
+      }),
+    ]);
+    vi.mocked(api.updateIntent).mockResolvedValue(makeIntent());
+
+    const user = userEvent.setup();
+    render(<IntentManagerPage />);
+
+    await user.click(await screen.findByText('规划方案'));
+
+    // An imported tool name outside the built-in set must stay visible and checked.
+    const customTool = screen.getByLabelText('工具 custom_tool') as HTMLInputElement;
+    expect(customTool.checked).toBe(true);
+
+    const description = screen.getByLabelText('描述');
+    fireEvent.change(description, { target: { value: '只改描述' } });
+    await user.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(api.updateIntent).toHaveBeenCalledTimes(1));
+    expect(api.updateIntent).toHaveBeenCalledWith('intent-1', { description: '只改描述' });
+  });
+
+  it('surfaces an error when an intent delete is rejected', async () => {
+    vi.mocked(api.listIntentDomains).mockResolvedValue([makeDomain()]);
+    vi.mocked(api.getActiveIntentDomain).mockResolvedValue(makeDomain());
+    vi.mocked(api.listIntents).mockResolvedValue([
+      makeIntent({ id: 'intent-1', name: '规划方案', enabled: true }),
+    ]);
+    vi.mocked(api.deleteIntent).mockRejectedValue('不能删除领域内最后一个启用的意图');
+
+    const user = userEvent.setup();
+    render(<IntentManagerPage />);
+
+    await user.click(await screen.findByText('规划方案'));
+    await user.click(screen.getByRole('button', { name: '删除意图' }));
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+
+    expect(await screen.findByText(/最后一个启用的意图/)).toBeTruthy();
+    expect(api.deleteIntent).toHaveBeenCalledWith('intent-1');
   });
 });
