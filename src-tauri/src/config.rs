@@ -200,8 +200,8 @@ impl Default for AppConfig {
 
 impl AppConfig {
     /// Build the plain settings value consumed by the standalone toolchain.
-    pub fn runtime_options(&self) -> crate::toolchain::RuntimeOptions {
-        crate::toolchain::RuntimeOptions {
+    pub fn runtime_options(&self) -> crate::runtime::toolchain::RuntimeOptions {
+        crate::runtime::toolchain::RuntimeOptions {
             install_dir: self
                 .runtime_install_dir
                 .as_ref()

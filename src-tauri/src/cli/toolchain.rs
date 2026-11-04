@@ -13,9 +13,9 @@ use tokio::sync::Mutex;
 use crate::config::AppConfig;
 use crate::core::db::repository::Database;
 use crate::core::error::Result;
-use crate::project_env::{service as project_service, ProjectRuntimeRequirement};
-use crate::toolchain::RuntimeServices;
-use crate::toolchain::{RuntimeInfo, RuntimeSource, RuntimeType};
+use crate::runtime::project_env::{service as project_service, ProjectRuntimeRequirement};
+use crate::runtime::toolchain::RuntimeServices;
+use crate::runtime::toolchain::{RuntimeInfo, RuntimeSource, RuntimeType};
 
 #[derive(Debug, Subcommand)]
 pub enum ToolchainAction {
@@ -189,7 +189,7 @@ impl ToolchainContext {
                     Ok(versions) => {
                         println!("\n  {} 可用版本:", info.display_name);
                         for version in versions.iter().take(8) {
-                            let lifecycle = crate::toolchain::lifecycle::for_runtime(
+                            let lifecycle = crate::runtime::toolchain::lifecycle::for_runtime(
                                 &info.runtime_type,
                                 &version.version,
                                 version.lts.as_deref(),
@@ -349,7 +349,7 @@ impl ToolchainContext {
             return Ok(());
         }
         for update in &updates {
-            let lifecycle = crate::toolchain::lifecycle::for_runtime(
+            let lifecycle = crate::runtime::toolchain::lifecycle::for_runtime(
                 &update.runtime_type,
                 &update.current_version,
                 None,

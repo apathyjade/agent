@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::core::db::models::BoundProjectModel;
 use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
-use crate::toolchain::RuntimeServices;
+use crate::runtime::toolchain::RuntimeServices;
 
 use super::detector::{
     BoundProject, ProjectDetector, ProjectRuntimeRequirement, SyncAction, SyncResult,

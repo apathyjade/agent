@@ -7,9 +7,9 @@ use tauri::{Emitter, State};
 
 use crate::core::error::Result;
 use crate::state::AppState;
-use crate::toolchain::manager_detector::{self, VersionManager};
-use crate::toolchain::registry::RuntimeVersion;
-use crate::toolchain::{
+use crate::runtime::toolchain::manager_detector::{self, VersionManager};
+use crate::runtime::toolchain::registry::RuntimeVersion;
+use crate::runtime::toolchain::{
     DiskUsageItem, InstallProgress, InstalledVersion, PathConflict, RuntimeDetector, RuntimeInfo,
     RuntimeType, VersionUpdate,
 };

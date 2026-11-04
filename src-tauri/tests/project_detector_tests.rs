@@ -2,8 +2,8 @@
 
 #![allow(clippy::disallowed_methods)]
 
-use agent_lib::project_env::ProjectDetector;
-use agent_lib::toolchain::RuntimeType;
+use agent_lib::runtime::project_env::ProjectDetector;
+use agent_lib::runtime::toolchain::RuntimeType;
 
 fn create_temp_dir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("Failed to create temp dir");

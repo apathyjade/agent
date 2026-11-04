@@ -5,8 +5,8 @@ use std::sync::Arc;
 use semver::{Version, VersionReq};
 
 use crate::core::error::{AppError, Result};
-use crate::toolchain::registry::RuntimeRegistry;
-use crate::toolchain::RuntimeType;
+use crate::runtime::toolchain::registry::RuntimeRegistry;
+use crate::runtime::toolchain::RuntimeType;
 
 /// Resolves version specifications (e.g. "20", ">=18", "lts", "stable") to exact versions.
 pub struct VersionResolver {
@@ -98,7 +98,7 @@ impl VersionResolver {
 
         // Handle semver ranges: ">=18", "20.x", "^20.0.0", ">=18 <19", etc.
         if let Ok(req) = VersionReq::parse(spec) {
-            let matching: Vec<&crate::toolchain::registry::RuntimeVersion> = versions
+            let matching: Vec<&crate::runtime::toolchain::registry::RuntimeVersion> = versions
                 .iter()
                 .filter(|v| {
                     Version::parse(&v.version)

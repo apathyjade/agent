@@ -192,7 +192,7 @@ impl RuntimeManager {
         manifest
             .versions
             .entry(version.to_string())
-            .or_insert_with(|| crate::toolchain::manifest::VersionInfo {
+            .or_insert_with(|| crate::runtime::toolchain::manifest::VersionInfo {
                 path: version.to_string(),
                 installed_at: Utc::now().to_rfc3339(),
             });

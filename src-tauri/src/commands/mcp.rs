@@ -23,7 +23,7 @@ pub async fn add_mcp_server(
     // Validate runtime if provided
     if let Some(ref rt_str) = runtime {
         if !rt_str.is_empty() && rt_str != "auto" {
-            if let Ok(rt) = rt_str.parse::<crate::toolchain::RuntimeType>() {
+            if let Ok(rt) = rt_str.parse::<crate::runtime::toolchain::RuntimeType>() {
                 if let Err(msg) = state.toolchain.manager.validate_runtime(&rt).await {
                     return Err(crate::core::error::AppError::InvalidInput(msg));
                 }

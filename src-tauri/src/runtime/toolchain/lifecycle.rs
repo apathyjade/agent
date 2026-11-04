@@ -6,7 +6,7 @@
 // Public API functions are used by the frontend via IPC.
 #![allow(dead_code)]
 
-use crate::toolchain::RuntimeType;
+use crate::runtime::toolchain::RuntimeType;
 
 /// Lifecycle stage of a runtime version.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]

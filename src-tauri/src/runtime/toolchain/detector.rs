@@ -6,7 +6,7 @@
 
 use std::process::Stdio;
 
-use crate::toolchain::{FoundExecutable, PathConflict, RuntimeInfo, RuntimeSource, RuntimeType};
+use crate::runtime::toolchain::{FoundExecutable, PathConflict, RuntimeInfo, RuntimeSource, RuntimeType};
 
 pub struct RuntimeDetector;
 

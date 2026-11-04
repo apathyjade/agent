@@ -2,7 +2,7 @@
 //
 // App-specific layer. It scans project files for runtime requirements and
 // persists bindings in the application database. The underlying toolchain
-// engine lives in `crate::toolchain`.
+// engine lives in `crate::runtime::toolchain`.
 
 pub mod detector;
 pub mod service;

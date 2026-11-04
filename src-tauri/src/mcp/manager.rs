@@ -21,7 +21,7 @@ use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 
 use crate::core::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, ConnectionStatus, McpServerConfig};
-use crate::toolchain::RuntimeManager;
+use crate::runtime::toolchain::RuntimeManager;
 use crate::tools::registry::ToolRegistry;
 
 // ── Public types ──
@@ -144,7 +144,7 @@ impl McpServerManager {
 
         // 1b. Validate runtime before spawning
         if let Some(rm) = &self.runtime_manager {
-            let inferred = crate::toolchain::RuntimeType::infer_from_command(&config.command);
+            let inferred = crate::runtime::toolchain::RuntimeType::infer_from_command(&config.command);
             if let Some(rt) = inferred {
                 if let Err(msg) = rm.validate_runtime(&rt).await {
                     let err_msg = format!(

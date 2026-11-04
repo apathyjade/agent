@@ -2,12 +2,12 @@
 //
 // These commands are app-specific: they bind project directories and persist
 // requirements in the application database. The toolchain engine itself lives
-// in `crate::toolchain`.
+// in `crate::runtime::toolchain`.
 
 use tauri::State;
 
 use crate::core::error::Result;
-use crate::project_env::{
+use crate::runtime::project_env::{
     service as project_service, BoundProject, ProjectDetector, ProjectScanResult, SyncResult,
 };
 use crate::state::AppState;

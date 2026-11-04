@@ -16,7 +16,7 @@ use crate::orchestrator::dispatcher::Dispatcher;
 use crate::orchestrator::plan_types::ExecutionHandle;
 use crate::persona::PersonaManager;
 use crate::skills::SkillsService;
-use crate::toolchain::RuntimeServices;
+use crate::runtime::toolchain::RuntimeServices;
 use crate::tools::registry::ToolRegistry;
 use crate::workers::code_editor::CodeEditorWorker;
 use crate::workers::code_explorer::CodeExplorerWorker;

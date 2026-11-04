@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 
 use crate::core::error::Result;
-use crate::toolchain::registry::{RuntimeVersion, VersionSource};
-use crate::toolchain::RuntimeType;
+use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::runtime::toolchain::RuntimeType;
 
 pub struct RubyVersionSource;
 

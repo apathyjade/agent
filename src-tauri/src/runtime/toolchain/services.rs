@@ -42,7 +42,7 @@ impl RuntimeServices {
     /// Build the toolchain stack from plain options.
     pub fn new(options: RuntimeOptions) -> Result<Self> {
         let install_dir = resolve_install_dir(options.install_dir.as_deref());
-        crate::toolchain::http_client::init_http_client(options.download_proxy.as_deref());
+        crate::runtime::toolchain::http_client::init_http_client(options.download_proxy.as_deref());
 
         let registry = Arc::new(RuntimeRegistry::new());
         let resolver = Arc::new(VersionResolver::new(registry.clone()));

@@ -2,9 +2,9 @@
 
 #![allow(clippy::disallowed_methods)]
 
-use agent_lib::toolchain::lifecycle;
-use agent_lib::toolchain::lifecycle::VersionLifecycle;
-use agent_lib::toolchain::RuntimeType;
+use agent_lib::runtime::toolchain::lifecycle;
+use agent_lib::runtime::toolchain::lifecycle::VersionLifecycle;
+use agent_lib::runtime::toolchain::RuntimeType;
 
 // ── Node.js Lifecycle Tests ──
 
@@ -298,8 +298,8 @@ fn test_runtime_type_all_contains_new() {
 
 #[test]
 fn test_bun_version_source_fallback() {
-    use agent_lib::toolchain::registry::VersionSource;
-    use agent_lib::toolchain::sources::bun::BunVersionSource;
+    use agent_lib::runtime::toolchain::registry::VersionSource;
+    use agent_lib::runtime::toolchain::sources::bun::BunVersionSource;
 
     // We can't easily test fetch_versions (needs network), but we can test the
     // fallback logic by checking that the source compiles and is constructible.
@@ -309,8 +309,8 @@ fn test_bun_version_source_fallback() {
 
 #[test]
 fn test_ruby_version_source_curated() {
-    use agent_lib::toolchain::registry::VersionSource;
-    use agent_lib::toolchain::sources::ruby::RubyVersionSource;
+    use agent_lib::runtime::toolchain::registry::VersionSource;
+    use agent_lib::runtime::toolchain::sources::ruby::RubyVersionSource;
 
     let source = RubyVersionSource;
     assert_eq!(source.runtime_type(), RuntimeType::Ruby);
@@ -321,8 +321,8 @@ fn test_ruby_version_source_curated() {
 #[test]
 fn test_init_http_client_no_proxy() {
     // Should not panic
-    agent_lib::toolchain::http_client::init_http_client(None);
-    let client = agent_lib::toolchain::http_client::get_http_client();
+    agent_lib::runtime::toolchain::http_client::init_http_client(None);
+    let client = agent_lib::runtime::toolchain::http_client::get_http_client();
     // Just verify it returns a client
     let _ = client;
 }

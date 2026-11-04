@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::toolchain::RuntimeType;
+use crate::runtime::toolchain::RuntimeType;
 
 /// Manages named version aliases (e.g. "default" → "20.18.3").
 /// Primarily manages per-runtime default version.

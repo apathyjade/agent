@@ -10,8 +10,8 @@ use chrono::Utc;
 use futures::StreamExt;
 
 use crate::core::error::Result;
-use crate::toolchain::RuntimeType::*;
-use crate::toolchain::{
+use crate::runtime::toolchain::RuntimeType::*;
+use crate::runtime::toolchain::{
     read_manifest, write_manifest, AvailableVersion, InstallProgress, RuntimeInfo, RuntimeManifest,
     RuntimeSource, RuntimeType,
 };
@@ -155,7 +155,7 @@ impl RuntimeInstaller {
         manifest.active_version = Some(dl_info.version.clone());
         manifest.versions.insert(
             dl_info.version.clone(),
-            crate::toolchain::manifest::VersionInfo {
+            crate::runtime::toolchain::manifest::VersionInfo {
                 path: dl_info.version.clone(),
                 installed_at: Utc::now().to_rfc3339(),
             },
@@ -881,7 +881,7 @@ async fn download_file<F: Fn(InstallProgress) + Send + 'static>(
     on_progress: &F,
     rt: RuntimeType,
 ) -> Result<Vec<u8>> {
-    let response = crate::toolchain::http_client::get_http_client()
+    let response = crate::runtime::toolchain::http_client::get_http_client()
         .get(url)
         .send()
         .await
