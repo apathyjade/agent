@@ -19,8 +19,9 @@ pub use list::InstalledSkill;
 
 /// Lifetime of a successful environment probe.
 const ENV_CACHE_TTL: Duration = Duration::from_secs(300);
-/// Timeout for read-only CLI invocations.
-const CLI_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Timeout for read-only CLI invocations. Generous because the first `npx`
+/// call may need to populate a cold cache.
+const CLI_LIST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Timeout for a `add --list` preview (may warm a cold npx cache).
 const CLI_PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
 /// Timeout for install and update operations.
@@ -387,60 +388,122 @@ pub fn build_remove_args(name: &str, scope: &str) -> Result<Vec<String>> {
 }
 
 /// Build `check` arguments.
+///
+/// Project scope passes `-p` explicitly: without it the CLI auto-detects the
+/// scope and silently falls back to global skills when the project has none.
 pub fn build_check_args(scope: &str) -> Result<Vec<String>> {
     let scope = normalize_scope(scope)?;
     let mut args = vec!["check".to_string()];
-    if scope == "global" {
-        args.push("-g".to_string());
+    match scope {
+        "global" => args.push("-g".to_string()),
+        _ => args.push("-p".to_string()),
     }
     Ok(args)
 }
 
-/// Build `update` arguments.
+/// Build `update` arguments. Project scope passes `-p` for the same reason as
+/// [`build_check_args`].
 pub fn build_update_args(scope: &str) -> Result<Vec<String>> {
     let scope = normalize_scope(scope)?;
     let mut args = vec!["update".to_string(), "-y".to_string()];
-    if scope == "global" {
-        args.push("-g".to_string());
+    match scope {
+        "global" => args.push("-g".to_string()),
+        _ => args.push("-p".to_string()),
     }
     Ok(args)
 }
 
 /// Parse the indented skill listing printed by `skills add <source> --list`.
 ///
-/// A two-space-indented line is a skill name; the next deeper-indented line is
-/// its description. Parsing stops at the `Use --skill` hint that closes the
-/// listing. Unknown lines are ignored, so format drift degrades to fewer
-/// entries rather than an error.
+/// The real CLI frames every line with a glyph (`│`, `└`, `├`, `◇`, `●`, `•`)
+/// and indents the content behind it, while older/synthetic fixtures use plain
+/// two-space indentation. Both shapes are handled the same way: strip leading
+/// frame glyphs, then use the remaining leading spaces as the line's depth.
+///
+/// A line followed by a deeper line is a skill name; the deeper line (or a run
+/// of deeper lines, joined with spaces) is its description. Parsing stops at
+/// the `Use --skill` hint that closes the listing. Unknown lines are ignored,
+/// so format drift degrades to fewer entries rather than an error.
 pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
     let clean = strip_ansi(stdout);
-    let mut skills: Vec<RepoSkill> = Vec::new();
 
+    // (depth, text) for every non-empty line before the closing hint.
+    let mut rows: Vec<(usize, String)> = Vec::new();
     for line in clean.lines() {
         if line.contains("Use --skill") {
             break;
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let stripped = strip_frame_glyphs(line);
+        let text = stripped.trim();
+        if text.is_empty() {
             continue;
         }
+        let depth = stripped.chars().take_while(|c| *c == ' ').count();
+        rows.push((depth, text.to_string()));
+    }
 
-        let indent = line.chars().take_while(|c| *c == ' ').count();
-        if indent == 2 {
+    let mut skills: Vec<RepoSkill> = Vec::new();
+    let mut name_depth: Option<usize> = None;
+    let mut i = 0;
+
+    while i < rows.len() {
+        let (depth, text) = &rows[i];
+        let next_is_deeper = rows.get(i + 1).is_some_and(|(next, _)| next > depth);
+
+        if next_is_deeper {
+            let mut parts: Vec<String> = Vec::new();
+            let mut j = i + 1;
+            while j < rows.len() && rows[j].0 > *depth {
+                parts.push(rows[j].1.clone());
+                j += 1;
+            }
             skills.push(RepoSkill {
-                name: trimmed.to_string(),
+                name: text.clone(),
+                description: if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join(" "))
+                },
+            });
+            name_depth = Some(*depth);
+            i = j;
+        } else if name_depth == Some(*depth) {
+            // A name at the established depth with no description.
+            skills.push(RepoSkill {
+                name: text.clone(),
                 description: None,
             });
-        } else if indent > 2 {
-            if let Some(last) = skills.last_mut() {
-                if last.description.is_none() {
-                    last.description = Some(trimmed.to_string());
-                }
-            }
+            i += 1;
+        } else {
+            i += 1;
         }
     }
 
     skills
+}
+
+/// Frame glyphs the CLI puts before every content line.
+fn is_frame_glyph(c: char) -> bool {
+    matches!(c, '│' | '└' | '├' | '◇' | '●' | '•')
+}
+
+/// Drop leading frame glyphs from a line while preserving the content
+/// indentation behind them.
+///
+/// Spaces before a glyph are consumed with it; when no glyph follows, the
+/// original leading spaces are kept so plain-indented fixtures still carry a
+/// measurable depth.
+fn strip_frame_glyphs(line: &str) -> &str {
+    let mut rest = line;
+    loop {
+        let trimmed = rest.trim_start_matches(' ');
+        match trimmed.chars().next() {
+            Some(c) if is_frame_glyph(c) => {
+                rest = &trimmed[c.len_utf8()..];
+            }
+            _ => return rest,
+        }
+    }
 }
 
 /// Classify a `skills check` result as `(has_updates, has_failures)`.
@@ -954,11 +1017,52 @@ mod mutation_tests {
             build_remove_args("x", "global").unwrap(),
             vec!["remove", "x", "-y", "-g"]
         );
-        assert_eq!(build_check_args("project").unwrap(), vec!["check"]);
+        assert_eq!(build_check_args("global").unwrap(), vec!["check", "-g"]);
+        assert_eq!(build_check_args("project").unwrap(), vec!["check", "-p"]);
         assert_eq!(
             build_update_args("global").unwrap(),
             vec!["update", "-y", "-g"]
         );
+        assert_eq!(
+            build_update_args("project").unwrap(),
+            vec!["update", "-y", "-p"]
+        );
+    }
+
+    #[test]
+    fn parses_framed_cli_output() {
+        let raw = "\
+│    alpha
+│      First skill
+│    beta
+│      Second skill
+
+  Use --skill <name> to install specific skills
+";
+        let skills = parse_available_skills(raw);
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "alpha");
+        assert_eq!(skills[0].description.as_deref(), Some("First skill"));
+        assert_eq!(skills[1].name, "beta");
+        assert_eq!(skills[1].description.as_deref(), Some("Second skill"));
+    }
+
+    #[test]
+    fn joins_wrapped_descriptions() {
+        let raw = "
+  wrapped
+    First line of the description
+    second line of the description
+  plain
+";
+        let skills = parse_available_skills(raw);
+        assert_eq!(skills.len(), 2);
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("First line of the description second line of the description")
+        );
+        assert_eq!(skills[1].name, "plain");
+        assert!(skills[1].description.is_none());
     }
 
     #[test]

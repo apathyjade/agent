@@ -54,11 +54,28 @@ describe('skillSlice', () => {
     expect(store.getState().skillError).toContain('boom');
   });
 
-  it('switches scope and refetches installed skills', async () => {
+  it('switches scope and refetches installed skills when a project is selected', async () => {
     const store = testStore();
+    await store.getState().setProjectPath('C:/work/app');
+    vi.mocked(api.listInstalledSkills).mockClear();
     await store.getState().setScope('project');
     expect(store.getState().scope).toBe('project');
-    expect(api.listInstalledSkills).toHaveBeenCalledWith('project', null);
+    expect(api.listInstalledSkills).toHaveBeenCalledWith('project', 'C:/work/app');
+  });
+
+  it('treats project scope without a project path as an empty state', async () => {
+    const store = testStore();
+    await store.getState().fetchInstalled();
+    expect(store.getState().installed).toHaveLength(1);
+    store.setState({ skillError: 'stale error' });
+    vi.mocked(api.listInstalledSkills).mockClear();
+
+    await store.getState().setScope('project');
+
+    expect(store.getState().scope).toBe('project');
+    expect(store.getState().installed).toEqual([]);
+    expect(store.getState().skillError).toBeNull();
+    expect(api.listInstalledSkills).not.toHaveBeenCalled();
   });
 
   it('loads skill content', async () => {
@@ -77,6 +94,19 @@ describe('skillSlice', () => {
     ).rejects.toThrow('install failed');
     expect(store.getState().busy).toBeNull();
     expect(store.getState().skillError).toContain('install failed');
+  });
+
+  it('re-lists after a failed install so a partial install stays visible', async () => {
+    vi.mocked(api.installSkills).mockRejectedValueOnce(new Error('install failed'));
+    const store = testStore();
+    await expect(
+      store.getState().installSkill({
+        source: 'o/r', skills: ['x'], agents: ['opencode'], scope: 'global', copy: false,
+      }),
+    ).rejects.toThrow('install failed');
+    expect(api.listInstalledSkills).toHaveBeenCalled();
+    expect(store.getState().skillError).toContain('install failed');
+    expect(store.getState().installed).toHaveLength(1);
   });
 
   it('keeps a post-update refresh error visible', async () => {

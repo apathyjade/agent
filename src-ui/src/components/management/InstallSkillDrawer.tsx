@@ -228,8 +228,8 @@ export function InstallSkillDrawer({ open, onClose, initialSource }: InstallSkil
               )}
             </div>
             {preview.skills.length === 0 ? (
-              <div className="p-3 bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg text-xs text-gray-500 dark:text-gray-400">
-                未解析到具体技能，将安装整个仓库。
+              <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-400">
+                未能解析出技能列表。继续安装将包含该仓库中的全部技能。
               </div>
             ) : (
               <div className="space-y-1.5 max-h-56 overflow-y-auto">

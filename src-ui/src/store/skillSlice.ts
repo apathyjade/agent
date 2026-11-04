@@ -128,6 +128,10 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
         await api.installSkills({ ...params, projectPath: params.projectPath ?? get().projectPath });
         await get().fetchInstalled();
       } catch (err) {
+        // A failed or timed-out install may still have written a partial
+        // result. Re-list so the real on-disk state is visible and can be
+        // removed, then surface the original error (the refresh has its own).
+        await refreshInstalled();
         set({ skillError: String(err) });
         throw err;
       } finally {
@@ -225,11 +229,21 @@ export const createSkillSlice: StateCreator<SkillSlice, [], [], SkillSlice> = (s
 
     setScope: async (scope) => {
       set({ scope });
+      // Project scope without a chosen directory is an empty state, not an
+      // error: there is nothing to list yet and the backend would reject it.
+      if (scope === 'project' && !get().projectPath) {
+        set({ installed: [], skillError: null, skillLoading: false });
+        return;
+      }
       await get().fetchInstalled();
     },
 
     setProjectPath: async (path) => {
       set({ projectPath: path });
+      if (!path) {
+        set({ installed: [], skillError: null, skillLoading: false });
+        return;
+      }
       await get().fetchInstalled();
     },
 

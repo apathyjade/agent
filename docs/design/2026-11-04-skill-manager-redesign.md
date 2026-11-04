@@ -229,8 +229,8 @@ pub struct UpdateCheck {
 | 安装该仓库全部技能 | `skills add <source> -s '*' -a <已选代理...> -y [-g] [--copy]` |
 | 安装到所有代理（危险） | `skills add <source> --all`，仅作为独立二次确认操作 |
 | 卸载 | `skills remove <name...> -y [-g]`（不传 `-a`，移除该技能在所有代理中的链接） |
-| 检查更新 | `skills check [-g]`；退出码 1 且输出含 `update` → `has_updates`，否则退出码非 0 → `has_failures` |
-| 更新 | `skills update -y [-g] [-p]` |
+| 检查更新 | `skills check [-g|-p]`；退出码 1 且输出含 `update` → `has_updates`，否则退出码非 0 → `has_failures` |
+| 更新 | `skills update -y [-g|-p]` |
 
 安装参数约束：
 
@@ -398,6 +398,9 @@ search_market_skills(query, limit) -> Vec<MarketSkill>
 - 安装失败不回滚，改为重新查询清单并如实展示。
 - 遥测默认关闭（`DISABLE_TELEMETRY=1` / `DO_NOT_TRACK=1`）。
 - 旧数据只检测与提示导入，不删除源目录；仅含 `skill.yaml` 的目录标注为不兼容。
+- **「安装到所有代理」本次不实现（接受的设计偏差）**：`-a universal` 已覆盖直接读取 `.agents/skills` 的常见代理，能覆盖绝大多数场景；一次性写入所有代理既无法预览影响面，又会成为破坏性默认操作。需要时由用户在安装抽屉中逐项勾选目标代理。设计表中该行保留为未来独立二次确认操作的占位。
+- **预览解析失败时整仓安装（接受的设计偏差）**：`skills add <source> --list` 的输出不是稳定接口。解析不出任何技能时，安装抽屉明确提示「将包含该仓库中的全部技能」，并以 `-s '*'` 安装到已选代理；不提供手动输入技能名的入口（留待后续版本），也不静默阻断安装。
+- `check` / `update` 在项目范围显式传 `-p`：CLI 的自动探测在项目无技能时会回退到全局，项目范围必须固定作用域。
 
 ## 11. 留给实施者的决定
 
