@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::config::ModelConfig;
+use crate::llm::model::ModelConfig;
 use crate::commands::ModelInfo;
 use crate::core::error::{AppError, Result};
 use crate::state::AppState;

@@ -1,5 +1,5 @@
-use crate::intent::classifier::LlmClassifier;
-use crate::intent::{IntentConfig, IntentResult, IntentRouterConfig};
+use crate::llm::intent::classifier::LlmClassifier;
+use crate::llm::intent::{IntentConfig, IntentResult, IntentRouterConfig};
 
 /// The intent router: uses LLM to classify user messages and resolves intent configs.
 pub struct IntentRouter {
@@ -109,7 +109,7 @@ impl IntentRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::IntentRouterConfig;
+    use crate::llm::intent::IntentRouterConfig;
 
     fn make_config(enabled: bool) -> IntentRouterConfig {
         IntentRouterConfig {

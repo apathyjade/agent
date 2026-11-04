@@ -487,7 +487,7 @@ mod tests {
     async fn test_orchestrator_empty_graph() {
         let dispatcher = Dispatcher::new();
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(&crate::config::AppConfig::default()),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let critic = Arc::new(CriticAgent::new(providers));
         let orchestrator = OrchestratorAgent::new(dispatcher, critic);
@@ -506,7 +506,7 @@ mod tests {
         let mut dispatcher = Dispatcher::new();
         dispatcher.register(Box::new(MockWorker(WorkerKind::Thinker)));
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(&crate::config::AppConfig::default()),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let critic = Arc::new(CriticAgent::new(providers));
         let orchestrator = OrchestratorAgent::new(dispatcher, critic);

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
+use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
@@ -279,9 +279,7 @@ mod tests {
     #[test]
     fn test_code_editor_kind() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let worker = CodeEditorWorker::new(providers);
         assert_eq!(worker.kind(), WorkerKind::CodeEditor);

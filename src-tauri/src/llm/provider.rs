@@ -6,8 +6,8 @@ use futures::stream::BoxStream;
 use rig::agent::StreamingResult;
 use rig::completion::Message;
 use rig::tool::DynamicTool;
-use crate::config::AppConfig;
 use crate::core::error::{AppError, Result};
+use crate::llm::model::ModelConfig;
 
 use super::rig::create_rig_provider;
 
@@ -89,10 +89,10 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
-    pub fn new(config: &AppConfig) -> Self {
+    pub fn new(models: &[ModelConfig]) -> Self {
         let mut providers = HashMap::new();
 
-        for model in &config.models {
+        for model in models {
             if !model.enabled {
                 continue;
             }
@@ -111,7 +111,7 @@ impl ProviderRegistry {
             }
         }
 
-        let default_id = config.get_default_model().map(|m| m.id.clone());
+        let default_id = crate::llm::model::default_model(models).map(|m| m.id.clone());
 
         Self {
             providers,
@@ -148,7 +148,7 @@ impl ProviderRegistry {
         self.providers.keys().cloned().collect()
     }
 
-    pub fn add_model(&mut self, model: crate::config::ModelConfig) {
+    pub fn add_model(&mut self, model: ModelConfig) {
         if !model.enabled {
             return;
         }

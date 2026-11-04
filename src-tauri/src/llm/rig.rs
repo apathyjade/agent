@@ -42,9 +42,9 @@ use rig::operation::Completion;
 use rig::streaming::{Item, StreamEvent};
 use rig::tool::DynamicTool;
 
-use crate::api::provider::ProviderBox;
-use crate::config::{ModelConfig, ModelProvider};
 use crate::core::error::{AppError, Result};
+use crate::llm::model::{ModelConfig, ModelProvider};
+use crate::llm::provider::ProviderBox;
 
 // ---------------------------------------------------------------------------
 // RigProvider — wrapper around a Rig completion model
@@ -54,7 +54,7 @@ use crate::core::error::{AppError, Result};
 ///
 /// The model is type-erased once, when the config is loaded, so providers of
 /// different backends (OpenAI, Anthropic, …) share one repr and can be stored
-/// in the [`ProviderRegistry`](crate::api::provider::ProviderRegistry).
+/// in the [`ProviderRegistry`](crate::llm::provider::ProviderRegistry).
 pub struct RigProvider {
     model: DynModel<Completion>,
     model_id: String,
@@ -222,7 +222,7 @@ fn strip_api_suffix(url: &str) -> &str {
 ///
 /// This is the single entry-point used by [`ProviderRegistry`].
 ///
-/// [`ProviderRegistry`]: crate::api::provider::ProviderRegistry
+/// [`ProviderRegistry`]: crate::llm::provider::ProviderRegistry
 pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn ProviderBox>> {
     let model_id = model.name.clone();
 

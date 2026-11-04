@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
+use crate::llm::provider::ProviderRegistry;
 use crate::core::error::{AppError, Result};
 use crate::pipeline::models::{
     StepDef, StepProgress, TriggerDef, WorkflowDef, WorkflowRunRecord,

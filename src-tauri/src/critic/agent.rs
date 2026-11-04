@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
-use crate::api::util::extract_json;
+use crate::llm::provider::ProviderRegistry;
+use crate::llm::util::extract_json;
 use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerResult};
 
@@ -314,9 +314,7 @@ mod tests {
 
     #[test]
     fn test_review_no_model_returns_go() {
-        let providers = Arc::new(Mutex::new(ProviderRegistry::new(
-            &crate::config::AppConfig::default(),
-        )));
+        let providers = Arc::new(Mutex::new(ProviderRegistry::new(&[])));
         let agent = CriticAgent::new(providers);
         let task = make_task("t1", "Test", "Do something");
         let result = make_result(WorkerKind::Thinker, "t1", "Some output");

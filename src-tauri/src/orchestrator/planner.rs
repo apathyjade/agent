@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
-use crate::api::util::extract_json;
+use crate::llm::provider::ProviderRegistry;
+use crate::llm::util::extract_json;
 use crate::orchestrator::plan_error::ExecutionError;
 use crate::orchestrator::plan_types::*;
 use crate::tools::registry::ToolRegistry;

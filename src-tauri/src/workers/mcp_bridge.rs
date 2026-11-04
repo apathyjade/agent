@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
+use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
 use crate::tools::registry::ToolRegistry;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
@@ -192,9 +192,7 @@ mod tests {
     #[test]
     fn test_mcp_bridge_kind() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
@@ -205,9 +203,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tools_list() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
@@ -222,9 +218,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tools_list_with_server() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
@@ -236,9 +230,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tools_call_invalid_syntax() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
@@ -251,9 +243,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tools_no_commands() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
@@ -265,9 +255,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tools_call_unknown_tool() {
         let providers = Arc::new(Mutex::new(
-            crate::api::provider::ProviderRegistry::new(
-                &crate::config::AppConfig::default(),
-            ),
+            crate::llm::provider::ProviderRegistry::new(&[]),
         ));
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);

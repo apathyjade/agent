@@ -1,14 +1,13 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 pub mod agent;
-pub mod api;
 pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod core;
 pub mod critic;
-pub mod intent;
 pub mod lifecycle;
+pub mod llm;
 pub mod mcp;
 pub mod memory;
 pub mod orchestrator;

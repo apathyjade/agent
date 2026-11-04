@@ -3,12 +3,13 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-use crate::api::provider::ProviderRegistry;
-use crate::config::{AppConfig, ModelProvider};
+use crate::config::AppConfig;
 use crate::critic::agent::CriticAgent;
 use crate::core::db::repository::Database;
-use crate::intent::router::IntentRouter;
 use crate::lifecycle::LifecycleManager;
+use crate::llm::intent::router::IntentRouter;
+use crate::llm::model::ModelProvider;
+use crate::llm::provider::ProviderRegistry;
 use crate::mcp::McpServerManager;
 use crate::memory::MemoryManager;
 use crate::orchestrator::agent::OrchestratorAgent;
@@ -48,7 +49,7 @@ impl AppState {
     pub fn new(app_handle: &AppHandle) -> crate::core::error::Result<Self> {
         let db = Database::new()?;
         let config = AppConfig::load()?;
-        let providers = ProviderRegistry::new(&config);
+        let providers = ProviderRegistry::new(&config.models);
         let providers_arc = Arc::new(Mutex::new(providers));
         let tools = ToolRegistry::new();
 

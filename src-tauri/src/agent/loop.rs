@@ -6,7 +6,7 @@ use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::completion::Message;
 
-use crate::api::provider::ProviderRegistry;
+use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
 use crate::tools::registry::ToolRegistry;
 

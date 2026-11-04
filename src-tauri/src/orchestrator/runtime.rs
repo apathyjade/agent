@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::agent::r#loop::ToolLoop;
-use crate::api::provider::ProviderRegistry;
+use crate::llm::provider::ProviderRegistry;
 use rig::completion::Message;
 use crate::core::db::repository::Database;
 use crate::orchestrator::plan_error::ExecutionError;

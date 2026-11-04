@@ -10,7 +10,7 @@ use crate::core::error::{AppError, Result};
 use crate::orchestrator::planner::LlmPlanner;
 use crate::orchestrator::runtime::ExecutionRuntime;
 use crate::orchestrator::plan_types::{ExecutionHandle, ExecutionLogEntry, PlanProgressEvent};
-use crate::intent::PathSelection;
+use crate::llm::intent::PathSelection;
 use crate::persona::PersonaResolution;
 use crate::state::AppState;
 
@@ -357,7 +357,7 @@ pub async fn send_message_stream(
     });
 
     // ── LLM Intent Classification ──
-    let _intent_result: crate::intent::IntentResult = state.intent_router.classify(&content).await;
+    let _intent_result: crate::llm::intent::IntentResult = state.intent_router.classify(&content).await;
     let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name);
     log::info!(
         "LLM classified: intent={}, should_escalate={}",

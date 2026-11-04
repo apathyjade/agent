@@ -1,5 +1,5 @@
-use crate::api::rig::extract_structured;
-use crate::intent::ClassificationResult;
+use crate::llm::rig::extract_structured;
+use crate::llm::intent::ClassificationResult;
 
 /// System prompt for the intent classifier.
 const CLASSIFIER_PROMPT: &str = r#"You are an intent classifier for an AI coding assistant.

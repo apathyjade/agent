@@ -7,7 +7,7 @@ pub mod archiver;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::core::db::repository::Database;
-use crate::api::provider::ProviderRegistry;
+use crate::llm::provider::ProviderRegistry;
 use crate::lifecycle::config::LifecycleConfig;
 
 #[derive(Clone)]

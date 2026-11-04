@@ -6,8 +6,8 @@
 
 #![allow(clippy::disallowed_methods)]
 
-use agent_lib::api::rig::create_rig_provider;
-use agent_lib::config::{ModelConfig, ModelProvider};
+use agent_lib::llm::rig::create_rig_provider;
+use agent_lib::llm::model::{ModelConfig, ModelProvider};
 
 fn model_config(provider: ModelProvider, name: &str, base_url: Option<&str>) -> ModelConfig {
     ModelConfig {
