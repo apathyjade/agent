@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 /// Events emitted by the FileWatcher.
 #[derive(Debug, Clone)]

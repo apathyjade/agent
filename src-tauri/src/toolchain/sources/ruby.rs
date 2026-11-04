@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::toolchain::RuntimeType;
 

@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::http_client::get_http_client;
 use crate::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::toolchain::RuntimeType;
@@ -92,12 +92,12 @@ impl VersionSource for GoVersionSource {
             .get("https://go.dev/dl/?mode=json")
             .send()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let entries: Vec<GoDistEntry> = response
             .json()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = entries
             .into_iter()

@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, mpsc};
 use crate::agent::r#loop::ToolLoop;
 use crate::api::provider::ProviderRegistry;
 use rig::completion::Message;
-use crate::db::repository::Database;
+use crate::core::db::repository::Database;
 use crate::orchestrator::plan_error::ExecutionError;
 use crate::orchestrator::plan_types::*;
 use crate::tools::registry::ToolRegistry;

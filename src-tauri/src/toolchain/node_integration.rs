@@ -9,7 +9,7 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 /// External Node.js version managers that Agent can integrate with.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -318,10 +318,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("fnm install 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("fnm install 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
+                    return Err(crate::core::error::AppError::InvalidInput(
                         "fnm install 返回非零退出码".into(),
                     ));
                 }
@@ -335,10 +335,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("volta install 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("volta install 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
+                    return Err(crate::core::error::AppError::InvalidInput(
                         "volta install 返回非零退出码".into(),
                     ));
                 }
@@ -351,10 +351,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("nvm install 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("nvm install 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
+                    return Err(crate::core::error::AppError::InvalidInput(
                         "nvm install 返回非零退出码".into(),
                     ));
                 }
@@ -367,10 +367,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("nvm install 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("nvm install 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(
+                    return Err(crate::core::error::AppError::InvalidInput(
                         "nvm install 返回非零退出码".into(),
                     ));
                 }
@@ -390,10 +390,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("fnm use 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("fnm use 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(format!(
+                    return Err(crate::core::error::AppError::InvalidInput(format!(
                         "fnm use {} 失败",
                         version
                     )));
@@ -418,10 +418,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("nvm use 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("nvm use 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(format!(
+                    return Err(crate::core::error::AppError::InvalidInput(format!(
                         "nvm use {} 失败",
                         version
                     )));
@@ -435,10 +435,10 @@ impl ExternalNodeManager {
                     .status()
                     .await
                     .map_err(|e| {
-                        crate::error::AppError::InvalidInput(format!("nvm use 失败: {}", e))
+                        crate::core::error::AppError::InvalidInput(format!("nvm use 失败: {}", e))
                     })?;
                 if !status.success() {
-                    return Err(crate::error::AppError::InvalidInput(format!(
+                    return Err(crate::core::error::AppError::InvalidInput(format!(
                         "nvm use {} 失败",
                         version
                     )));

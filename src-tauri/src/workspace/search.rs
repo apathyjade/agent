@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 /// A single match from full-text search (ripgrep).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

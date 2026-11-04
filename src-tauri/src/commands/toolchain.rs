@@ -5,7 +5,7 @@
 
 use tauri::{Emitter, State};
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::state::AppState;
 use crate::toolchain::manager_detector::{self, VersionManager};
 use crate::toolchain::registry::RuntimeVersion;
@@ -131,7 +131,7 @@ pub async fn open_version_directory(
     let version_dir = install_dir.join(rt.dir_name()).join(&version);
 
     if !version_dir.exists() {
-        return Err(crate::error::AppError::NotFound(format!(
+        return Err(crate::core::error::AppError::NotFound(format!(
             "版本目录不存在: {}",
             version_dir.display()
         )));
@@ -146,21 +146,21 @@ pub async fn open_version_directory(
         std::process::Command::new("explorer")
             .arg(&path_str)
             .spawn()
-            .map_err(|e| crate::error::AppError::InvalidInput(format!("打开目录失败: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(format!("打开目录失败: {}", e)))?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg(&path_str)
             .spawn()
-            .map_err(|e| crate::error::AppError::InvalidInput(format!("打开目录失败: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(format!("打开目录失败: {}", e)))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(&path_str)
             .spawn()
-            .map_err(|e| crate::error::AppError::InvalidInput(format!("打开目录失败: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(format!("打开目录失败: {}", e)))?;
     }
 
     log::info!("已打开版本目录: {}", path_str);
@@ -244,10 +244,10 @@ pub async fn install_manager_tool(manager_id: String, download_url: String) -> R
     let temp_dir = std::env::temp_dir().join(format!("manager_install_{}", manager_id));
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)
-            .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
     }
     std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+        .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
 
     let url = download_url;
     let default_filename = format!("{}.tar.gz", manager_id);
@@ -260,42 +260,42 @@ pub async fn install_manager_tool(manager_id: String, download_url: String) -> R
         .get(&url)
         .send()
         .await
-        .map_err(|e| crate::error::AppError::InvalidInput(format!("下载失败: {}", e)))?;
+        .map_err(|e| crate::core::error::AppError::InvalidInput(format!("下载失败: {}", e)))?;
 
     let content = response
         .bytes()
         .await
-        .map_err(|e| crate::error::AppError::InvalidInput(format!("读取响应失败: {}", e)))?;
+        .map_err(|e| crate::core::error::AppError::InvalidInput(format!("读取响应失败: {}", e)))?;
 
     std::fs::write(&dest, &content)
-        .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+        .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
 
     // Try to extract — supports .tar.gz, .gz, .zip
     let extension = filename.to_lowercase();
     if extension.ends_with(".tar.gz") || extension.ends_with(".tgz") {
         let file = std::fs::File::open(&dest)
-            .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
         let decoder = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(decoder);
         archive
             .unpack(&temp_dir)
-            .map_err(|e| crate::error::AppError::InvalidInput(format!("解压失败: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(format!("解压失败: {}", e)))?;
     } else if extension.ends_with(".zip") {
         let file = std::fs::File::open(&dest)
-            .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
         let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| crate::error::AppError::InvalidInput(format!("解压 zip 失败: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(format!("解压 zip 失败: {}", e)))?;
         archive
             .extract(&temp_dir)
-            .map_err(|e| crate::error::AppError::InvalidInput(format!("解压 zip 失败: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(format!("解压 zip 失败: {}", e)))?;
     } else if extension.ends_with(".gz") {
         let file = std::fs::File::open(&dest)
-            .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
         let mut decoder = flate2::read::GzDecoder::new(file);
         let mut out = std::fs::File::create(temp_dir.join("output"))
-            .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
         std::io::copy(&mut decoder, &mut out)
-            .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+            .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
     }
 
     // Find executable in extracted files
@@ -337,7 +337,7 @@ pub async fn install_manager_tool(manager_id: String, download_url: String) -> R
                 .join("agent")
                 .join("bin");
             std::fs::create_dir_all(&install_dir)
-                .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+                .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
 
             let target_name = if cfg!(target_os = "windows") {
                 format!("{}.exe", manager_id)
@@ -347,14 +347,14 @@ pub async fn install_manager_tool(manager_id: String, download_url: String) -> R
             let target = install_dir.join(&target_name);
 
             std::fs::copy(&bin_path, &target).map_err(|e| {
-                crate::error::AppError::InvalidInput(format!("复制可执行文件失败: {}", e))
+                crate::core::error::AppError::InvalidInput(format!("复制可执行文件失败: {}", e))
             })?;
 
             #[cfg(not(target_os = "windows"))]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
-                    .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+                    .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
             }
 
             // Cleanup temp
@@ -364,7 +364,7 @@ pub async fn install_manager_tool(manager_id: String, download_url: String) -> R
         }
         None => {
             let _ = std::fs::remove_dir_all(&temp_dir);
-            Err(crate::error::AppError::InvalidInput(format!(
+            Err(crate::core::error::AppError::InvalidInput(format!(
                 "无法在下载文件中找到 {} 可执行文件",
                 manager_id
             )))

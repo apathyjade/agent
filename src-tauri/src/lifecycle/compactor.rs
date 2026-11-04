@@ -1,7 +1,7 @@
 use rig::completion::message::{AssistantContent, UserContent};
 use rig::completion::Message as ApiMessage;
-use crate::db::repository::Database;
-use crate::error::Result;
+use crate::core::db::repository::Database;
+use crate::core::error::Result;
 
 /// Extract text content from a `Message` for token estimation.
 fn message_text(msg: &ApiMessage) -> String {

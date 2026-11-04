@@ -14,7 +14,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::http_client::get_http_client;
 use crate::toolchain::node_integration::{
     ExternalManager, ExternalNodeManager, NodeIntegrationStrategy,
@@ -156,12 +156,12 @@ impl NodeVersionSource {
             .get(self.mirror.index_url())
             .send()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let entries: Vec<NodeDistEntry> = response
             .json()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = entries
             .into_iter()
@@ -229,7 +229,7 @@ impl NodeVersionSource {
             .collect();
 
         if available.is_empty() {
-            return Err(crate::error::AppError::NotFound(
+            return Err(crate::core::error::AppError::NotFound(
                 "未检测到外部 Node.js 版本管理器 (fnm/volta/nvm)".into(),
             ));
         }
@@ -262,7 +262,7 @@ impl NodeVersionSource {
         combined.dedup_by(|a, b| a.version == b.version);
 
         if combined.is_empty() {
-            return Err(crate::error::AppError::NotFound(
+            return Err(crate::core::error::AppError::NotFound(
                 "外部管理器已检测到但没有可用的 Node.js 版本".into(),
             ));
         }
@@ -286,7 +286,7 @@ impl NodeVersionSource {
             .get(&shasums_url)
             .send()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         if !response.status().is_success() {
             log::warn!("无法获取 SHASUMS256.txt ({}), 跳过校验", response.status());
@@ -296,7 +296,7 @@ impl NodeVersionSource {
         let text = response
             .text()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         // Find expected hash for our file
         let expected_hash = text
@@ -304,7 +304,7 @@ impl NodeVersionSource {
             .find(|line| line.contains(&filename))
             .and_then(|line| line.split_whitespace().next())
             .ok_or_else(|| {
-                crate::error::AppError::NotFound(format!(
+                crate::core::error::AppError::NotFound(format!(
                     "未在 SHASUMS256.txt 中找到 {} 的校验和",
                     filename
                 ))
@@ -320,7 +320,7 @@ impl NodeVersionSource {
         };
 
         if actual_hash != expected_hash {
-            return Err(crate::error::AppError::InvalidInput(format!(
+            return Err(crate::core::error::AppError::InvalidInput(format!(
                 "SHA256 校验失败: 期望 {}，实际 {}",
                 expected_hash, actual_hash
             )));

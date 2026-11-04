@@ -1,12 +1,12 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::models::{BoundProjectModel, Project, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SystemPrompt};
+use crate::core::db::models::{BoundProjectModel, Project, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SystemPrompt};
 use crate::orchestrator::plan_types::{ExecutionPlanRecord, PlanStepRecord};
 use crate::pipeline::models::WorkflowRunRecord;
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct Database {
     conn: Connection,

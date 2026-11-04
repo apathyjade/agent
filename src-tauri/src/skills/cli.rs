@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 /// Pinned CLI version — the module is built against this exact release.
 pub const SKILLS_CLI_VERSION: &str = "1.7.6";

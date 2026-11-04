@@ -1,8 +1,8 @@
 use uuid::Uuid;
 use chrono::Utc;
 
-use crate::db::models::SessionSummary;
-use crate::error::Result;
+use crate::core::db::models::SessionSummary;
+use crate::core::error::Result;
 use crate::lifecycle::LifecycleManager;
 
 /// Generate a summary chunk for new messages since last summarized point.
@@ -31,7 +31,7 @@ pub async fn maybe_generate_summary(
         messages.iter().position(|m| m.id == *end_id).map(|i| i + 1)
     }).unwrap_or(0);
 
-    let unsummarized: Vec<&crate::db::models::Message> = messages[start_idx..]
+    let unsummarized: Vec<&crate::core::db::models::Message> = messages[start_idx..]
         .iter()
         .filter(|m| m.role == "user" || m.role == "assistant")
         .collect();

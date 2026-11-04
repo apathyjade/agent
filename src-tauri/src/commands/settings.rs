@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use tauri::State;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::state::AppState;
 
 #[tauri::command]

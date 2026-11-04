@@ -1,6 +1,6 @@
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use crate::error::Result;
+use crate::core::error::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitFileStatus {
@@ -49,7 +49,7 @@ impl GitIntegration {
         };
 
         let statuses = repo.statuses(None)
-            .map_err(|e| crate::error::AppError::Workspace(format!("Git status error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Git status error: {}", e)))?;
 
         let mut results = Vec::new();
         for entry in statuses.iter() {
@@ -94,7 +94,7 @@ impl GitIntegration {
         }
 
         let diff = repo.diff_index_to_workdir(None, Some(&mut opts))
-            .map_err(|e| crate::error::AppError::Workspace(format!("Git diff error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Git diff error: {}", e)))?;
 
         let mut result = String::new();
         diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
@@ -110,7 +110,7 @@ impl GitIntegration {
                 result.push_str(&format!("{}{}\n", prefix, content));
             }
             true
-        }).map_err(|e| crate::error::AppError::Workspace(format!("Git diff print error: {}", e)))?;
+        }).map_err(|e| crate::core::error::AppError::Workspace(format!("Git diff print error: {}", e)))?;
 
         Ok(result)
     }
@@ -122,20 +122,20 @@ impl GitIntegration {
         };
 
         let mut revwalk = repo.revwalk()
-            .map_err(|e| crate::error::AppError::Workspace(format!("Git revwalk error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Git revwalk error: {}", e)))?;
         revwalk.push_head()
-            .map_err(|e| crate::error::AppError::Workspace(format!("Git push head error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Git push head error: {}", e)))?;
         revwalk.set_sorting(git2::Sort::TIME)
-            .map_err(|e| crate::error::AppError::Workspace(format!("Git sort error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Git sort error: {}", e)))?;
 
         let mut commits = Vec::new();
         for (i, oid) in revwalk.enumerate() {
             if i >= n {
                 break;
             }
-            let oid = oid.map_err(|e| crate::error::AppError::Workspace(format!("Git oid error: {}", e)))?;
+            let oid = oid.map_err(|e| crate::core::error::AppError::Workspace(format!("Git oid error: {}", e)))?;
             let commit = repo.find_commit(oid)
-                .map_err(|e| crate::error::AppError::Workspace(format!("Git find commit error: {}", e)))?;
+                .map_err(|e| crate::core::error::AppError::Workspace(format!("Git find commit error: {}", e)))?;
 
             let hash = oid.to_string();
             let author = commit.author().name().unwrap_or("unknown").to_string();
@@ -160,10 +160,10 @@ impl GitIntegration {
         let full_path = repo_path.join(path);
 
         let blame = repo.blame_file(&full_path, None)
-            .map_err(|e| crate::error::AppError::Workspace(format!("Git blame error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Git blame error: {}", e)))?;
 
         let content = std::fs::read_to_string(&full_path)
-            .map_err(|e| crate::error::AppError::Workspace(format!("Read file error: {}", e)))?;
+            .map_err(|e| crate::core::error::AppError::Workspace(format!("Read file error: {}", e)))?;
 
         let mut results = Vec::new();
         for (i, line_content) in content.lines().enumerate() {

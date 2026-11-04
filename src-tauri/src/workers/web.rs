@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 pub struct WebWorker;

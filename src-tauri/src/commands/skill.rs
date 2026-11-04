@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::skills::agents::{self, AgentOption};
 use crate::skills::cli::CliStatus;
 use crate::skills::legacy::{LegacyImportResult, LegacySkill};

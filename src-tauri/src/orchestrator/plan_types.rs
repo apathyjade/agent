@@ -243,33 +243,7 @@ pub struct PlanProgressEvent {
 
 // ── DB Records ──
 
-/// DB record for execution_plans table
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionPlanRecord {
-    pub id: String,
-    pub session_id: String,
-    pub source: String,
-    pub goal: Option<String>,
-    pub plan_json: String,
-    pub status: String,
-    pub created_at: String,
-    pub finished_at: Option<String>,
-}
-
-/// DB record for execution_plan_steps table
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanStepRecord {
-    pub id: String,
-    pub plan_id: String,
-    pub step_index: i32,
-    pub label: String,
-    pub step_type: String,
-    pub status: String,
-    pub result_json: Option<String>,
-    pub error: Option<String>,
-    pub started_at: Option<String>,
-    pub duration_ms: Option<i64>,
-}
+pub use crate::core::db::models::{ExecutionPlanRecord, PlanStepRecord};
 
 // ── Execution Handle ──
 

@@ -3,7 +3,7 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 
 use crate::critic::{CriticAgent, CritiqueDecision};
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::orchestrator::dispatcher::Dispatcher;
 use crate::orchestrator::task_graph::{NodeStatus, TaskGraph};
 use crate::workers::WorkerKind;

@@ -6,9 +6,9 @@ use tokio::sync::Mutex;
 
 pub mod seeds;
 
-use crate::db::models::PersonaRecord;
-use crate::db::repository::Database;
-use crate::error::Result;
+use crate::core::db::models::PersonaRecord;
+use crate::core::db::repository::Database;
+use crate::core::error::Result;
 
 /// Lightweight persona info returned to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,16 +126,16 @@ impl PersonaManager {
         let now = Utc::now().to_rfc3339();
 
         if params.name.trim().is_empty() {
-            return Err(crate::error::AppError::InvalidInput("Persona name cannot be empty".to_string()));
+            return Err(crate::core::error::AppError::InvalidInput("Persona name cannot be empty".to_string()));
         }
         if params.system_prompt.trim().is_empty() {
-            return Err(crate::error::AppError::InvalidInput("Persona system_prompt cannot be empty".to_string()));
+            return Err(crate::core::error::AppError::InvalidInput("Persona system_prompt cannot be empty".to_string()));
         }
 
         let valid_styles = ["concise", "verbose", "academic"];
         let style = params.response_style.as_deref().unwrap_or("concise");
         if !valid_styles.contains(&style) {
-            return Err(crate::error::AppError::InvalidInput(format!(
+            return Err(crate::core::error::AppError::InvalidInput(format!(
                 "Invalid response_style '{}'. Must be: {:?}", style, valid_styles
             )));
         }
@@ -175,7 +175,7 @@ impl PersonaManager {
     pub async fn get(&self, id: &str) -> Result<PersonaInfo> {
         let db = self.db.lock().await;
         let record = db.get_persona(id)?
-            .ok_or_else(|| crate::error::AppError::NotFound(format!("Persona '{}' not found", id)))?;
+            .ok_or_else(|| crate::core::error::AppError::NotFound(format!("Persona '{}' not found", id)))?;
         Ok(PersonaInfo::from(record))
     }
 
@@ -194,11 +194,11 @@ impl PersonaManager {
     pub async fn update(&self, id: &str, params: UpdatePersonaParams) -> Result<PersonaInfo> {
         let db = self.db.lock().await;
         let mut record = db.get_persona(id)?
-            .ok_or_else(|| crate::error::AppError::NotFound(format!("Persona '{}' not found", id)))?;
+            .ok_or_else(|| crate::core::error::AppError::NotFound(format!("Persona '{}' not found", id)))?;
 
         if let Some(name) = params.name {
             if name.trim().is_empty() {
-                return Err(crate::error::AppError::InvalidInput("Persona name cannot be empty".to_string()));
+                return Err(crate::core::error::AppError::InvalidInput("Persona name cannot be empty".to_string()));
             }
             record.name = name.trim().to_string();
         }
@@ -207,7 +207,7 @@ impl PersonaManager {
         if let Some(desc) = params.description { record.description = desc; }
         if let Some(sp) = params.system_prompt {
             if sp.trim().is_empty() {
-                return Err(crate::error::AppError::InvalidInput("Persona system_prompt cannot be empty".to_string()));
+                return Err(crate::core::error::AppError::InvalidInput("Persona system_prompt cannot be empty".to_string()));
             }
             record.system_prompt = sp;
         }
@@ -215,7 +215,7 @@ impl PersonaManager {
         if let Some(style) = params.response_style {
             let valid = ["concise", "verbose", "academic"];
             if !valid.contains(&style.as_str()) {
-                return Err(crate::error::AppError::InvalidInput(format!(
+                return Err(crate::core::error::AppError::InvalidInput(format!(
                     "Invalid response_style '{}'", style
                 )));
             }
@@ -238,7 +238,7 @@ impl PersonaManager {
     pub async fn delete(&self, id: &str) -> Result<()> {
         let db = self.db.lock().await;
         let _ = db.get_persona(id)?
-            .ok_or_else(|| crate::error::AppError::NotFound(format!("Persona '{}' not found", id)))?;
+            .ok_or_else(|| crate::core::error::AppError::NotFound(format!("Persona '{}' not found", id)))?;
         db.delete_persona(id)?;
         Ok(())
     }

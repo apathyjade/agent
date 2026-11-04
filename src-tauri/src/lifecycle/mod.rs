@@ -6,7 +6,7 @@ pub mod archiver;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::db::repository::Database;
+use crate::core::db::repository::Database;
 use crate::api::provider::ProviderRegistry;
 use crate::lifecycle::config::LifecycleConfig;
 
@@ -38,7 +38,7 @@ impl LifecycleManager {
         }
     }
 
-    pub async fn save_config(&self) -> crate::error::Result<()> {
+    pub async fn save_config(&self) -> crate::core::error::Result<()> {
         let cfg = self.config.lock().await;
         let json = serde_json::to_string(&*cfg)?;
         let db = self.db.lock().await;

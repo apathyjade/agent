@@ -2,8 +2,8 @@ use chrono::Utc;
 use tauri::State;
 use uuid::Uuid;
 
-use crate::db::models::{Project, Session as DbSession};
-use crate::error::Result;
+use crate::core::db::models::{Project, Session as DbSession};
+use crate::core::error::Result;
 use crate::state::AppState;
 
 #[tauri::command]

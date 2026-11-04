@@ -67,9 +67,9 @@ impl std::fmt::Display for RuntimeType {
 }
 
 impl std::str::FromStr for RuntimeType {
-    type Err = crate::error::AppError;
+    type Err = crate::core::error::AppError;
 
-    fn from_str(s: &str) -> crate::error::Result<Self> {
+    fn from_str(s: &str) -> crate::core::error::Result<Self> {
         let normalized = s.trim().to_lowercase();
         let runtime = match normalized.as_str() {
             "node" | "nodejs" | "npx" | "npm" => RuntimeType::Node,
@@ -82,7 +82,7 @@ impl std::str::FromStr for RuntimeType {
             "deno" => RuntimeType::Deno,
             "bun" => RuntimeType::Bun,
             "ruby" | "irb" | "gem" | "bundler" => RuntimeType::Ruby,
-            _ => return Err(crate::error::AppError::InvalidInput(format!(
+            _ => return Err(crate::core::error::AppError::InvalidInput(format!(
                 "未知运行时: {}. 支持: node, python, docker, uv, go, rust, java, deno, bun, ruby",
                 s
             ))),

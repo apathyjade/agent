@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use crate::api::provider::ProviderRegistry;
 use crate::config::{AppConfig, ModelProvider};
 use crate::critic::agent::CriticAgent;
-use crate::db::repository::Database;
+use crate::core::db::repository::Database;
 use crate::intent::router::IntentRouter;
 use crate::lifecycle::LifecycleManager;
 use crate::mcp::McpServerManager;
@@ -45,7 +45,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(app_handle: &AppHandle) -> crate::error::Result<Self> {
+    pub fn new(app_handle: &AppHandle) -> crate::core::error::Result<Self> {
         let db = Database::new()?;
         let config = AppConfig::load()?;
         let providers = ProviderRegistry::new(&config);

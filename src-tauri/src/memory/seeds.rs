@@ -1,7 +1,7 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::db::models::MemoryRecord;
+use crate::core::db::models::MemoryRecord;
 
 /// A curated set of default memories seeded on first launch.
 /// These represent universal best practices and user-facing defaults

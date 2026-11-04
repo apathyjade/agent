@@ -7,7 +7,7 @@ use rig::agent::StreamingResult;
 use rig::completion::Message;
 use rig::tool::DynamicTool;
 use crate::config::AppConfig;
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 use super::rig::create_rig_provider;
 

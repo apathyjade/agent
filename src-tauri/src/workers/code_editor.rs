@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const EDITOR_SYSTEM_PROMPT: &str = r#"You are a code editing agent. Your job is to modify files in a codebase.

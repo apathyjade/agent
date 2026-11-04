@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::pipeline::models::{TriggerDef, WorkflowDef, WorkflowInfo};
 
 const PIPELINE_DIRS: &[&str] = &[".config/agent/workflows"];

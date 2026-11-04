@@ -10,7 +10,7 @@ pub mod toolchain;
 
 use clap::{Parser, Subcommand};
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 #[derive(Debug, Parser)]
 #[command(

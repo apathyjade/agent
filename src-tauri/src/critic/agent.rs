@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
 use crate::api::util::extract_json;
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerResult};
 
 /// Critique decision from the reviewer.

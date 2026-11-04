@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use futures::StreamExt;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::RuntimeType::*;
 use crate::toolchain::{
     read_manifest, write_manifest, AvailableVersion, InstallProgress, RuntimeInfo, RuntimeManifest,
@@ -94,7 +94,7 @@ impl RuntimeInstaller {
 
         // Get download info (use "latest" or specific version)
         let dl_info = info_fn(&version_str).ok_or_else(|| {
-            crate::error::AppError::InvalidInput(format!(
+            crate::core::error::AppError::InvalidInput(format!(
                 "不支持的版本: {}. 请选择可用版本后重试",
                 version_str
             ))
@@ -160,7 +160,7 @@ impl RuntimeInstaller {
                 installed_at: Utc::now().to_rfc3339(),
             },
         );
-        write_manifest(&manifest_path, &manifest).map_err(crate::error::AppError::Io)?;
+        write_manifest(&manifest_path, &manifest).map_err(crate::core::error::AppError::Io)?;
 
         emit_progress(
             &on_progress,
@@ -261,12 +261,12 @@ impl RuntimeInstaller {
                     }
                     Ok(inst) => {
                         let stderr = String::from_utf8_lossy(&inst.stderr);
-                        Err(crate::error::AppError::InvalidInput(format!(
+                        Err(crate::core::error::AppError::InvalidInput(format!(
                             "rustup 安装失败: {}",
                             stderr
                         )))
                     }
-                    Err(e) => Err(crate::error::AppError::InvalidInput(format!(
+                    Err(e) => Err(crate::core::error::AppError::InvalidInput(format!(
                         "执行 rustup 失败: {}",
                         e
                     ))),
@@ -274,7 +274,7 @@ impl RuntimeInstaller {
             }
             _ => {
                 // rustup not available
-                Err(crate::error::AppError::InvalidInput(
+                Err(crate::core::error::AppError::InvalidInput(
                     "请通过 https://rustup.rs 安装 rustup".to_string(),
                 ))
             }
@@ -300,7 +300,7 @@ impl RuntimeInstaller {
                 "Docker.dmg".to_string(),
             )
         } else {
-            return Err(crate::error::AppError::InvalidInput(
+            return Err(crate::core::error::AppError::InvalidInput(
                 "Linux 请通过包管理器安装 Docker：curl -fsSL https://get.docker.com | sh"
                     .to_string(),
             ));
@@ -368,7 +368,7 @@ impl RuntimeInstaller {
 
         // Ruby cannot be easily installed as a portable binary.
         // Recommend using rbenv, RVM, or system package manager.
-        Err(crate::error::AppError::InvalidInput(
+        Err(crate::core::error::AppError::InvalidInput(
             "请通过 rbenv 或 RVM 安装 Ruby，或访问 https://www.ruby-lang.org/".to_string(),
         ))
     }
@@ -885,9 +885,9 @@ async fn download_file<F: Fn(InstallProgress) + Send + 'static>(
         .get(url)
         .send()
         .await
-        .map_err(crate::error::AppError::Http)?;
+        .map_err(crate::core::error::AppError::Http)?;
     if !response.status().is_success() {
-        return Err(crate::error::AppError::Http(
+        return Err(crate::core::error::AppError::Http(
             response.error_for_status().unwrap_err(),
         ));
     }
@@ -896,7 +896,7 @@ async fn download_file<F: Fn(InstallProgress) + Send + 'static>(
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(crate::error::AppError::Http)?;
+        let chunk = chunk.map_err(crate::core::error::AppError::Http)?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         if total_size > 0 {
@@ -917,9 +917,9 @@ fn extract_archive(bytes: &[u8], dest: &std::path::Path, ext: &str) -> Result<()
     match ext {
         "zip" => {
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
-                .map_err(|e| crate::error::AppError::InvalidInput(e.to_string()))?;
+                .map_err(|e| crate::core::error::AppError::InvalidInput(e.to_string()))?;
             archive.extract(dest).map_err(|e| {
-                crate::error::AppError::Io(std::io::Error::other(e))
+                crate::core::error::AppError::Io(std::io::Error::other(e))
             })?;
         }
         "tar.gz" | "tgz" => {
@@ -927,10 +927,10 @@ fn extract_archive(bytes: &[u8], dest: &std::path::Path, ext: &str) -> Result<()
             let mut archive = tar::Archive::new(decoder);
             archive
                 .unpack(dest)
-                .map_err(crate::error::AppError::Io)?;
+                .map_err(crate::core::error::AppError::Io)?;
         }
         _ => {
-            return Err(crate::error::AppError::InvalidInput(format!(
+            return Err(crate::core::error::AppError::InvalidInput(format!(
                 "不支持的压缩格式: {}",
                 ext
             )))

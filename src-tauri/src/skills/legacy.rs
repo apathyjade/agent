@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::is_valid_name;
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 /// One skill directory found under a legacy root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

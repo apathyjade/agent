@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::config::ModelConfig;
 use crate::commands::ModelInfo;
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::state::AppState;
 
 #[tauri::command]

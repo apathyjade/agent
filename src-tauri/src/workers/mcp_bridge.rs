@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::tools::registry::ToolRegistry;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
@@ -154,7 +154,7 @@ impl WorkerAgent for MCPBridgeWorker {
                 .as_deref()
                 .unwrap_or_else(|| registry.default_model_id());
             if mid.is_empty() {
-                return Err(crate::error::AppError::Worker(
+                return Err(crate::core::error::AppError::Worker(
                     "No model configured for MCPBridgeWorker".into(),
                 ));
             }

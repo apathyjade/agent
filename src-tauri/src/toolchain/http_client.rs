@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use futures::StreamExt;
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
@@ -56,10 +56,10 @@ pub async fn download_bytes<F: Fn(u64, u64) + Send + 'static>(
         .get(url)
         .send()
         .await
-        .map_err(crate::error::AppError::Http)?;
+        .map_err(crate::core::error::AppError::Http)?;
 
     if !response.status().is_success() {
-        return Err(crate::error::AppError::Http(
+        return Err(crate::core::error::AppError::Http(
             response.error_for_status().unwrap_err(),
         ));
     }
@@ -70,7 +70,7 @@ pub async fn download_bytes<F: Fn(u64, u64) + Send + 'static>(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(crate::error::AppError::Http)?;
+        let chunk = chunk.map_err(crate::core::error::AppError::Http)?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         if total_size > 0 {
@@ -88,10 +88,10 @@ pub async fn download_bytes_simple(url: &str) -> Result<Vec<u8>> {
         .get(url)
         .send()
         .await
-        .map_err(crate::error::AppError::Http)?;
+        .map_err(crate::core::error::AppError::Http)?;
 
     if !response.status().is_success() {
-        return Err(crate::error::AppError::Http(
+        return Err(crate::core::error::AppError::Http(
             response.error_for_status().unwrap_err(),
         ));
     }
@@ -99,6 +99,6 @@ pub async fn download_bytes_simple(url: &str) -> Result<Vec<u8>> {
     Ok(response
         .bytes()
         .await
-        .map_err(crate::error::AppError::Http)?
+        .map_err(crate::core::error::AppError::Http)?
         .to_vec())
 }

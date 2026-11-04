@@ -4,7 +4,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 

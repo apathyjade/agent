@@ -11,8 +11,8 @@ use clap::Subcommand;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
-use crate::db::repository::Database;
-use crate::error::Result;
+use crate::core::db::repository::Database;
+use crate::core::error::Result;
 use crate::project_env::{service as project_service, ProjectRuntimeRequirement};
 use crate::toolchain::RuntimeServices;
 use crate::toolchain::{RuntimeInfo, RuntimeSource, RuntimeType};

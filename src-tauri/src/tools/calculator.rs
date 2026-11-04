@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 use crate::tools::r#trait::{AgentTool, ToolError, ToolSpec};
 

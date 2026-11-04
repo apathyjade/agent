@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::db::models::BoundProjectModel;
-use crate::db::repository::Database;
-use crate::error::{AppError, Result};
+use crate::core::db::models::BoundProjectModel;
+use crate::core::db::repository::Database;
+use crate::core::error::{AppError, Result};
 use crate::toolchain::RuntimeServices;
 
 use super::detector::{

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 use super::frontmatter::{self, SkillMd};
 

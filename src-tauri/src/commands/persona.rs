@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::memory::MemoryInfo;
 use crate::persona::{CreatePersonaParams, PersonaInfo, PersonaResolution, UpdatePersonaParams};
 use crate::state::AppState;
@@ -64,7 +64,7 @@ pub async fn resolve_persona(
         PersonaResolution::Manual(p) => Ok(ResolveResult { persona: p, mode: "manual".to_string() }),
         PersonaResolution::Auto(p) => Ok(ResolveResult { persona: p, mode: "auto".to_string() }),
         PersonaResolution::Default(p) => Ok(ResolveResult { persona: p, mode: "default".to_string() }),
-        PersonaResolution::None => Err(crate::error::AppError::NotFound("No persona available".to_string())),
+        PersonaResolution::None => Err(crate::core::error::AppError::NotFound("No persona available".to_string())),
     }
 }
 

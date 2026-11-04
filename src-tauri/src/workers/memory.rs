@@ -3,9 +3,9 @@ use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::db::models::MemoryRecord;
-use crate::db::repository::Database;
-use crate::error::Result;
+use crate::core::db::models::MemoryRecord;
+use crate::core::db::repository::Database;
+use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 /// A worker that stores and retrieves memories directly via the SQLite database.

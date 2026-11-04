@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::RuntimeType;
 
 use super::sources;
@@ -118,7 +118,7 @@ impl RuntimeRegistry {
     /// Internal: fetch from source and update cache.
     async fn fetch_and_cache(&self, rt: &RuntimeType) -> Result<Vec<RuntimeVersion>> {
         let source = self.sources.get(rt).ok_or_else(|| {
-            crate::error::AppError::NotFound(format!("没有可用的版本源: {}", rt.display_name()))
+            crate::core::error::AppError::NotFound(format!("没有可用的版本源: {}", rt.display_name()))
         })?;
 
         let versions = self.fetch_with_retry(source.as_ref(), rt).await?;
@@ -164,7 +164,7 @@ impl RuntimeRegistry {
             }
         }
         Err(last_err.unwrap_or_else(|| {
-            crate::error::AppError::Provider("版本源暂时不可用，请稍后重试".to_string())
+            crate::core::error::AppError::Provider("版本源暂时不可用，请稍后重试".to_string())
         }))
     }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 /// Base URL for skills.sh search API
 const SKILLS_API_BASE: &str = "https://skills.sh";

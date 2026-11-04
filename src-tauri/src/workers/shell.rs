@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const SHELL_SYSTEM_PROMPT: &str = r#"You are a shell command executor. Execute commands and provide analysis of the output."#;
@@ -188,7 +188,7 @@ impl WorkerAgent for ShellWorker {
             let mid = task.model_id.as_deref().unwrap_or_else(|| registry.default_model_id());
             if mid.is_empty() {
                 drop(root);
-                return Err(crate::error::AppError::Worker(
+                return Err(crate::core::error::AppError::Worker(
                     "No model configured for ShellWorker".into(),
                 ));
             }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tauri::State;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::mcp::config::{ConfirmationMode, McpServerConfig, StartupPolicy, ToolConfig};
 use crate::mcp::manager::{ConnectionInfo, ConnectionStats};
 use crate::state::AppState;
@@ -25,7 +25,7 @@ pub async fn add_mcp_server(
         if !rt_str.is_empty() && rt_str != "auto" {
             if let Ok(rt) = rt_str.parse::<crate::toolchain::RuntimeType>() {
                 if let Err(msg) = state.toolchain.manager.validate_runtime(&rt).await {
-                    return Err(crate::error::AppError::InvalidInput(msg));
+                    return Err(crate::core::error::AppError::InvalidInput(msg));
                 }
             }
         }
@@ -86,7 +86,7 @@ pub async fn connect_mcp_server(state: State<'_, AppState>, id: String) -> Resul
             .find(|s| s.id == id)
             .cloned()
             .ok_or_else(|| {
-                crate::error::AppError::NotFound(format!("MCP server '{}' not found", id))
+                crate::core::error::AppError::NotFound(format!("MCP server '{}' not found", id))
             })?
     };
 
@@ -109,7 +109,7 @@ pub async fn restart_mcp_server(state: State<'_, AppState>, id: String) -> Resul
             .find(|s| s.id == id)
             .cloned()
             .ok_or_else(|| {
-                crate::error::AppError::NotFound(format!("MCP server '{}' not found", id))
+                crate::core::error::AppError::NotFound(format!("MCP server '{}' not found", id))
             })?
     };
 
@@ -233,6 +233,6 @@ pub async fn get_mcp_connection_stats(
     id: String,
 ) -> Result<ConnectionStats> {
     state.mcp.get_connection_stats(&id).await.ok_or_else(|| {
-        crate::error::AppError::NotFound(format!("MCP connection '{}' not found", id))
+        crate::core::error::AppError::NotFound(format!("MCP connection '{}' not found", id))
     })
 }

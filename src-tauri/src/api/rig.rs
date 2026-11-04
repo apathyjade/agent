@@ -44,7 +44,7 @@ use rig::tool::DynamicTool;
 
 use crate::api::provider::ProviderBox;
 use crate::config::{ModelConfig, ModelProvider};
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 // ---------------------------------------------------------------------------
 // RigProvider — wrapper around a Rig completion model

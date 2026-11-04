@@ -1,6 +1,6 @@
 use chrono::Utc;
 
-use crate::db::models::PersonaRecord;
+use crate::core::db::models::PersonaRecord;
 
 /// Built-in default personas seeded on first launch.
 pub fn default_personas() -> Vec<PersonaRecord> {

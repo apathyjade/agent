@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::memory::{CreateMemoryParams, MemoryInfo, UpdateMemoryParams};
 use crate::state::AppState;
 

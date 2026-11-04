@@ -84,18 +84,7 @@ pub struct StepProgress {
     pub result_summary: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowRunRecord {
-    pub id: String,
-    pub workflow_name: String,
-    pub status: String, // "running", "completed", "failed", "cancelled"
-    pub step_results: Option<String>, // JSON HashMap<String, Value>
-    pub step_progress: Option<String>,
-    pub error: Option<String>,
-    pub trigger_type: String, // "manual" or "scheduled"
-    pub started_at: String,
-    pub finished_at: Option<String>,
-}
+pub use crate::core::db::models::WorkflowRunRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowInfo {

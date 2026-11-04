@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerFeedback, WorkerResult};
 
 /// Manages worker registration and dispatch.

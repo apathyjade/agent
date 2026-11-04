@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const COT_SYSTEM_PROMPT: &str = r#"You are a deep thinking module. Structure your reasoning in these phases:

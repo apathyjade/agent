@@ -7,7 +7,7 @@ use rig::agent::MultiTurnStreamItem;
 use rig::completion::Message;
 
 use crate::api::provider::ProviderRegistry;
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::tools::registry::ToolRegistry;
 
 // ================================================================

@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::http_client::get_http_client;
 use crate::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::toolchain::RuntimeType;
@@ -88,12 +88,12 @@ impl RustupVersionSource {
             .get(url)
             .send()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let text = response
             .text()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         // Parse the TOML to find "pkg.rust.version"
         // The format looks like:
@@ -114,7 +114,7 @@ impl RustupVersionSource {
         }
 
         if versions.is_empty() {
-            return Err(crate::error::AppError::NotFound(
+            return Err(crate::core::error::AppError::NotFound(
                 "无法解析 Rust 稳定版本".to_string(),
             ));
         }

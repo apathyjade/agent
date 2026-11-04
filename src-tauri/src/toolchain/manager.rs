@@ -10,7 +10,7 @@ use super::{
     AvailableVersion, InstallProgress, InstalledVersion, RuntimeInfo, RuntimeManifest,
     RuntimeSource, RuntimeType,
 };
-use crate::error::Result;
+use crate::core::error::Result;
 
 // ── Manager ──
 
@@ -174,7 +174,7 @@ impl RuntimeManager {
         // Verify the version directory exists
         let ver_dir = rt_dir.join(version);
         if !ver_dir.exists() {
-            return Err(crate::error::AppError::NotFound(format!(
+            return Err(crate::core::error::AppError::NotFound(format!(
                 "版本 {} 未安装",
                 version
             )));

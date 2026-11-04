@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 pub mod agents;
 pub mod cli;

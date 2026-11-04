@@ -6,7 +6,7 @@
 
 use tauri::State;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::project_env::{
     service as project_service, BoundProject, ProjectDetector, ProjectScanResult, SyncResult,
 };

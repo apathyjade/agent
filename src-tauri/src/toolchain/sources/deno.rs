@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::http_client::get_http_client;
 use crate::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::toolchain::RuntimeType;
@@ -95,12 +95,12 @@ impl VersionSource for DenoVersionSource {
             .header("User-Agent", "agent-runtime-manager/1.0")
             .send()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let releases: Vec<GitHubRelease> = response
             .json()
             .await
-            .map_err(crate::error::AppError::Http)?;
+            .map_err(crate::core::error::AppError::Http)?;
 
         let mut versions: Vec<RuntimeVersion> = releases
             .into_iter()

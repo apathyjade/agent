@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::tools::calculator::CalculatorTool;
 use crate::tools::code_executor::CodeExecutorTool;
 use crate::tools::file_system::FileSystemTool;

@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::lifecycle::LifecycleManager;
 
 /// Run archive check on startup. Archives sessions past the configured inactivity threshold.

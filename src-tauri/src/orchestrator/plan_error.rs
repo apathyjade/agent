@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::core::error::AppError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionError {

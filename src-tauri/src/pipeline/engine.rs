@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::api::provider::ProviderRegistry;
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::pipeline::models::{
     StepDef, StepProgress, TriggerDef, WorkflowDef, WorkflowRunRecord,
 };
@@ -14,7 +14,7 @@ use crate::tools::registry::ToolRegistry;
 
 pub struct PipelineEngine {
     tools: Arc<Mutex<ToolRegistry>>,
-    db: Arc<Mutex<crate::db::repository::Database>>,
+    db: Arc<Mutex<crate::core::db::repository::Database>>,
     providers: Arc<Mutex<ProviderRegistry>>,
     event_tx: tokio::sync::mpsc::Sender<StepProgress>,
 }
@@ -22,7 +22,7 @@ pub struct PipelineEngine {
 impl PipelineEngine {
     pub fn new(
         tools: Arc<Mutex<ToolRegistry>>,
-        db: Arc<Mutex<crate::db::repository::Database>>,
+        db: Arc<Mutex<crate::core::db::repository::Database>>,
         providers: Arc<Mutex<ProviderRegistry>>,
         event_tx: tokio::sync::mpsc::Sender<StepProgress>,
     ) -> Self {

@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::pipeline::models::{StepProgress, WorkflowInfo, WorkflowRunRecord};
 use crate::state::AppState;
 
@@ -20,7 +20,7 @@ pub async fn run_workflow(
         .into_iter()
         .find(|(_, wf)| wf.name == name)
         .ok_or_else(|| {
-            crate::error::AppError::NotFound(format!("Workflow '{}' not found", name))
+            crate::core::error::AppError::NotFound(format!("Workflow '{}' not found", name))
         })?;
 
     // Create event channel for step progress
@@ -101,7 +101,7 @@ pub async fn get_workflow_run_detail(
 ) -> Result<WorkflowRunRecord> {
     let db = state.db.lock().await;
     db.get_workflow_run(&id)?.ok_or_else(|| {
-        crate::error::AppError::NotFound(format!("Workflow run '{}' not found", id))
+        crate::core::error::AppError::NotFound(format!("Workflow run '{}' not found", id))
     })
 }
 
@@ -184,7 +184,7 @@ pub async fn generate_workflow(
         let providers = state.providers.lock().await;
         let mid = providers.default_model_id();
         if mid.is_empty() {
-            return Err(crate::error::AppError::Provider(
+            return Err(crate::core::error::AppError::Provider(
                 "No default model configured".to_string(),
             ));
         }
@@ -231,7 +231,7 @@ Only output the YAML, nothing else.";
             yaml
         ))
     } else {
-        Err(crate::error::AppError::Io(std::io::Error::new(
+        Err(crate::core::error::AppError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "Home directory not found",
         )))

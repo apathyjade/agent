@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::intent::IntentRouterConfig;
 use crate::mcp::config::McpServerConfig;
 

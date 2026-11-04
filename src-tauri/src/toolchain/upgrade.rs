@@ -1,6 +1,6 @@
 // ── Upgrade Check: Detect outdated runtime versions and suggest upgrades ──
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::lifecycle;
 use crate::toolchain::registry::RuntimeRegistry;
 use crate::toolchain::{RuntimeManager, RuntimeType};

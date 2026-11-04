@@ -147,3 +147,44 @@ pub struct MemoryRecord {
     pub last_accessed_at: String,
     pub access_count: i32,
 }
+
+/// DB record for execution_plans table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPlanRecord {
+    pub id: String,
+    pub session_id: String,
+    pub source: String,
+    pub goal: Option<String>,
+    pub plan_json: String,
+    pub status: String,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
+/// DB record for execution_plan_steps table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStepRecord {
+    pub id: String,
+    pub plan_id: String,
+    pub step_index: i32,
+    pub label: String,
+    pub step_type: String,
+    pub status: String,
+    pub result_json: Option<String>,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunRecord {
+    pub id: String,
+    pub workflow_name: String,
+    pub status: String, // "running", "completed", "failed", "cancelled"
+    pub step_results: Option<String>, // JSON HashMap<String, Value>
+    pub step_progress: Option<String>,
+    pub error: Option<String>,
+    pub trigger_type: String, // "manual" or "scheduled"
+    pub started_at: String,
+    pub finished_at: Option<String>,
+}

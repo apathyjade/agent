@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 
 use super::alias::AliasManager;
 use super::manager::RuntimeManager;

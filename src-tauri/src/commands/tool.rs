@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::state::AppState;
 use crate::tools::r#trait::ToolInfo;
 

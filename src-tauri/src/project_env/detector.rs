@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::toolchain::RuntimeType;
 
 /// A project bound to runtime version management.

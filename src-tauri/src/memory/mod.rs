@@ -4,9 +4,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::db::models::MemoryRecord;
-use crate::db::repository::Database;
-use crate::error::{AppError, Result};
+use crate::core::db::models::MemoryRecord;
+use crate::core::db::repository::Database;
+use crate::core::error::{AppError, Result};
 
 // Rig imports for embedding support
 use rig::driver::DynModel;

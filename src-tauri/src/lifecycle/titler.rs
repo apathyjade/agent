@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::lifecycle::LifecycleManager;
 
 /// Generate a title for a session if:
@@ -22,7 +22,7 @@ pub async fn maybe_generate_title(
 
     // Check session: only generate if title_source == 'manual' (default)
     let sess = db.get_session(session_id)?
-        .ok_or_else(|| crate::error::AppError::NotFound("Session gone".to_string()))?;
+        .ok_or_else(|| crate::core::error::AppError::NotFound("Session gone".to_string()))?;
 
     // If already auto-generated or manually set, skip
     if sess.title_source != "manual" {

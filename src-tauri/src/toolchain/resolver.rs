@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use semver::{Version, VersionReq};
 
-use crate::error::{AppError, Result};
+use crate::core::error::{AppError, Result};
 use crate::toolchain::registry::RuntimeRegistry;
 use crate::toolchain::RuntimeType;
 

@@ -1,7 +1,7 @@
 use tauri::{Emitter, AppHandle, State};
 use tokio::sync::mpsc;
 
-use crate::error::Result;
+use crate::core::error::Result;
 use crate::orchestrator::agent::OrchestrationEvent;
 use crate::orchestrator::event_bridge::spawn_event_bridge;
 use crate::state::AppState;

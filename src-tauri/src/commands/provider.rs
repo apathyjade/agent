@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::config::{ModelConfig, ModelProvider};
-use crate::error::{AppError, Result};
-use crate::keychain;
+use crate::core::error::{AppError, Result};
+use crate::core::keychain;
 use crate::state::AppState;
 
 #[derive(Clone, Serialize, Deserialize)]
