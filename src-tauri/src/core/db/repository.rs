@@ -449,6 +449,22 @@ impl Database {
             )?;
         }
 
+        // Migration v11: add session intent-domain state to sessions.
+        // `intent_domain_id` is the last domain the session belonged to (a prior,
+        // not a constraint); `intent_domain_mode` is "auto" | "pinned".
+        let has_intent_domain_id = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='intent_domain_id'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_intent_domain_id == 0 {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN intent_domain_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN intent_domain_mode TEXT NOT NULL DEFAULT 'auto';",
+            )?;
+        }
+
         // Migration v5: rebuild FTS5 index if existing memories haven't been indexed yet.
         // The FTS table was just created in init_tables (or already existed from a prior run).
         // Check if the FTS index is empty while the memories table has rows.
@@ -467,18 +483,22 @@ impl Database {
         Ok(())
     }
 
+    /// Inserts a session. `is_active` now marks the *default* domain for new
+    /// sessions: when the caller does not supply `intent_domain_id`, it is
+    /// initialized from the active domain (if any). This affects the column
+    /// value only, nothing else.
     pub fn create_session(&self, sess: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at, sess.mode, sess.execution_status, sess.active_plan_id, sess.project_id],
+            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, COALESCE(?15, (SELECT id FROM intent_domains WHERE is_active = 1 LIMIT 1)), ?16)",
+            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at, sess.mode, sess.execution_status, sess.active_plan_id, sess.project_id, sess.intent_domain_id, sess.intent_domain_mode],
         )?;
         Ok(())
     }
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode FROM sessions ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map([], |row| {
             Ok(Session {
@@ -496,6 +516,8 @@ impl Database {
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
                 project_id: row.get(13)?,
+                intent_domain_id: row.get(14)?,
+                intent_domain_mode: row.get(15)?,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
@@ -503,7 +525,7 @@ impl Database {
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id FROM sessions WHERE id = ?1",
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode FROM sessions WHERE id = ?1",
         )?;
         let sess = stmt.query_row(params![id], |row| {
             Ok(Session {
@@ -521,6 +543,8 @@ impl Database {
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
                 project_id: row.get(13)?,
+                intent_domain_id: row.get(14)?,
+                intent_domain_mode: row.get(15)?,
             })
         }).optional()?;
         Ok(sess)
@@ -552,6 +576,38 @@ impl Database {
     pub fn update_session_config(&self, id: &str, config: &str) -> Result<()> {
         self.conn.execute("UPDATE sessions SET config = ?1, updated_at = datetime('now') WHERE id = ?2", params![config, id])?;
         Ok(())
+    }
+
+    /// Sets the session's intent domain state. Only these two columns change;
+    /// `updated_at` is intentionally left alone so routing writes do not
+    /// reorder the session list.
+    pub fn set_session_intent_domain(
+        &self,
+        session_id: &str,
+        domain_id: Option<&str>,
+        mode: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET intent_domain_id = ?1, intent_domain_mode = ?2 WHERE id = ?3",
+            params![domain_id, mode, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_intent_domain_references_on(conn: &Connection, domain_id: &str) -> Result<()> {
+        // Foreign keys are OFF in this project, so session references are
+        // cleared explicitly. Mode falls back to `auto`.
+        conn.execute(
+            "UPDATE sessions SET intent_domain_id = NULL, intent_domain_mode = 'auto' WHERE intent_domain_id = ?1",
+            params![domain_id],
+        )?;
+        Ok(())
+    }
+
+    /// Detaches every session that referenced `domain_id`: the domain goes
+    /// back to "no prior" and `auto` mode.
+    pub fn clear_intent_domain_references(&self, domain_id: &str) -> Result<()> {
+        Self::clear_intent_domain_references_on(&self.conn, domain_id)
     }
 
     pub fn clear_messages(&self, session_id: &str) -> Result<()> {
@@ -990,7 +1046,7 @@ impl Database {
 
     pub fn get_sessions_by_project(&self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id
+            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode
              FROM sessions WHERE project_id = ?1 ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map(params![project_id], |row| {
@@ -1009,6 +1065,8 @@ impl Database {
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
                 project_id: row.get(13)?,
+                intent_domain_id: row.get(14)?,
+                intent_domain_mode: row.get(15)?,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
@@ -1488,5 +1546,169 @@ impl Database {
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(steps)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::db::models::Session;
+    use rusqlite::Connection;
+
+    const TEST_TS: &str = "2026-11-05T00:00:00Z";
+
+    fn mk_session(id: &str) -> Session {
+        Session {
+            id: id.to_string(),
+            title: format!("会话-{id}"),
+            model_id: "model-a".to_string(),
+            system_prompt: None,
+            persona_id: None,
+            config: None,
+            title_source: "manual".to_string(),
+            archived: false,
+            created_at: TEST_TS.to_string(),
+            updated_at: TEST_TS.to_string(),
+            mode: "chat".to_string(),
+            execution_status: r#"{"type":"idle"}"#.to_string(),
+            active_plan_id: None,
+            project_id: None,
+            intent_domain_id: None,
+            intent_domain_mode: "auto".to_string(),
+        }
+    }
+
+    /// Insert a domain with one enabled intent and make it the active
+    /// (= default for new sessions) domain.
+    fn seed_active_domain(db: &Database, domain_id: &str) {
+        db.conn
+            .execute(
+                "INSERT INTO intent_domains (id, name, is_active, source, version, created_at, updated_at)
+                 VALUES (?1, ?2, 0, 'user', 1, ?3, ?3)",
+                params![domain_id, format!("领域-{domain_id}"), TEST_TS],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO intents (id, domain_id, name, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 1, ?4, ?4)",
+                params![format!("intent-{domain_id}"), domain_id, "意图", TEST_TS],
+            )
+            .unwrap();
+        db.set_active_intent_domain(domain_id).unwrap();
+    }
+
+    #[test]
+    fn migrating_old_sessions_table_adds_intent_domain_columns_with_defaults() {
+        let conn = Connection::open_in_memory().unwrap();
+        // init_tables is the pre-v11 schema; migrating an already-populated
+        // database must not lose or fail on existing rows.
+        Database::init_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title, model_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params!["legacy-session", "旧会话", "model-a", TEST_TS],
+        )
+        .unwrap();
+
+        Database::migrate_tables(&conn).unwrap();
+        // Migration v11 is guarded, so a second run must be a no-op.
+        Database::migrate_tables(&conn).unwrap();
+
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions')
+                 WHERE name IN ('intent_domain_id', 'intent_domain_mode')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 2, "升级后 sessions 必须存在领域两列");
+
+        let (domain, mode): (Option<String>, String) = conn
+            .query_row(
+                "SELECT intent_domain_id, intent_domain_mode FROM sessions WHERE id = 'legacy-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            domain.is_none(),
+            "既有会话的 intent_domain_id 必须默认为 NULL"
+        );
+        assert_eq!(mode, "auto", "既有会话的 intent_domain_mode 必须默认为 auto");
+    }
+
+    #[test]
+    fn create_session_inherits_active_domain() {
+        let db = Database::new_test().unwrap();
+        seed_active_domain(&db, "domain-a");
+
+        db.create_session(&mk_session("session-a")).unwrap();
+
+        let stored = db.get_session("session-a").unwrap().unwrap();
+        assert_eq!(
+            stored.intent_domain_id.as_deref(),
+            Some("domain-a"),
+            "未指定领域的新会话必须继承当前默认（is_active）领域"
+        );
+        assert_eq!(stored.intent_domain_mode, "auto");
+    }
+
+    #[test]
+    fn create_session_without_active_domain_leaves_domain_null() {
+        let db = Database::new_test().unwrap();
+
+        db.create_session(&mk_session("session-b")).unwrap();
+
+        let stored = db.get_session("session-b").unwrap().unwrap();
+        assert!(stored.intent_domain_id.is_none(), "无默认领域时必须保持 NULL");
+        assert_eq!(stored.intent_domain_mode, "auto");
+    }
+
+    #[test]
+    fn set_session_intent_domain_updates_only_intent_columns() {
+        let db = Database::new_test().unwrap();
+        db.create_session(&mk_session("session-c")).unwrap();
+        let before = db.get_session("session-c").unwrap().unwrap();
+
+        db.set_session_intent_domain("session-c", Some("domain-a"), "pinned")
+            .unwrap();
+
+        let after = db.get_session("session-c").unwrap().unwrap();
+        assert_eq!(after.intent_domain_id.as_deref(), Some("domain-a"));
+        assert_eq!(after.intent_domain_mode, "pinned");
+        assert_eq!(after.title, before.title, "不得改动标题");
+        assert_eq!(after.updated_at, before.updated_at, "只更新领域两列，不得刷新 updated_at");
+
+        db.set_session_intent_domain("session-c", None, "auto")
+            .unwrap();
+        let cleared = db.get_session("session-c").unwrap().unwrap();
+        assert!(cleared.intent_domain_id.is_none(), "传 None 必须清空领域");
+        assert_eq!(cleared.intent_domain_mode, "auto");
+    }
+
+    #[test]
+    fn clear_intent_domain_references_only_touches_matching_sessions() {
+        let db = Database::new_test().unwrap();
+        let mut referencing = mk_session("session-d");
+        referencing.intent_domain_id = Some("domain-a".to_string());
+        referencing.intent_domain_mode = "pinned".to_string();
+        db.create_session(&referencing).unwrap();
+
+        let mut unrelated = mk_session("session-e");
+        unrelated.intent_domain_id = Some("domain-b".to_string());
+        unrelated.intent_domain_mode = "pinned".to_string();
+        db.create_session(&unrelated).unwrap();
+
+        db.clear_intent_domain_references("domain-a").unwrap();
+
+        let cleared = db.get_session("session-d").unwrap().unwrap();
+        assert!(cleared.intent_domain_id.is_none(), "引用会话必须置 NULL");
+        assert_eq!(cleared.intent_domain_mode, "auto", "模式必须回落 auto");
+
+        let kept = db.get_session("session-e").unwrap().unwrap();
+        assert_eq!(kept.intent_domain_id.as_deref(), Some("domain-b"));
+        assert_eq!(kept.intent_domain_mode, "pinned");
     }
 }

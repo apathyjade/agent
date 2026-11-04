@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::agent::orchestrator::plan_error::ExecutionError;
+
 // ── Session Mode & Status ──
 
 /// Session 执行模式
@@ -12,6 +14,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub enum SessionMode {
     Chat,
     Autonomous,
+}
+
+/// Execution scope for a plan run.
+///
+/// `Autonomous` keeps the original behavior: the runtime owns the session
+/// execution state (`sessions.mode`, `active_plan_id`, `execution_status`).
+/// `Interactive` is used for a chat turn: the plan is still persisted, but
+/// session state is left untouched so the session remains a normal `chat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRunMode {
+    Autonomous,
+    Interactive,
 }
 
 impl Default for SessionMode {
@@ -195,6 +209,79 @@ pub enum StepStatus {
 impl Default for StepStatus {
     fn default() -> Self {
         Self::Pending
+    }
+}
+
+// ── Run Outcome ──
+
+/// A step that finished successfully during a plan run.
+#[derive(Debug, Clone)]
+pub struct CompletedStep {
+    pub index: usize,
+    pub id: String,
+    pub label: String,
+    pub result: Value,
+}
+
+/// Result of a plan run where every step completed.
+#[derive(Debug, Clone, Default)]
+pub struct PlanOutcome {
+    pub plan_id: String,
+    pub session_id: String,
+    pub completed: Vec<CompletedStep>,
+}
+
+impl PlanOutcome {
+    /// Join the non-empty textual results of the completed steps.
+    pub fn combined_result(&self) -> Option<String> {
+        combine_step_results(&self.completed)
+    }
+}
+
+/// Failure after a plan was accepted and execution had already started.
+///
+/// Carries the results of the steps that finished before the failure so the
+/// caller can surface partial output instead of discarding side effects.
+#[derive(Debug, Clone)]
+pub struct PlanFailure {
+    pub completed: Vec<CompletedStep>,
+    pub failed_step: String,
+    pub message: String,
+}
+
+impl PlanFailure {
+    /// Join the non-empty textual results of the completed steps.
+    pub fn combined_result(&self) -> Option<String> {
+        combine_step_results(&self.completed)
+    }
+
+    /// Convert back to the legacy error type so existing callers are unaffected.
+    pub fn to_execution_error(&self) -> ExecutionError {
+        if self.message == ExecutionError::Cancelled.to_string() {
+            ExecutionError::Cancelled
+        } else {
+            ExecutionError::StepFailed {
+                step: self.completed.len(),
+                message: self.message.clone(),
+            }
+        }
+    }
+}
+
+fn combine_step_results(steps: &[CompletedStep]) -> Option<String> {
+    let parts: Vec<String> = steps
+        .iter()
+        .filter_map(|step| match &step.result {
+            Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+            Value::Null => None,
+            other => Some(other.to_string()),
+        })
+        .collect();
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
     }
 }
 

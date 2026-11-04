@@ -176,7 +176,7 @@ function CreateDomainDialog({
             />
           </div>
           <p className="text-[11px] text-gray-400 dark:text-gray-500">
-            新建的领域不会自动设为活跃，需要在左侧列表中切换。
+            新建的领域不会自动设为默认领域，需要在左侧列表中切换。
           </p>
         </div>
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
@@ -753,7 +753,7 @@ export function IntentManagerPage() {
 
   const handleDeleteDomainClick = (domain: IntentDomainInfo) => {
     if (activeDomain?.id === domain.id) {
-      setError(`「${domain.name}」是当前活跃领域，不能删除。请先把其他领域设为活跃。`);
+      setError(`「${domain.name}」是当前默认领域，不能删除。请先把其他领域设为默认。`);
       return;
     }
     setError('');
@@ -818,7 +818,7 @@ export function IntentManagerPage() {
   return (
     <ManagerPageLayout
       title="意图管理"
-      subtitle={activeDomain ? `当前领域：${activeDomain.name}` : '按领域管理意图集合'}
+      subtitle={activeDomain ? `默认领域：${activeDomain.name}` : '按领域管理意图集合'}
       icon={<Target size={18} />}
       headerActions={
         <>
@@ -831,7 +831,7 @@ export function IntentManagerPage() {
           <button
             onClick={handleExport}
             disabled={!activeDomain}
-            title={activeDomain ? '复制当前领域的 JSON' : '请先选择一个活跃领域'}
+            title={activeDomain ? '复制当前领域的 JSON' : '请先选择一个默认领域'}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:border-purple-300 dark:hover:border-purple-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {copied ? <Check size={14} /> : <Download size={14} />}
@@ -936,7 +936,7 @@ export function IntentManagerPage() {
             </div>
 
             <div className="px-3 py-2 border-t border-gray-100 dark:border-gray-700 text-[11px] text-gray-400 dark:text-gray-500">
-              活跃领域不可删除
+              默认领域不可删除
             </div>
           </aside>
 
@@ -951,7 +951,7 @@ export function IntentManagerPage() {
                         {activeDomain.name}
                       </h2>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">
-                        活跃
+                        默认
                       </span>
                       <span className="text-[11px] text-gray-400 dark:text-gray-500">
                         {sortedIntents.length} 个意图 · {enabledCount} 个启用
@@ -1060,7 +1060,7 @@ export function IntentManagerPage() {
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center px-6 text-gray-400 dark:text-gray-500">
                 <Target size={44} className="mb-3 opacity-40" />
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">没有活跃领域</p>
+                <p className="text-sm font-medium text-gray-500 dark:text-gray-400">没有默认领域</p>
                 <p className="text-xs mt-1 text-center">
                   请选择或新建一个领域，然后管理其中的意图
                 </p>

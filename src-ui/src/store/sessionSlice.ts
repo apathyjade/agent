@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent, ExecutionLogEntry, ToolInfo, SystemPrompt } from '../types';
+import type { IntentResolvedEvent, SessionIntentState } from '../api/intent';
 import * as api from '../api/tauri';
 
 export interface SessionSlice {
@@ -14,6 +15,12 @@ export interface SessionSlice {
   planProgress: PlanProgressEvent | null;
   executionLogs: ExecutionLogEntry[];
 
+  // Intent domain state for the active session
+  intentDomainId: string | null;
+  intentDomainName: string | null;
+  intentDomainMode: 'auto' | 'pinned';
+  currentTurnIntent: IntentResolvedEvent | null;
+
   fetchSessions: () => Promise<void>;
   createSession: (title: string, modelId: string, systemPrompt?: string, personaId?: string, projectId?: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
@@ -25,6 +32,11 @@ export interface SessionSlice {
   sendMessage: (content: string) => Promise<void>;
   updateSessionConfig: (id: string, config: Record<string, unknown>) => Promise<void>;
   updateSessionWorkspace: (id: string, workspacePath: string | null) => Promise<void>;
+
+  // Intent domain actions
+  fetchSessionIntentState: (sessionId: string) => Promise<void>;
+  setSessionIntentDomain: (sessionId: string, domainId: string | null) => Promise<void>;
+  setCurrentTurnIntent: (intent: IntentResolvedEvent | null) => void;
 
   // Execution actions
   setSessionMode: (mode: SessionMode) => void;
@@ -62,6 +74,10 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   activePlan: null,
   planProgress: null,
   executionLogs: [],
+  intentDomainId: null,
+  intentDomainName: null,
+  intentDomainMode: 'auto',
+  currentTurnIntent: null,
 
   fetchSessions: async () => {
     get().setLoading(true);
@@ -77,6 +93,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
     get().setLoading(true);
     try {
       const conv = await api.createSession(title, modelId, systemPrompt, personaId, projectId);
+      await get().fetchSessionIntentState(conv.id);
 
       set((state: any) => ({
         sessions: [conv, ...state.sessions],
@@ -101,7 +118,8 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
         if (ctxJson) {
           try { get().setSessionMessages(JSON.parse(ctxJson)); } catch (err) { console.error('Failed to parse session messages:', err); }
         }
-        set({ currentSession: conv, messages, loading: false });
+        set({ currentSession: conv, messages, currentTurnIntent: null, loading: false });
+        await get().fetchSessionIntentState(id);
       }
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -112,10 +130,15 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
     get().setLoading(true);
     try {
       await api.deleteSession(id);
+      const isCurrent = get().currentSession?.id === id;
       set((state: any) => ({
         sessions: state.sessions.filter((c: Session) => c.id !== id),
-        currentSession: state.currentSession?.id === id ? null : state.currentSession,
-        messages: state.currentSession?.id === id ? [] : state.messages,
+        currentSession: isCurrent ? null : state.currentSession,
+        messages: isCurrent ? [] : state.messages,
+        intentDomainId: isCurrent ? null : state.intentDomainId,
+        intentDomainName: isCurrent ? null : state.intentDomainName,
+        intentDomainMode: isCurrent ? 'auto' : state.intentDomainMode,
+        currentTurnIntent: isCurrent ? null : state.currentTurnIntent,
         loading: false,
       }));
     } catch (err) {
@@ -167,7 +190,14 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   },
 
   newChat: () => {
-    set({ currentSession: null, messages: [] });
+    set({
+      currentSession: null,
+      messages: [],
+      intentDomainId: null,
+      intentDomainName: null,
+      intentDomainMode: 'auto',
+      currentTurnIntent: null,
+    });
   },
 
   sendMessage: async (content) => {
@@ -186,6 +216,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       messages: [...state.messages, userMessage],
       loading: true,
       error: null,
+      currentTurnIntent: null,
     }));
 
     try {
@@ -215,6 +246,36 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       console.error('Failed to update session config:', err);
     }
   },
+
+  // ── Intent Domain Actions ──
+
+  fetchSessionIntentState: async (sessionId) => {
+    try {
+      const state: SessionIntentState = await api.getSessionIntentState(sessionId);
+      set({
+        intentDomainId: state.domain_id,
+        intentDomainName: state.domain_name,
+        intentDomainMode: state.mode,
+      });
+    } catch (err) {
+      console.error('Failed to fetch session intent state:', err);
+    }
+  },
+
+  setSessionIntentDomain: async (sessionId, domainId) => {
+    try {
+      const state: SessionIntentState = await api.setSessionIntentDomain(sessionId, domainId);
+      set({
+        intentDomainId: state.domain_id,
+        intentDomainName: state.domain_name,
+        intentDomainMode: state.mode,
+      });
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  setCurrentTurnIntent: (intent) => set({ currentTurnIntent: intent }),
 
   // ── Execution Actions ──
 

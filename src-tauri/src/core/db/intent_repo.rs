@@ -40,6 +40,8 @@ impl Database {
         Ok(domain)
     }
 
+    /// Returns the active domain. `is_active` doubles as the **default domain
+    /// for new sessions** since sessions gained their own domain state.
     pub fn get_active_intent_domain(&self) -> Result<Option<IntentDomainRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, is_active, source, version, created_at, updated_at
@@ -102,6 +104,9 @@ impl Database {
         }
 
         tx.execute("DELETE FROM intents WHERE domain_id = ?1", params![id])?;
+        // Sessions reference the domain by id and foreign keys are OFF, so the
+        // references are cleared in the same transaction as the delete.
+        Self::clear_intent_domain_references_on(&tx, id)?;
         tx.execute("DELETE FROM intent_domains WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
@@ -204,6 +209,25 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let intents = stmt
             .query_map(params![domain_id], Self::map_intent_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(intents)
+    }
+
+    /// Enabled intents across every domain.
+    ///
+    /// Used by the cascade router when it widens beyond the session's prior
+    /// domain. Ordered by domain, then by the domain-local display order
+    /// (`sort_order`, `name`), so each domain's slice keeps the same order as
+    /// [`Self::list_enabled_intents`].
+    pub fn list_all_enabled_intents(&self) -> Result<Vec<IntentRecord>> {
+        let sql = format!(
+            "SELECT {} FROM intents WHERE enabled = 1 \
+             ORDER BY domain_id ASC, sort_order ASC, name ASC",
+            Self::INTENT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let intents = stmt
+            .query_map([], Self::map_intent_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(intents)
     }
@@ -557,6 +581,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::db::models::Session;
 
     /// Fixed timestamp so tests exercise exactly what the caller supplies.
     const TEST_TS: &str = "2026-11-04T00:00:00Z";
@@ -1000,5 +1025,66 @@ mod tests {
 
         assert!(db.get_intent_domain("doomed-domain").unwrap().is_none());
         assert_eq!(db.count_intents("doomed-domain"), 0);
+    }
+
+    fn mk_session(id: &str, domain_id: Option<&str>, mode: &str) -> Session {
+        Session {
+            id: id.to_string(),
+            title: id.to_string(),
+            model_id: "model-a".to_string(),
+            system_prompt: None,
+            persona_id: None,
+            config: None,
+            title_source: "manual".to_string(),
+            archived: false,
+            created_at: TEST_TS.to_string(),
+            updated_at: TEST_TS.to_string(),
+            mode: "chat".to_string(),
+            execution_status: r#"{"type":"idle"}"#.to_string(),
+            active_plan_id: None,
+            project_id: None,
+            intent_domain_id: domain_id.map(str::to_string),
+            intent_domain_mode: mode.to_string(),
+        }
+    }
+
+    #[test]
+    fn deleting_domain_clears_session_references_and_resets_mode() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("doomed-domain", "待删领域"))
+            .unwrap();
+        db.insert_intent_domain(&mk_domain("kept-domain", "保留领域"))
+            .unwrap();
+        insert_enabled_intent(&db, "doomed-intent", "doomed-domain", true);
+        insert_enabled_intent(&db, "kept-intent", "kept-domain", true);
+
+        db.create_session(&mk_session("pinned-session", Some("doomed-domain"), "pinned"))
+            .unwrap();
+        db.create_session(&mk_session("auto-session", Some("doomed-domain"), "auto"))
+            .unwrap();
+        db.create_session(&mk_session("kept-session", Some("kept-domain"), "pinned"))
+            .unwrap();
+
+        db.delete_intent_domain("doomed-domain").unwrap();
+
+        for id in ["pinned-session", "auto-session"] {
+            let session = db.get_session(id).unwrap().unwrap();
+            assert!(
+                session.intent_domain_id.is_none(),
+                "引用被删除领域的会话必须置 NULL"
+            );
+            assert_eq!(
+                session.intent_domain_mode, "auto",
+                "引用被删除领域的会话模式必须回落 auto"
+            );
+        }
+
+        let kept = db.get_session("kept-session").unwrap().unwrap();
+        assert_eq!(
+            kept.intent_domain_id.as_deref(),
+            Some("kept-domain"),
+            "未引用被删领域的会话不得被改动"
+        );
+        assert_eq!(kept.intent_domain_mode, "pinned");
     }
 }

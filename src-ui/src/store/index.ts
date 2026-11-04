@@ -87,6 +87,7 @@ export const useStore = create<AppState>()((set, get, store) => ({
       isStreaming: true,
       streamingContent: '',
       activeToolCalls: [],
+      currentTurnIntent: null,
     });
 
     try {

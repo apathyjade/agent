@@ -20,6 +20,7 @@ import { PlanConfirmDialog } from './components/session/PlanConfirmDialog';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
 import type { PlanProgressEvent, ExecutionLogEntry } from './types';
+import type { IntentResolvedEvent } from './api/intent';
 import './styles/global.css';
 
 function App() {
@@ -136,6 +137,19 @@ function App() {
   useEffect(() => {
     const unlisten = listen<ExecutionLogEntry>('execution_log', (event) => {
       useStore.getState().addExecutionLog(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for intent_resolved events and attach them to the current turn
+  useEffect(() => {
+    const unlisten = listen<IntentResolvedEvent>('intent_resolved', (event) => {
+      const store = useStore.getState();
+      if (event.payload.session_id === store.currentSession?.id) {
+        store.setCurrentTurnIntent(event.payload);
+      }
     });
     return () => {
       unlisten.then((fn) => fn());

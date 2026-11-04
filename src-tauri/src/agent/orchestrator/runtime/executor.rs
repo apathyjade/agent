@@ -5,6 +5,10 @@
 
 use super::*;
 
+const DEFAULT_AGENT_TASK_SYSTEM_PROMPT: &str = "You are an autonomous agent executing a specific task. \
+    Use the available tools to complete the task step by step. \
+    When you are done, provide a clear summary of what you accomplished.";
+
 impl ExecutionRuntime {
     /// 执行单个 ExecStep
     pub(super) async fn execute_step(
@@ -183,6 +187,9 @@ impl ExecutionRuntime {
         _timeout_seconds: Option<u64>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
+        // Reject disallowed tools before touching the registry.
+        self.validate_tool_call(tool)?;
+
         let max_retries = retry.as_ref().map(|r| r.max).unwrap_or(1);
         let delay = retry.as_ref().map(|r| r.delay_seconds).unwrap_or(0);
 
@@ -261,8 +268,20 @@ impl ExecutionRuntime {
         _temperature: Option<f32>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
-        self.run_agent(instruction, None, model_id, max_iterations, allowed_tools, _temperature, cancel_flag)
-            .await
+        let effective_allowed_tools = self.effective_allowed_tools(allowed_tools);
+        self.validate_agent_task(&effective_allowed_tools)?;
+        let effective_max_iterations = self.effective_max_iterations(max_iterations);
+
+        self.run_agent(
+            instruction,
+            None,
+            model_id,
+            effective_max_iterations,
+            &effective_allowed_tools,
+            _temperature,
+            cancel_flag,
+        )
+        .await
     }
 
     /// 执行 AgentTask，失败时自动重试一次（带错误上下文）
@@ -306,14 +325,7 @@ impl ExecutionRuntime {
                 instruction.to_string()
             };
 
-            let system_msg = "You are an autonomous agent executing a specific task. \
-                Use the available tools to complete the task step by step. \
-                When you are done, provide a clear summary of what you accomplished.";
-
-            let messages = vec![
-                Message::system(system_msg.to_string()),
-                Message::user(final_instruction),
-            ];
+            let messages = self.agent_task_messages(&final_instruction);
 
             let agent = ToolLoop::new(self.providers.clone(), self.tools.clone());
             let agent = if let Some(max_iter) = max_iterations {
@@ -322,7 +334,8 @@ impl ExecutionRuntime {
                 agent
             };
 
-            let tools_enabled = allowed_tools.is_some() || last_error.is_some();
+            let tools_enabled =
+                self.tools_enabled && (allowed_tools.is_some() || last_error.is_some());
 
             match agent.run(&mid, messages, tools_enabled, allowed_tools.clone()).await {
                 Ok(content) => {
@@ -343,6 +356,23 @@ impl ExecutionRuntime {
         }
 
         Err(ExecutionError::MaxRetries { step: 0 })
+    }
+
+    /// Build the messages for an agent task.
+    ///
+    /// Extracted so tests can assert the system prompt without needing a live
+    /// provider. Empty overrides fall back to the built-in prompt.
+    pub(super) fn agent_task_messages(&self, instruction: &str) -> Vec<Message> {
+        let system_msg = self
+            .system_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.trim().is_empty())
+            .unwrap_or(DEFAULT_AGENT_TASK_SYSTEM_PROMPT);
+
+        vec![
+            Message::system(system_msg.to_string()),
+            Message::user(instruction.to_string()),
+        ]
     }
 
     pub(super) async fn execute_condition(

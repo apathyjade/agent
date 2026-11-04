@@ -57,6 +57,19 @@ pub struct Session {
     /// Optional project this session belongs to
     #[serde(default)]
     pub project_id: Option<String>,
+    /// Domain the session last belonged to. In `auto` mode this is only a prior
+    /// for routing, not a constraint on which domain a message may use.
+    #[serde(default)]
+    pub intent_domain_id: Option<String>,
+    /// Session domain mode: "auto" | "pinned".
+    #[serde(default = "default_intent_domain_mode")]
+    pub intent_domain_mode: String,
+}
+
+/// Default value of [`Session::intent_domain_mode`], also applied when reading
+/// sessions persisted before the field existed.
+fn default_intent_domain_mode() -> String {
+    "auto".to_string()
 }
 
 /// A summary of a range of messages within a session.
@@ -227,4 +240,60 @@ pub struct IntentRecord {
     pub sort_order: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_session() -> Session {
+        Session {
+            id: "session-a".to_string(),
+            title: "测试会话".to_string(),
+            model_id: "model-a".to_string(),
+            system_prompt: None,
+            persona_id: None,
+            config: None,
+            title_source: "manual".to_string(),
+            archived: false,
+            created_at: "2026-11-05T00:00:00Z".to_string(),
+            updated_at: "2026-11-05T00:00:00Z".to_string(),
+            mode: "chat".to_string(),
+            execution_status: r#"{"type":"idle"}"#.to_string(),
+            active_plan_id: None,
+            project_id: None,
+            intent_domain_id: Some("domain-a".to_string()),
+            intent_domain_mode: "pinned".to_string(),
+        }
+    }
+
+    #[test]
+    fn session_json_round_trips_intent_domain_fields() {
+        let session = sample_session();
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: Session = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.intent_domain_id.as_deref(), Some("domain-a"));
+        assert_eq!(restored.intent_domain_mode, "pinned");
+        assert_eq!(restored.id, session.id);
+    }
+
+    #[test]
+    fn session_json_without_intent_fields_still_deserializes() {
+        let mut value = serde_json::to_value(sample_session()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("intent_domain_id");
+        object.remove("intent_domain_mode");
+
+        let restored: Session = serde_json::from_value(value).unwrap();
+
+        assert!(
+            restored.intent_domain_id.is_none(),
+            "缺少 intent_domain_id 的旧 JSON 必须默认为 None"
+        );
+        assert_eq!(
+            restored.intent_domain_mode, "auto",
+            "缺少 intent_domain_mode 的旧 JSON 必须默认为 auto"
+        );
+    }
 }

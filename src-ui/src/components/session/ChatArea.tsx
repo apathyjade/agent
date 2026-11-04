@@ -12,6 +12,8 @@ import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 import { ExecutionStatusBar } from '../management/ExecutionStatusBar';
 import { PlanTimeline } from './PlanTimeline';
+import { SessionIntentSelector } from './SessionIntentSelector';
+import { IntentResolvedBadge } from './IntentResolvedBadge';
 import type { Message } from '../../types';
 
 const StreamingMessage = memo(function StreamingMessage({
@@ -96,6 +98,7 @@ export function ChatArea() {
   const setError = useStore((s) => s.setError);
   const summaries = useStore((s) => s.summaries);
   const fetchSummaries = useStore((s) => s.fetchSummaries);
+  const currentTurnIntent = useStore((s) => s.currentTurnIntent);
 
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -182,9 +185,11 @@ export function ChatArea() {
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 transition-colors">
-      {/* Top status bar — badges only */}
+      {/* Top status bar — session context badges */}
       <div className="flex items-center justify-between px-6 py-2.5 border-b border-gray-100 dark:border-gray-700 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm flex-shrink-0">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <SessionIntentSelector />
+          {currentTurnIntent && <IntentResolvedBadge intent={currentTurnIntent} />}
           {currentSession.system_prompt && (
             <span className="px-2 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[11px] rounded-md leading-relaxed whitespace-nowrap">
               提示词已加载

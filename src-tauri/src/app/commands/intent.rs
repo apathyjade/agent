@@ -13,6 +13,7 @@ use tauri::State;
 
 use crate::app::state::AppState;
 use crate::core::db::models::{IntentDomainRecord, IntentRecord};
+use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
 use crate::features::intent_management::json::{parse_intent_array, to_json_array, to_records};
 
@@ -100,6 +101,17 @@ impl From<IntentRecord> for IntentInfo {
             updated_at: record.updated_at,
         }
     }
+}
+
+/// Wire shape of a session's domain binding, rendered by the chat header
+/// selector. `domain_id` is kept even when the domain row is gone so the
+/// front-end can still describe the stored prior.
+#[derive(Debug, serde::Serialize)]
+pub struct SessionIntentState {
+    pub domain_id: Option<String>,
+    pub domain_name: Option<String>,
+    /// `auto` (the id is only a routing prior) or `pinned` (user chose it).
+    pub mode: String,
 }
 
 fn default_true() -> bool {
@@ -365,6 +377,123 @@ fn not_found_intent(id: &str) -> AppError {
     AppError::NotFound(format!("意图不存在: {id}"))
 }
 
+fn not_found_session(id: &str) -> AppError {
+    AppError::NotFound(format!("会话不存在: {id}"))
+}
+
+// ── Session domain binding ──
+
+const MODE_AUTO: &str = "auto";
+const MODE_PINNED: &str = "pinned";
+
+/// Requested binding for a session. `None` from the front-end means "auto",
+/// not "no domain": the stored id survives as the routing prior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionIntentMode {
+    Auto,
+    Pinned,
+}
+
+impl SessionIntentMode {
+    fn from_domain_id(domain_id: Option<&str>) -> Self {
+        match domain_id {
+            Some(_) => Self::Pinned,
+            None => Self::Auto,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => MODE_AUTO,
+            Self::Pinned => MODE_PINNED,
+        }
+    }
+}
+
+/// Everything the decision needs about the stored state, kept as plain values
+/// so it can be unit-tested without a database.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionIntentFacts<'a> {
+    pub session_id: &'a str,
+    pub session_exists: bool,
+    /// Currently stored prior; reused as-is when switching to `auto`.
+    pub stored_domain_id: Option<&'a str>,
+    /// Whether the *requested* domain row exists.
+    pub domain_exists: bool,
+    /// Enabled intents of the *requested* domain.
+    pub enabled_intent_count: i64,
+}
+
+/// What a successful change persists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionIntentDecision<'a> {
+    pub mode: SessionIntentMode,
+    /// `None` would erase the prior, so `auto` returns the stored id instead.
+    pub domain_id: Option<&'a str>,
+}
+
+/// Decides what a session domain change should write.
+///
+/// - missing session is `NotFound`;
+/// - `pinned` requires an existing domain with at least one enabled intent,
+///   the same invariant `set_active_intent_domain` enforces;
+/// - `auto` always succeeds and keeps the stored domain as prior.
+pub(crate) fn decide_session_intent_change<'a>(
+    facts: SessionIntentFacts<'a>,
+    mode: SessionIntentMode,
+    requested_domain_id: Option<&'a str>,
+) -> Result<SessionIntentDecision<'a>> {
+    if !facts.session_exists {
+        return Err(not_found_session(facts.session_id));
+    }
+
+    match mode {
+        SessionIntentMode::Auto => Ok(SessionIntentDecision {
+            mode,
+            domain_id: facts.stored_domain_id,
+        }),
+        SessionIntentMode::Pinned => {
+            let domain_id = requested_domain_id.ok_or_else(|| {
+                AppError::InvalidInput("pinned 模式必须指定领域".to_string())
+            })?;
+            if !facts.domain_exists {
+                return Err(not_found_domain(domain_id));
+            }
+            if facts.enabled_intent_count <= 0 {
+                return Err(AppError::InvalidInput(
+                    "该领域没有启用的意图，无法设为会话领域".to_string(),
+                ));
+            }
+            Ok(SessionIntentDecision {
+                mode,
+                domain_id: Some(domain_id),
+            })
+        }
+    }
+}
+
+/// Projects the stored columns into the wire state. A deleted domain keeps its
+/// id (the selector can still show it) but resolves no name; that is not an
+/// error.
+fn session_intent_state_from(
+    domain_id: Option<&str>,
+    domain_name: Option<String>,
+    mode: &str,
+) -> SessionIntentState {
+    SessionIntentState {
+        domain_id: domain_id.map(str::to_string),
+        domain_name,
+        mode: mode.to_string(),
+    }
+}
+
+fn domain_name_for(db: &Database, domain_id: Option<&str>) -> Result<Option<String>> {
+    match domain_id {
+        Some(id) => Ok(db.get_intent_domain(id)?.map(|domain| domain.name)),
+        None => Ok(None),
+    }
+}
+
 // ── Domains ──
 
 #[tauri::command]
@@ -462,6 +591,66 @@ pub async fn delete_intent_domain(state: State<'_, AppState>, id: String) -> Res
 pub async fn set_active_intent_domain(state: State<'_, AppState>, id: String) -> Result<()> {
     let db = state.db.lock().await;
     db.set_active_intent_domain(&id)
+}
+
+#[tauri::command]
+pub async fn get_session_intent_state(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionIntentState> {
+    let db = state.db.lock().await;
+    let session = db
+        .get_session(&session_id)?
+        .ok_or_else(|| not_found_session(&session_id))?;
+    let domain_name = domain_name_for(&db, session.intent_domain_id.as_deref())?;
+    Ok(session_intent_state_from(
+        session.intent_domain_id.as_deref(),
+        domain_name,
+        &session.intent_domain_mode,
+    ))
+}
+
+#[tauri::command]
+pub async fn set_session_intent_domain(
+    state: State<'_, AppState>,
+    session_id: String,
+    domain_id: Option<String>,
+) -> Result<SessionIntentState> {
+    let db = state.db.lock().await;
+    let session = db.get_session(&session_id)?;
+
+    let requested_domain_id = domain_id.as_deref();
+    let mode = SessionIntentMode::from_domain_id(requested_domain_id);
+    let domain_exists = match requested_domain_id {
+        Some(id) => db.get_intent_domain(id)?.is_some(),
+        None => false,
+    };
+    let enabled_intent_count = match requested_domain_id {
+        Some(id) => db.count_enabled_intents(id)?,
+        None => 0,
+    };
+
+    let decision = decide_session_intent_change(
+        SessionIntentFacts {
+            session_id: &session_id,
+            session_exists: session.is_some(),
+            stored_domain_id: session
+                .as_ref()
+                .and_then(|record| record.intent_domain_id.as_deref()),
+            domain_exists,
+            enabled_intent_count,
+        },
+        mode,
+        requested_domain_id,
+    )?;
+
+    db.set_session_intent_domain(&session_id, decision.domain_id, decision.mode.as_str())?;
+    let domain_name = domain_name_for(&db, decision.domain_id)?;
+    Ok(session_intent_state_from(
+        decision.domain_id,
+        domain_name,
+        decision.mode.as_str(),
+    ))
 }
 
 // ── Intents ──
@@ -935,5 +1124,140 @@ mod tests {
             "重复".to_string()
         )
         .is_err());
+    }
+
+    // ── Session domain binding ──
+
+    fn facts<'a>(session_exists: bool, stored: Option<&'a str>) -> SessionIntentFacts<'a> {
+        SessionIntentFacts {
+            session_id: "session-a",
+            session_exists,
+            stored_domain_id: stored,
+            domain_exists: true,
+            enabled_intent_count: 2,
+        }
+    }
+
+    #[test]
+    fn missing_session_is_rejected_as_not_found() {
+        let mut facts = facts(false, None);
+        facts.domain_exists = false;
+        facts.enabled_intent_count = 0;
+
+        let err =
+            decide_session_intent_change(facts, SessionIntentMode::Auto, None).unwrap_err();
+        match err {
+            AppError::NotFound(message) => {
+                assert!(message.contains("session-a"), "错误必须点名会话：{message}");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_keeps_the_stored_domain_as_prior() {
+        let decision = decide_session_intent_change(
+            facts(true, Some("domain-a")),
+            SessionIntentMode::Auto,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(decision.mode, SessionIntentMode::Auto);
+        assert_eq!(
+            decision.domain_id,
+            Some("domain-a"),
+            "切到自动不得清空先验"
+        );
+    }
+
+    #[test]
+    fn auto_without_a_prior_stays_empty() {
+        let decision =
+            decide_session_intent_change(facts(true, None), SessionIntentMode::Auto, None).unwrap();
+
+        assert_eq!(decision.mode, SessionIntentMode::Auto);
+        assert_eq!(decision.domain_id, None);
+    }
+
+    #[test]
+    fn pinned_accepts_a_domain_with_enabled_intents() {
+        let decision = decide_session_intent_change(
+            facts(true, Some("domain-old")),
+            SessionIntentMode::Pinned,
+            Some("domain-b"),
+        )
+        .unwrap();
+
+        assert_eq!(decision.mode, SessionIntentMode::Pinned);
+        assert_eq!(
+            decision.domain_id,
+            Some("domain-b"),
+            "pinned 必须写入用户选择的领域，而不是先验"
+        );
+    }
+
+    #[test]
+    fn pinned_unknown_domain_is_rejected_as_not_found() {
+        let mut facts = facts(true, None);
+        facts.domain_exists = false;
+
+        let err = decide_session_intent_change(
+            facts,
+            SessionIntentMode::Pinned,
+            Some("ghost-domain"),
+        )
+        .unwrap_err();
+        match err {
+            AppError::NotFound(message) => {
+                assert!(message.contains("ghost-domain"), "错误必须点名领域：{message}");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pinned_domain_without_enabled_intents_is_rejected() {
+        let mut facts = facts(true, None);
+        facts.enabled_intent_count = 0;
+
+        let err = decide_session_intent_change(
+            facts,
+            SessionIntentMode::Pinned,
+            Some("domain-empty"),
+        )
+        .unwrap_err();
+        match err {
+            AppError::InvalidInput(message) => {
+                assert!(message.contains("启用"), "错误必须说明原因：{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pinned_without_a_domain_id_is_rejected() {
+        let err = decide_session_intent_change(
+            facts(true, None),
+            SessionIntentMode::Pinned,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, AppError::InvalidInput(_)),
+            "pinned 缺领域必须是校验错误，实际：{err:?}"
+        );
+    }
+
+    #[test]
+    fn state_serializes_snake_case_and_tolerates_a_deleted_domain() {
+        let state = session_intent_state_from(Some("domain-a"), None, MODE_AUTO);
+        let json = serde_json::to_value(&state).unwrap();
+
+        assert_eq!(json["domain_id"], "domain-a", "已删除领域仍要回传 id");
+        assert!(json["domain_name"].is_null(), "已删除领域没有名称，且不得报错");
+        assert_eq!(json["mode"], "auto");
+        assert!(json.get("domainName").is_none(), "DTO 必须是 snake_case");
     }
 }

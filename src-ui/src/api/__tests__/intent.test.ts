@@ -4,9 +4,11 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 import { invoke } from '@tauri-apps/api/core';
 import {
+  getSessionIntentState,
   importIntentDomain,
   listIntents,
   setActiveIntentDomain,
+  setSessionIntentDomain,
   updateIntent,
 } from '../intent';
 
@@ -58,5 +60,54 @@ describe('intent api', () => {
       id: 'intent-1',
       intent: { max_iterations: null, examples: [] },
     });
+  });
+
+  it('getSessionIntentState invokes the right command', async () => {
+    invokeMock.mockResolvedValue({
+      domain_id: 'domain-1',
+      domain_name: '程序开发',
+      mode: 'pinned',
+    });
+
+    const result = await getSessionIntentState('session-1');
+
+    expect(invokeMock).toHaveBeenCalledWith('get_session_intent_state', { sessionId: 'session-1' });
+    expect(result).toEqual({
+      domain_id: 'domain-1',
+      domain_name: '程序开发',
+      mode: 'pinned',
+    });
+  });
+
+  it('setSessionIntentDomain sends null for auto mode', async () => {
+    invokeMock.mockResolvedValue({
+      domain_id: null,
+      domain_name: null,
+      mode: 'auto',
+    });
+
+    const result = await setSessionIntentDomain('session-1', null);
+
+    expect(invokeMock).toHaveBeenCalledWith('set_session_intent_domain', {
+      sessionId: 'session-1',
+      domainId: null,
+    });
+    expect(result.mode).toBe('auto');
+  });
+
+  it('setSessionIntentDomain sends a domain id for pinned mode', async () => {
+    invokeMock.mockResolvedValue({
+      domain_id: 'domain-1',
+      domain_name: '程序开发',
+      mode: 'pinned',
+    });
+
+    const result = await setSessionIntentDomain('session-1', 'domain-1');
+
+    expect(invokeMock).toHaveBeenCalledWith('set_session_intent_domain', {
+      sessionId: 'session-1',
+      domainId: 'domain-1',
+    });
+    expect(result.mode).toBe('pinned');
   });
 });

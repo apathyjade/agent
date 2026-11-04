@@ -30,13 +30,31 @@ export interface IntentInfo {
   confidence_threshold: number;
   fallback_intent: string;
   path: string;
-  auto_escalate: boolean;
   system_prompt_appendix: string;
   model_id: string;
   max_iterations: number | null;
   sort_order: number;
   created_at: string;
   updated_at: string;
+}
+
+/** Session-level intent domain state returned by the backend. */
+export interface SessionIntentState {
+  domain_id: string | null;
+  domain_name: string | null;
+  mode: 'auto' | 'pinned';
+}
+
+/** Payload of the `intent_resolved` Tauri event. */
+export interface IntentResolvedEvent {
+  session_id: string;
+  domain_id: string;
+  domain_name: string;
+  intent_id: string;
+  intent_name: string;
+  confidence: number;
+  source: 'llm' | 'scorer' | 'fallback';
+  widened: boolean;
 }
 
 /**
@@ -122,4 +140,17 @@ export async function importIntentDomain(
 
 export async function exportIntentDomain(domainId: string): Promise<string> {
   return invoke('export_intent_domain', { domainId });
+}
+
+// ── Session Intent Domain Commands ──
+
+export async function getSessionIntentState(sessionId: string): Promise<SessionIntentState> {
+  return invoke('get_session_intent_state', { sessionId });
+}
+
+export async function setSessionIntentDomain(
+  sessionId: string,
+  domainId: string | null,
+): Promise<SessionIntentState> {
+  return invoke('set_session_intent_domain', { sessionId, domainId });
 }

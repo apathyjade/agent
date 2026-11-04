@@ -51,7 +51,6 @@ function makeIntent(overrides: Partial<IntentInfo> = {}): IntentInfo {
     confidence_threshold: 0.7,
     fallback_intent: '',
     path: 'fast',
-    auto_escalate: false,
     system_prompt_appendix: '',
     model_id: '',
     max_iterations: null,
@@ -77,7 +76,7 @@ describe('IntentManagerPage', () => {
 
     render(<IntentManagerPage />);
 
-    expect(await screen.findByText('没有活跃领域')).toBeTruthy();
+    expect(await screen.findByText('没有默认领域')).toBeTruthy();
     expect(screen.getByText(/请选择或新建一个领域/)).toBeTruthy();
     // The right column (and its create-intent action) must not render without an active domain.
     expect(screen.queryByRole('button', { name: '新建意图' })).toBeNull();
@@ -173,5 +172,19 @@ describe('IntentManagerPage', () => {
 
     expect(await screen.findByText(/最后一个启用的意图/)).toBeTruthy();
     expect(api.deleteIntent).toHaveBeenCalledWith('intent-1');
+  });
+
+  it('does not render an auto_escalate control in the intent editor', async () => {
+    vi.mocked(api.listIntentDomains).mockResolvedValue([makeDomain()]);
+    vi.mocked(api.getActiveIntentDomain).mockResolvedValue(makeDomain());
+    vi.mocked(api.listIntents).mockResolvedValue([makeIntent({ name: '规划方案' })]);
+
+    const user = userEvent.setup();
+    render(<IntentManagerPage />);
+
+    await user.click(await screen.findByText('规划方案'));
+
+    expect(screen.queryByLabelText(/自动升级/i)).toBeNull();
+    expect(screen.queryByText(/auto_escalate/i)).toBeNull();
   });
 });
