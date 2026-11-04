@@ -316,25 +316,29 @@ where
     Ok(())
 }
 
-/// A non-empty `fallback_intent` must name an intent of the same domain, by id
-/// or by name. `intents` is the stored list and `merged` is the record about to
-/// be written; the merged record's own current name/id is a valid target.
-fn ensure_fallback_target(intents: &[IntentRecord], merged: &IntentRecord) -> Result<()> {
+/// Resolves a non-empty `fallback_intent` to the target intent's id, by id or
+/// by name. Empty stays empty. `intents` is the stored list and `merged` is the
+/// record about to be written, so a rename can target its own new name. A value
+/// that matches nothing is rejected with `InvalidInput` naming it.
+///
+/// Callers must write the returned id back into the record: the classifier
+/// compares the stored value against `intent.id` only, so a name stored verbatim
+/// would silently degrade to `clarify`.
+fn resolve_fallback_target(intents: &[IntentRecord], merged: &IntentRecord) -> Result<String> {
     let target = merged.fallback_intent.trim();
     if target.is_empty() {
-        return Ok(());
+        return Ok(String::new());
     }
 
     let found = std::iter::once(merged)
         .chain(intents.iter().filter(|intent| intent.id != merged.id))
-        .any(|intent| intent.id == target || intent.name == target);
+        .find(|intent| intent.id == target || intent.name == target);
 
-    if found {
-        Ok(())
-    } else {
-        Err(AppError::InvalidInput(format!(
+    match found {
+        Some(intent) => Ok(intent.id.clone()),
+        None => Err(AppError::InvalidInput(format!(
             "fallback_intent「{target}」在该领域中找不到对应意图"
-        )))
+        ))),
     }
 }
 
@@ -501,8 +505,8 @@ pub async fn create_intent(
         format!("该领域内已存在名为「{name}」的意图"),
     )?;
 
-    let record = intent.into_new_record(uuid::Uuid::new_v4().to_string(), domain_id, timestamp);
-    ensure_fallback_target(&intents, &record)?;
+    let mut record = intent.into_new_record(uuid::Uuid::new_v4().to_string(), domain_id, timestamp);
+    record.fallback_intent = resolve_fallback_target(&intents, &record)?;
     db.insert_intent(&record)?;
     Ok(record.into())
 }
@@ -532,7 +536,7 @@ pub async fn update_intent(
 
     intent.apply_to(&mut existing);
     existing.updated_at = now();
-    ensure_fallback_target(&intents, &existing)?;
+    existing.fallback_intent = resolve_fallback_target(&intents, &existing)?;
     db.update_intent(&existing)?;
 
     let updated = db.get_intent(&id)?.ok_or_else(|| not_found_intent(&id))?;
@@ -757,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_must_resolve_within_domain() {
+    fn fallback_resolves_by_name_and_by_id() {
         let mut target = mk_record();
         target.id = "target".to_string();
         target.name = "目标意图".to_string();
@@ -765,13 +769,19 @@ mod tests {
         let mut referencing = mk_record();
         referencing.id = "referencing".to_string();
         referencing.fallback_intent = "目标意图".to_string();
-        assert!(ensure_fallback_target(&[target.clone()], &referencing).is_ok());
+        assert_eq!(
+            resolve_fallback_target(&[target.clone()], &referencing).unwrap(),
+            "target"
+        );
 
         referencing.fallback_intent = "target".to_string();
-        assert!(ensure_fallback_target(&[target.clone()], &referencing).is_ok());
+        assert_eq!(
+            resolve_fallback_target(&[target.clone()], &referencing).unwrap(),
+            "target"
+        );
 
         referencing.fallback_intent = "不存在的意图".to_string();
-        let err = ensure_fallback_target(&[target], &referencing).unwrap_err();
+        let err = resolve_fallback_target(&[target], &referencing).unwrap_err();
         match err {
             AppError::InvalidInput(message) => {
                 assert!(message.contains("不存在的意图"), "错误必须点名该值：{message}");
@@ -781,15 +791,67 @@ mod tests {
     }
 
     #[test]
+    fn empty_fallback_stays_empty() {
+        let mut record = mk_record();
+        record.fallback_intent = "   ".to_string();
+
+        assert_eq!(resolve_fallback_target(&[], &record).unwrap(), "");
+    }
+
+    #[test]
+    fn create_resolves_named_fallback_to_target_id() {
+        let target = mk_record(); // id intent-a, name 意图甲
+        let input = IntentInput {
+            name: Some("新意图".to_string()),
+            fallback_intent: Some("意图甲".to_string()),
+            ..blank_input()
+        };
+
+        let mut record = input.into_new_record(
+            "new-id".to_string(),
+            "domain-a".to_string(),
+            TEST_TS.to_string(),
+        );
+        record.fallback_intent = resolve_fallback_target(&[target], &record).unwrap();
+
+        assert_eq!(
+            record.fallback_intent, "intent-a",
+            "名称形式的 fallback 必须落库为目标 id"
+        );
+    }
+
+    #[test]
+    fn update_resolves_named_fallback_to_target_id() {
+        let target = mk_record();
+        let mut existing = mk_record();
+        existing.id = "referencing".to_string();
+        existing.name = "引用者".to_string();
+        existing.fallback_intent = String::new();
+
+        let input = IntentInput {
+            fallback_intent: Some("意图甲".to_string()),
+            ..blank_input()
+        };
+        input.apply_to(&mut existing);
+        existing.fallback_intent = resolve_fallback_target(&[target], &existing).unwrap();
+
+        assert_eq!(
+            existing.fallback_intent, "intent-a",
+            "名称形式的 fallback 必须落库为目标 id"
+        );
+    }
+
+    #[test]
     fn fallback_can_target_the_merged_name_of_itself() {
         let stored = mk_record(); // stored name is 意图甲
         let mut merged = stored.clone();
         merged.name = "改名后的意图".to_string();
         merged.fallback_intent = "改名后的意图".to_string();
 
-        assert!(
-            ensure_fallback_target(&[stored], &merged).is_ok(),
-            "合并后的新名称必须能作为自身的 fallback 目标"
+        assert_eq!(
+            resolve_fallback_target(&[stored], &merged).unwrap(),
+            merged.id,
+            "合并后的新名称必须解析为自身 id"
         );
     }
 

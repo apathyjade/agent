@@ -480,6 +480,14 @@ impl Database {
             ));
         }
 
+        // Clear inbound references in the same transaction: `fallback_intent`
+        // stores an id, and a dangling id would silently degrade to `clarify`
+        // (and fail command-layer validation on later, unrelated edits).
+        tx.execute(
+            "UPDATE intents SET fallback_intent = '' WHERE domain_id = ?1 AND fallback_intent = ?2",
+            params![domain_id, id],
+        )?;
+
         tx.execute("DELETE FROM intents WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
@@ -721,6 +729,75 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["intent-b"]
         );
+    }
+
+    #[test]
+    fn deleting_intent_clears_inbound_fallback_references() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("ref-domain", "引用领域"))
+            .unwrap();
+
+        let target = mk_intent("target-intent", "ref-domain", "目标意图");
+        let mut referencing = mk_intent("referencing-intent", "ref-domain", "引用意图");
+        referencing.fallback_intent = "target-intent".to_string();
+        let mut unrelated = mk_intent("unrelated-intent", "ref-domain", "无关意图");
+        unrelated.fallback_intent = "referencing-intent".to_string();
+
+        db.insert_intent(&target).unwrap();
+        db.insert_intent(&referencing).unwrap();
+        db.insert_intent(&unrelated).unwrap();
+
+        db.delete_intent("target-intent").unwrap();
+
+        assert!(db.get_intent("target-intent").unwrap().is_none());
+        assert_eq!(
+            db.get_intent("referencing-intent")
+                .unwrap()
+                .unwrap()
+                .fallback_intent,
+            "",
+            "指向被删意图的 fallback 必须被清空"
+        );
+        assert_eq!(
+            db.get_intent("unrelated-intent")
+                .unwrap()
+                .unwrap()
+                .fallback_intent,
+            "referencing-intent",
+            "不指向被删意图的行必须保持不变"
+        );
+    }
+
+    #[test]
+    fn deleting_unreferenced_intent_leaves_other_rows_unchanged() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("keep-domain", "保留领域"))
+            .unwrap();
+
+        let spare = mk_intent("spare-intent", "keep-domain", "备用意图");
+        let keeper = mk_intent("keeper-intent", "keep-domain", "保留意图");
+        let mut holder = mk_intent("holder-intent", "keep-domain", "持有意图");
+        holder.fallback_intent = "keeper-intent".to_string();
+
+        db.insert_intent(&spare).unwrap();
+        db.insert_intent(&keeper).unwrap();
+        db.insert_intent(&holder).unwrap();
+
+        db.delete_intent("spare-intent").unwrap();
+
+        let stored_holder = db.get_intent("holder-intent").unwrap().unwrap();
+        assert_eq!(
+            stored_holder.fallback_intent, "keeper-intent",
+            "删除无人引用的意图不得清空其他行的 fallback"
+        );
+        assert_eq!(stored_holder.version, 1, "无关行不得被更新");
+        assert_eq!(stored_holder.updated_at, TEST_TS, "无关行不得被更新");
+        assert!(db
+            .get_intent("keeper-intent")
+            .unwrap()
+            .unwrap()
+            .fallback_intent
+            .is_empty());
     }
 
     #[test]
