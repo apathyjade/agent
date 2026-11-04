@@ -1,5 +1,5 @@
 use crate::llm::intent::classifier::LlmClassifier;
-use crate::llm::intent::{IntentConfig, IntentResult, IntentRouterConfig};
+use crate::llm::intent::{ClassificationResult, IntentConfig, IntentResult, IntentRouterConfig};
 
 /// The intent router: uses LLM to classify user messages and resolves intent configs.
 pub struct IntentRouter {
@@ -15,7 +15,15 @@ pub struct IntentRouter {
 impl IntentRouter {
     /// Build an IntentRouter from config.
     pub fn new(config: &IntentRouterConfig) -> Self {
-        let classifier = LlmClassifier::new();
+        // TODO(Task 7): construct with the real `Database` + `ProviderRegistry`.
+        // Until the DB-backed intents are wired in, the classifier has nothing
+        // to choose from and always returns `None`; `classify` degrades to chat.
+        let classifier = LlmClassifier::new(
+            std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::llm::provider::ProviderRegistry::new(&[]),
+            )),
+            config.classifier_model_id.clone(),
+        );
 
         // Merge default intents with user-configured intents
         let mut configs = super::default_intents();
@@ -47,7 +55,23 @@ impl IntentRouter {
             };
         }
 
-        let result = self.classifier.classify(content).await;
+        // Task 7 loads the enabled intents from the database and passes them
+        // here. With an empty slice the classifier returns `None` and routing
+        // degrades to chat instead of blocking message handling.
+        let result = match self.classifier.classify(content, &[]).await {
+            Some((intent, _confidence)) => ClassificationResult {
+                intent,
+                reason: String::new(),
+                auto_escalate: true,
+                max_iterations: 10,
+            },
+            None => ClassificationResult {
+                intent: "chat".to_string(),
+                reason: "router: no intents configured for classification".to_string(),
+                auto_escalate: false,
+                max_iterations: 1,
+            },
+        };
 
         // Get config for detected intent, or use default
         let config = self
