@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension};
 
-use crate::core::db::models::IntentDomainRecord;
+use crate::core::db::models::{IntentDomainRecord, IntentRecord};
 use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
 
@@ -143,6 +143,244 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    const INTENT_COLUMNS: &str =
+        "id, domain_id, name, description, examples, workflow, allowed_tools, \
+         default_agent, scope, enabled, version, confidence_threshold, fallback_intent, \
+         path, auto_escalate, system_prompt_appendix, model_id, max_iterations, \
+         sort_order, created_at, updated_at";
+
+    fn map_intent_row(row: &rusqlite::Row) -> rusqlite::Result<IntentRecord> {
+        let examples: String = row.get(4)?;
+        let allowed_tools: String = row.get(6)?;
+        let max_iterations: Option<i64> = row.get(17)?;
+        Ok(IntentRecord {
+            id: row.get(0)?,
+            domain_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            // Malformed JSON must degrade to an empty list instead of panicking.
+            examples: serde_json::from_str(&examples).unwrap_or_default(),
+            workflow: row.get(5)?,
+            allowed_tools: serde_json::from_str(&allowed_tools).unwrap_or_default(),
+            default_agent: row.get(7)?,
+            scope: row.get(8)?,
+            enabled: row.get::<_, i64>(9)? != 0,
+            version: row.get(10)?,
+            confidence_threshold: row.get(11)?,
+            fallback_intent: row.get(12)?,
+            path: row.get(13)?,
+            auto_escalate: row.get::<_, i64>(14)? != 0,
+            system_prompt_appendix: row.get(15)?,
+            model_id: row.get(16)?,
+            max_iterations: max_iterations.map(|v| v as usize),
+            sort_order: row.get(18)?,
+            created_at: row.get(19)?,
+            updated_at: row.get(20)?,
+        })
+    }
+
+    /// Intents of a domain ordered by `sort_order`, then `name`.
+    pub fn list_intents(&self, domain_id: &str) -> Result<Vec<IntentRecord>> {
+        let sql = format!(
+            "SELECT {} FROM intents WHERE domain_id = ?1 ORDER BY sort_order ASC, name ASC",
+            Self::INTENT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let intents = stmt
+            .query_map(params![domain_id], Self::map_intent_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(intents)
+    }
+
+    /// Enabled intents of a domain, same ordering as [`Self::list_intents`].
+    pub fn list_enabled_intents(&self, domain_id: &str) -> Result<Vec<IntentRecord>> {
+        let sql = format!(
+            "SELECT {} FROM intents WHERE domain_id = ?1 AND enabled = 1 \
+             ORDER BY sort_order ASC, name ASC",
+            Self::INTENT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let intents = stmt
+            .query_map(params![domain_id], Self::map_intent_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(intents)
+    }
+
+    pub fn get_intent(&self, id: &str) -> Result<Option<IntentRecord>> {
+        let sql = format!("SELECT {} FROM intents WHERE id = ?1", Self::INTENT_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let intent = stmt
+            .query_row(params![id], Self::map_intent_row)
+            .optional()?;
+        Ok(intent)
+    }
+
+    pub fn insert_intent(&self, i: &IntentRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO intents (id, domain_id, name, description, examples, workflow,
+                 allowed_tools, default_agent, scope, enabled, version, confidence_threshold,
+                 fallback_intent, path, auto_escalate, system_prompt_appendix, model_id,
+                 max_iterations, sort_order, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                 ?17, ?18, ?19, ?20, ?21)",
+            params![
+                i.id,
+                i.domain_id,
+                i.name,
+                i.description,
+                serde_json::to_string(&i.examples)?,
+                i.workflow,
+                serde_json::to_string(&i.allowed_tools)?,
+                i.default_agent,
+                i.scope,
+                i.enabled as i32,
+                i.version,
+                i.confidence_threshold,
+                i.fallback_intent,
+                i.path,
+                i.auto_escalate as i32,
+                i.system_prompt_appendix,
+                i.model_id,
+                i.max_iterations.map(|v| v as i64),
+                i.sort_order,
+                i.created_at,
+                i.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Updates the editable fields. The caller's `version` is ignored: the stored
+    /// version is read and incremented by one. `domain_id` is immutable.
+    pub fn update_intent(&self, i: &IntentRecord) -> Result<()> {
+        let old_version: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT version FROM intents WHERE id = ?1",
+                params![i.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let old_version = match old_version {
+            Some(v) => v,
+            None => return Err(AppError::NotFound(format!("意图不存在: {}", i.id))),
+        };
+
+        let changed = self.conn.execute(
+            "UPDATE intents SET name = ?2, description = ?3, examples = ?4, workflow = ?5,
+                 allowed_tools = ?6, default_agent = ?7, scope = ?8, enabled = ?9,
+                 version = ?10, confidence_threshold = ?11, fallback_intent = ?12, path = ?13,
+                 auto_escalate = ?14, system_prompt_appendix = ?15, model_id = ?16,
+                 max_iterations = ?17, sort_order = ?18, updated_at = ?19
+             WHERE id = ?1",
+            params![
+                i.id,
+                i.name,
+                i.description,
+                serde_json::to_string(&i.examples)?,
+                i.workflow,
+                serde_json::to_string(&i.allowed_tools)?,
+                i.default_agent,
+                i.scope,
+                i.enabled as i32,
+                old_version + 1,
+                i.confidence_threshold,
+                i.fallback_intent,
+                i.path,
+                i.auto_escalate as i32,
+                i.system_prompt_appendix,
+                i.model_id,
+                i.max_iterations.map(|v| v as i64),
+                i.sort_order,
+                i.updated_at,
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("意图不存在: {}", i.id)));
+        }
+        Ok(())
+    }
+
+    /// Deletes an intent. Refuses to remove the last enabled intent of a domain.
+    pub fn delete_intent(&self, id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT domain_id, enabled FROM intents WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (domain_id, enabled) = match row {
+            Some(v) => v,
+            None => return Err(AppError::NotFound(format!("意图不存在: {id}"))),
+        };
+
+        if enabled != 0 {
+            let enabled_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
+                params![domain_id],
+                |row| row.get(0),
+            )?;
+            if enabled_count <= 1 {
+                return Err(AppError::InvalidInput(
+                    "不能删除领域内最后一个启用的意图".to_string(),
+                ));
+            }
+        }
+
+        tx.execute("DELETE FROM intents WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Enables or disables an intent. Refuses to disable the last enabled intent of a domain.
+    pub fn set_intent_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT domain_id, enabled FROM intents WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (domain_id, current_enabled) = match row {
+            Some(v) => v,
+            None => return Err(AppError::NotFound(format!("意图不存在: {id}"))),
+        };
+
+        if !enabled && current_enabled != 0 {
+            let enabled_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
+                params![domain_id],
+                |row| row.get(0),
+            )?;
+            if enabled_count <= 1 {
+                return Err(AppError::InvalidInput(
+                    "不能删除领域内最后一个启用的意图".to_string(),
+                ));
+            }
+        }
+
+        tx.execute(
+            "UPDATE intents SET enabled = ?2 WHERE id = ?1",
+            params![id, enabled as i32],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn count_enabled_intents(&self, domain_id: &str) -> Result<i64> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
+            params![domain_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     #[cfg(test)]
@@ -288,6 +526,107 @@ mod tests {
         let stored = db.get_intent_domain("forced-active").unwrap().unwrap();
         assert!(!stored.is_active, "insert_intent_domain 必须强制写入 is_active = 0");
         assert!(db.get_active_intent_domain().unwrap().is_none());
+    }
+
+    fn mk_intent(id: &str, domain_id: &str, name: &str) -> IntentRecord {
+        IntentRecord {
+            id: id.to_string(),
+            domain_id: domain_id.to_string(),
+            name: name.to_string(),
+            description: "测试意图".to_string(),
+            examples: vec!["示例一".to_string()],
+            workflow: String::new(),
+            allowed_tools: vec!["read_file".to_string()],
+            default_agent: String::new(),
+            scope: "global".to_string(),
+            enabled: true,
+            version: 1,
+            confidence_threshold: 0.7,
+            fallback_intent: String::new(),
+            path: "fast".to_string(),
+            auto_escalate: false,
+            system_prompt_appendix: String::new(),
+            model_id: String::new(),
+            max_iterations: None,
+            sort_order: 0,
+            created_at: TEST_TS.to_string(),
+            updated_at: TEST_TS.to_string(),
+        }
+    }
+
+    #[test]
+    fn disabling_last_enabled_intent_is_rejected() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
+            .unwrap();
+        insert_enabled_intent(&db, "only-intent", "guard-domain", true);
+
+        let err = db.set_intent_enabled("only-intent", false).unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => assert_eq!(msg, "不能删除领域内最后一个启用的意图"),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+
+        assert_eq!(db.count_enabled_intents("guard-domain").unwrap(), 1);
+        assert!(db.get_intent("only-intent").unwrap().unwrap().enabled);
+    }
+
+    #[test]
+    fn deleting_last_enabled_intent_is_rejected() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
+            .unwrap();
+        insert_enabled_intent(&db, "only-intent", "guard-domain", true);
+
+        let err = db.delete_intent("only-intent").unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => assert_eq!(msg, "不能删除领域内最后一个启用的意图"),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+
+        assert!(db.get_intent("only-intent").unwrap().is_some());
+        assert_eq!(db.count_enabled_intents("guard-domain").unwrap(), 1);
+    }
+
+    #[test]
+    fn update_intent_increments_version() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("guard-domain", "守卫领域"))
+            .unwrap();
+
+        let mut intent = mk_intent("versioned-intent", "guard-domain", "版本意图");
+        db.insert_intent(&intent).unwrap();
+        assert_eq!(db.get_intent("versioned-intent").unwrap().unwrap().version, 1);
+
+        intent.name = "改名意图".to_string();
+        intent.version = 99; // 调用方传入的版本必须被忽略
+        db.update_intent(&intent).unwrap();
+
+        let stored = db.get_intent("versioned-intent").unwrap().unwrap();
+        assert_eq!(stored.version, 2, "update_intent 必须写入旧版本 + 1");
+        assert_eq!(stored.name, "改名意图");
+        assert_eq!(stored.examples, vec!["示例一".to_string()]);
+        assert_eq!(stored.allowed_tools, vec!["read_file".to_string()]);
+    }
+
+    #[test]
+    fn malformed_json_column_reads_as_empty_vec() {
+        let db = Database::new_test().unwrap();
+        db.insert_intent_domain(&mk_domain("json-domain", "JSON 领域"))
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO intents
+                     (id, domain_id, name, examples, allowed_tools, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'not-json', 'not-json', ?4, ?5)",
+                rusqlite::params!["broken-intent", "json-domain", "坏数据意图", TEST_TS, TEST_TS],
+            )
+            .unwrap();
+
+        let intents = db.list_intents("json-domain").unwrap();
+        assert_eq!(intents.len(), 1);
+        assert!(intents[0].examples.is_empty());
+        assert!(intents[0].allowed_tools.is_empty());
     }
 
     #[test]
