@@ -336,6 +336,70 @@ impl Database {
         Ok(())
     }
 
+    /// Inserts a domain and its intents in one transaction. The domain is inserted
+    /// inactive; callers activate it explicitly if they want it active.
+    ///
+    /// Either the whole batch lands or nothing does, so a rejected import never
+    /// leaves a half-written domain behind.
+    pub fn insert_intent_domain_atomic(
+        &self,
+        domain: &IntentDomainRecord,
+        intents: &[IntentRecord],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "INSERT INTO intent_domains (id, name, description, is_active, source, version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
+            params![
+                domain.id,
+                domain.name,
+                domain.description,
+                domain.source,
+                domain.version,
+                domain.created_at,
+                domain.updated_at,
+            ],
+        )?;
+
+        for i in intents {
+            tx.execute(
+                "INSERT INTO intents (id, domain_id, name, description, examples, workflow,
+                     allowed_tools, default_agent, scope, enabled, version, confidence_threshold,
+                     fallback_intent, path, auto_escalate, system_prompt_appendix, model_id,
+                     max_iterations, sort_order, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19, ?20, ?21)",
+                params![
+                    i.id,
+                    i.domain_id,
+                    i.name,
+                    i.description,
+                    serde_json::to_string(&i.examples)?,
+                    i.workflow,
+                    serde_json::to_string(&i.allowed_tools)?,
+                    i.default_agent,
+                    i.scope,
+                    i.enabled as i32,
+                    i.version,
+                    i.confidence_threshold,
+                    i.fallback_intent,
+                    i.path,
+                    i.auto_escalate as i32,
+                    i.system_prompt_appendix,
+                    i.model_id,
+                    i.max_iterations.map(|v| v as i64),
+                    i.sort_order,
+                    i.created_at,
+                    i.updated_at,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Updates the editable fields. The caller's `version` is ignored: the stored
     /// version is read and incremented by one. `domain_id` is immutable, and the update
     /// cannot disable the last enabled intent of a domain.
@@ -807,6 +871,45 @@ mod tests {
         assert_eq!(intents.len(), 1);
         assert!(intents[0].examples.is_empty());
         assert!(intents[0].allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn insert_intent_domain_atomic_inserts_inactive_domain_with_intents() {
+        let db = Database::new_test().unwrap();
+        let mut domain = mk_domain("imported-domain", "导入领域");
+        domain.is_active = true; // must be ignored: import never activates
+        let intents = vec![mk_intent("imported-intent", "imported-domain", "导入意图")];
+
+        db.insert_intent_domain_atomic(&domain, &intents).unwrap();
+
+        let stored = db.get_intent_domain("imported-domain").unwrap().unwrap();
+        assert!(!stored.is_active, "导入的领域必须是非活跃的");
+        assert!(db.get_active_intent_domain().unwrap().is_none());
+        assert_eq!(db.count_intents("imported-domain"), 1);
+        assert_eq!(
+            db.get_intent("imported-intent").unwrap().unwrap().name,
+            "导入意图"
+        );
+    }
+
+    #[test]
+    fn insert_intent_domain_atomic_leaves_nothing_on_failure() {
+        let db = Database::new_test().unwrap();
+        let domain = mk_domain("rollback-domain", "回滚领域");
+        // UNIQUE(domain_id, name) rejects the second row mid-transaction.
+        let intents = vec![
+            mk_intent("rollback-a", "rollback-domain", "重复意图"),
+            mk_intent("rollback-b", "rollback-domain", "重复意图"),
+        ];
+
+        let err = db.insert_intent_domain_atomic(&domain, &intents).unwrap_err();
+        assert!(
+            matches!(err, AppError::Database(_)),
+            "重复名称必须以数据库错误返回，实际：{err:?}"
+        );
+
+        assert!(db.get_intent_domain("rollback-domain").unwrap().is_none());
+        assert_eq!(db.count_intents("rollback-domain"), 0);
     }
 
     #[test]
