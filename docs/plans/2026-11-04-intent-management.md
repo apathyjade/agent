@@ -236,7 +236,7 @@ git commit -m "feat(db): add intent domain repository with activation guards"
   - `pub fn insert_intent(&self, i: &IntentRecord) -> Result<()>`
   - `pub fn update_intent(&self, i: &IntentRecord) -> Result<()>`
   - `pub fn delete_intent(&self, id: &str) -> Result<()>`
-  - `pub fn set_intent_enabled(&self, id: &str, enabled: bool) -> Result<()>`
+  - `pub fn set_intent_enabled(&self, id: &str, enabled: bool, updated_at: &str) -> Result<()>`（仓储不造时间，时间戳由命令层传）
   - `pub fn count_enabled_intents(&self, domain_id: &str) -> Result<i64>`
 
 **不变量（Review Focus 1）**
@@ -595,6 +595,7 @@ git commit -m "refactor(intent): route from the intent database, drop intent_rou
   - `list_intents(domain_id)`, `get_intent(id)`, `create_intent(domain_id, intent)`, `update_intent(id, intent)`, `delete_intent(id)`, `set_intent_enabled(id, enabled)`
   - `import_intent_domain(json, name)`, `export_intent_domain(domain_id)`
 - DTO：`IntentDomainInfo` / `IntentInfo` 直接 `#[derive(serde::Serialize)]`，字段与记录结构体一致（`examples` / `allowed_tools` 是数组，不是字符串——前端不该解析 JSON 文本）。
+- **时间戳由命令层生成**：`set_intent_enabled` 与所有 `update_*` 命令用 `chrono::Utc::now().to_rfc3339()` 填 `updated_at` 再交给仓储；仓储层不调用 `Utc::now()`。
 
 **导入的 id / 重名规则（Review Focus 2）**
 - `import_intent_domain` 忽略来件 `id`，见 Task 5。
