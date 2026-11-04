@@ -1297,9 +1297,9 @@ ALTER TABLE conversations ADD COLUMN linked_mcp_servers TEXT;
 | **D1. 对话绑定** | Conversation 模型扩展、AgentLoop 动态工具切换 | 2-3h |
 | **D2. 工作流集成** | PipelineEngine MCP 依赖声明、自动连接/断开 | 3-4h |
 | **D3. 资源与提示词** | Resources/Prompts 发现与缓存、对话注入 | 3-4h |
-| **D4. 技能互操作** | 技能输入扩展 tool_call 返回格式 | 2-3h |
+| ~~**D4. 技能互操作**~~ | ~~技能输入扩展 tool_call 返回格式~~ — 已作废（2026-11，见 §二 模块 D 的 D4 说明） | — |
 
-**Phase 3 总预估**：10-14h（1-2 天）
+**Phase 3 总预估**：8-11h（1-2 天；D4 作废后不计入）
 
 ### Phase 4：安全与审计（1-2 周）
 
@@ -1358,7 +1358,7 @@ ALTER TABLE conversations ADD COLUMN linked_mcp_servers TEXT;
 - [ ] 对话 A 绑定 Filesystem → 对话 A 可用，对话 B 不可用
 - [ ] 工作流 YAML 声明 required 服务器 → 执行时自动连接
 - [ ] 连接 Resources 服务器 → 对话中可引用资源
-- [ ] 技能执行时可调用 MCP 工具
+- [ ] ~~技能执行时可调用 MCP 工具~~ — 已作废（2026-11，技能不进入 `ToolRegistry`，见 §二 模块 D 的 D4 说明）
 
 ### Phase 4 完成标志
 - [ ] write_file 设为 ConfirmAlways → 每次调用弹窗确认
@@ -1438,7 +1438,7 @@ ALTER TABLE conversations ADD COLUMN linked_mcp_servers TEXT;
 ```
 
 > 注：技能（`SKILL.md` 指令包）由外部 `skills` CLI 托管，**不进入** `ToolRegistry`；
-> 本节旧图中的 `技能(ScriptTool)` 分支已移除（旧体系见 §七 D4 的作废说明）。
+> 本节旧图中的 `技能(ScriptTool)` 分支已移除（旧体系见 §二 模块 D 的 D4 作废说明）。
 
 ---
 

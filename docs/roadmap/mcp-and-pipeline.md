@@ -228,7 +228,7 @@ MCP Server 以子进程运行，安全是桌面端的关键卖点：
 | 阶段 | 内容 | 工期 |
 |---|---|---|
 | **P0: MCP 客户端核心** | JSON-RPC stdio 通道、initialize/tools/list/tools/call、进程生命周期管理 | 3-4 天 |
-| **P1: ToolRegistry 集成** | McpTool 实现 Tool trait、连接时批量注册、断开时注销 | 1-2 天 |
+| **P1: ToolRegistry 集成** | McpTool 实现 AgentTool、连接时批量注册、断开时注销 | 1-2 天 |
 | **P2: 管理界面** | MCP 连接配置卡片、连接状态指示器、工具预览 | 2-3 天 |
 | **P3: MCP 市场** | 搜索界面、一键安装、版本管理 | 2-3 天 |
 | **P4: 安全与权限** | 权限模型、工具审批、沙箱（可选） | 2-3 天 |
