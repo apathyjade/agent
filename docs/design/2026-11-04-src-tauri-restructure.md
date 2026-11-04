@@ -143,7 +143,7 @@ src-tauri/src/
 
 - `core/` 下不得出现 `crate::llm|agent|features|app|runtime`。
 - `db/` 下不得出现 `crate::orchestrator|pipeline`（类型已下沉）。
-- `app/` 之外不得出现 `crate::app`（含 `crate::app::config`、`crate::app::commands`、`crate::app::state`）。
+- `app/` 之外不得出现 `crate::app`（含 `crate::app::config`、`crate::app::commands`、`crate::app::state`）。唯一例外：crate 根 `lib.rs` 作为组合根自身的 `use crate::app::…`——它不在任何层内，是装配点。
 - `llm/` 下不得出现 `crate::app`。
 
 ## 5. 类型归位
@@ -273,7 +273,7 @@ npm run build
 
 - `src/` 顶层只有 `app core features agent llm runtime lib.rs main.rs`。
 - `grep -r "r#loop\|r#trait" src-tauri/src` 无结果。
-- `grep -r "crate::app" src-tauri/src --include=*.rs | grep -v "src-tauri/src/app/"` 无结果。
+- `grep -r "crate::app" src-tauri/src --include=*.rs` 唯一命中 `src-tauri/src/lib.rs`（组合根自身导入），其余无结果。
 - `grep -r "crate::orchestrator\|crate::pipeline" src-tauri/src/core/db` 无结果。
 - `git log --follow` 能追到移动后的文件历史。
 

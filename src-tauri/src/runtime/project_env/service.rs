@@ -1,7 +1,7 @@
 // ── Project runtime binding service ──
 //
 // Scans project files for runtime requirements, persists bindings and applies
-// them. This is the app-specific layer above the standalone toolchain engine.
+// them. This is the project-level layer above the standalone toolchain engine.
 
 use std::collections::HashMap;
 use std::sync::Arc;
