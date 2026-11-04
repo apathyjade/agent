@@ -31,7 +31,7 @@ pub fn spawn_event_bridge(
                     let _ = app_handle.emit("orchestrator_phase", phase_str);
                 }
                 OrchestrationEvent::Thinking { content } => {
-                    let _ = app_handle.emit("stream_chunk", crate::commands::StreamChunk {
+                    let _ = app_handle.emit("stream_chunk", crate::core::ipc::StreamChunk {
                         content,
                         done: false,
                         tool_calls: None,
