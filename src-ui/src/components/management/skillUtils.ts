@@ -1,4 +1,4 @@
-import type { InstalledSkill } from '../../types';
+import type { InstalledSkill, AgentOption } from '../../types';
 
 export function filterInstalled(
   skills: InstalledSkill[],
@@ -22,4 +22,16 @@ export function filterInstalled(
 
 export function isInstalled(marketName: string, installed: InstalledSkill[]): boolean {
   return installed.some((s) => s.name.toLowerCase() === marketName.toLowerCase());
+}
+
+export function agentIdsFromNames(names: string[], agents: AgentOption[]): string[] {
+  return names
+    .map((name) => {
+      const lower = name.toLowerCase();
+      const match = agents.find(
+        (a) => a.name.toLowerCase() === lower || a.id.toLowerCase() === lower
+      );
+      return match ? match.id : lower;
+    })
+    .filter((id, index, arr) => arr.indexOf(id) === index);
 }

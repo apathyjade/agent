@@ -1,14 +1,8 @@
 import { useState } from 'react';
 import { RefreshCw, Download, ChevronDown, ChevronRight, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import { useStore } from '../../store';
-import type { SkillScope } from '../../types';
 
-interface UpdatePanelProps {
-  scope: SkillScope;
-  projectPath: string | null;
-}
-
-export function UpdatePanel(_props: UpdatePanelProps) {
+export function UpdatePanel() {
   const { updates, busy, checkUpdates, updateAll, skillError, clearSkillError } = useStore();
   const [rawOpen, setRawOpen] = useState(false);
 
@@ -22,6 +16,9 @@ export function UpdatePanel(_props: UpdatePanelProps) {
   const handleUpdateAll = async () => {
     clearSkillError();
     await updateAll();
+    if (useStore.getState().skillError) {
+      return;
+    }
     await checkUpdates();
   };
 

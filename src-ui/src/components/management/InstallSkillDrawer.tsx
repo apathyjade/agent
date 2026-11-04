@@ -17,14 +17,16 @@ import type { SkillScope, RepoSkillPreview, AgentOption } from '../../types';
 interface InstallSkillDrawerProps {
   open: boolean;
   onClose: () => void;
+  initialSource?: string;
 }
 
-export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
+export function InstallSkillDrawer({ open, onClose, initialSource }: InstallSkillDrawerProps) {
   const {
     agents,
     scope: storeScope,
     projectPath,
     installSkill,
+    setScope,
     busy,
     skillError,
     clearSkillError,
@@ -37,15 +39,20 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
   const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set());
   const [customAgent, setCustomAgent] = useState('');
-  const [scope, setScope] = useState<SkillScope>(storeScope);
+  const [scope, setScopeState] = useState<SkillScope>(storeScope);
   const [copy, setCopy] = useState(false);
   const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setScope(storeScope);
+      setScopeState(storeScope);
+      if (initialSource) {
+        setSource(initialSource);
+        // Trigger preview on next tick after state flush
+        setTimeout(() => previewSource(initialSource), 0);
+      }
     }
-  }, [open, storeScope]);
+  }, [open, storeScope, initialSource]);
 
   const isBusy = busy === 'install' || installing;
 
@@ -65,8 +72,8 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
     onClose();
   };
 
-  const handlePreview = async () => {
-    const s = source.trim();
+  const previewSource = async (value?: string) => {
+    const s = (value ?? source).trim();
     if (!s) return;
     setPreviewLoading(true);
     setPreviewError(null);
@@ -123,6 +130,9 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
         projectPath,
         copy,
       });
+      if (scope !== storeScope) {
+        await setScope(scope);
+      }
       handleClose();
     } catch {
       // error handled in store
@@ -132,12 +142,13 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
   };
 
   const projectDisabled = scope === 'project' && !projectPath;
-  const canInstall =
+  const canInstall = Boolean(
     source.trim() &&
-    selectedAgents.size > 0 &&
-    !isBusy &&
-    !projectDisabled &&
-    (!preview || preview.skills.length === 0 || selectedSkills.size > 0);
+      selectedAgents.size > 0 &&
+      !isBusy &&
+      !projectDisabled &&
+      (!preview || preview.skills.length === 0 || selectedSkills.size > 0)
+  );
 
   if (!open) return null;
 
@@ -174,13 +185,13 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
                 clearSkillError();
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handlePreview();
+                if (e.key === 'Enter') previewSource();
               }}
               placeholder="例如：vercel-labs/agent-skills"
               className="flex-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-100 dark:placeholder-gray-500"
             />
             <button
-              onClick={handlePreview}
+              onClick={() => previewSource()}
               disabled={!source.trim() || previewLoading || isBusy}
               className="flex items-center gap-1.5 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:border-purple-300 dark:hover:border-purple-700 text-gray-700 dark:text-gray-200 rounded-lg text-sm transition-colors disabled:opacity-50"
             >
@@ -317,7 +328,7 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
           </label>
           <div className="flex items-center gap-2 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
             <button
-              onClick={() => setScope('global')}
+              onClick={() => setScopeState('global')}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 scope === 'global'
                   ? 'bg-white dark:bg-gray-700 text-purple-700 dark:text-purple-300 shadow-sm'
@@ -328,7 +339,7 @@ export function InstallSkillDrawer({ open, onClose }: InstallSkillDrawerProps) {
               全局
             </button>
             <button
-              onClick={() => setScope('project')}
+              onClick={() => setScopeState('project')}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 scope === 'project'
                   ? 'bg-white dark:bg-gray-700 text-purple-700 dark:text-purple-300 shadow-sm'

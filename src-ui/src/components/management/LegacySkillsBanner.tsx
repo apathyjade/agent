@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { AlertTriangle, Archive, ChevronRight, X, Check } from 'lucide-react';
-import type { LegacySkill, AgentOption } from '../../types';
+import type { LegacySkill, AgentOption, LegacyImportResult } from '../../types';
 
 interface LegacySkillsBannerProps {
   skills: LegacySkill[];
@@ -14,6 +14,7 @@ export function LegacySkillsBanner({ skills, agents, onImport }: LegacySkillsBan
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set());
   const [copy, setCopy] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<LegacyImportResult | null>(null);
 
   const importable = useMemo(() => skills.filter((s) => s.importable), [skills]);
   const incompatible = useMemo(() => skills.filter((s) => !s.importable), [skills]);
@@ -47,12 +48,18 @@ export function LegacySkillsBanner({ skills, agents, onImport }: LegacySkillsBan
     const agentIds = Array.from(selectedAgents);
     if (paths.length === 0 || agentIds.length === 0) return;
     setImporting(true);
+    setImportResult(null);
     try {
-      await onImport(paths, agentIds, copy);
-      setExpanded(false);
-      setSelectedPaths(new Set());
-      setSelectedAgents(new Set());
-      setCopy(false);
+      const result = (await onImport(paths, agentIds, copy)) as LegacyImportResult;
+      setImportResult(result);
+      if (!result.failed.length) {
+        setExpanded(false);
+        setSelectedPaths(new Set());
+        setSelectedAgents(new Set());
+        setCopy(false);
+      }
+    } catch (err) {
+      setImportResult({ imported: [], failed: paths.map((path) => ({ path, error: String(err) })) });
     } finally {
       setImporting(false);
     }
@@ -169,6 +176,28 @@ export function LegacySkillsBanner({ skills, agents, onImport }: LegacySkillsBan
               />
               <span className="text-xs text-amber-900 dark:text-amber-200">复制到目标目录（不移动原文件）</span>
             </label>
+
+            {importResult && (
+              <div
+                className={`p-2.5 rounded-lg text-xs ${
+                  importResult.failed.length > 0
+                    ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-400'
+                    : 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50 text-green-700 dark:text-green-400'
+                }`}
+              >
+                导入完成：成功 {importResult.imported.length} 个
+                {importResult.failed.length > 0 && `，失败 ${importResult.failed.length} 个`}
+                {importResult.failed.length > 0 && (
+                  <ul className="mt-1 space-y-0.5">
+                    {importResult.failed.map((f) => (
+                      <li key={f.path} className="truncate">
+                        {f.path}: {f.error}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-2 pt-1">
               <button

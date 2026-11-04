@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { useStore } from '../../store';
 import type { InstalledSkill, SkillScope } from '../../types';
 import { CodeBlock } from '../common/CodeBlock';
+import { agentIdsFromNames } from './skillUtils';
 
 interface SkillDetailPanelProps {
   skill: InstalledSkill;
@@ -21,6 +22,7 @@ export function SkillDetailPanel({ skill, onClose }: SkillDetailPanelProps) {
     removeSkill,
     installSkill,
     projectPath,
+    agents,
     clearSkillContent,
     clearSkillError,
   } = useStore();
@@ -61,7 +63,7 @@ export function SkillDetailPanel({ skill, onClose }: SkillDetailPanelProps) {
       await installSkill({
         source,
         skills: [skill.name],
-        agents: skill.agents,
+        agents: agentIdsFromNames(skill.agents, agents),
         scope,
         projectPath,
         copy: false,

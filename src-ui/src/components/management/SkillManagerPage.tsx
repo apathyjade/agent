@@ -24,7 +24,7 @@ import { SkillDetailPanel } from './SkillDetailPanel';
 import { InstallSkillDrawer } from './InstallSkillDrawer';
 import { LegacySkillsBanner } from './LegacySkillsBanner';
 import { UpdatePanel } from './UpdatePanel';
-import { filterInstalled, isInstalled } from './skillUtils';
+import { filterInstalled, isInstalled, agentIdsFromNames } from './skillUtils';
 import { listProjects } from '../../api/management';
 import type { InstalledSkill, MarketSkill, Project, SkillScope } from '../../types';
 
@@ -99,7 +99,7 @@ function InstalledSkillCard({
       </div>
 
       <div className="px-4 py-2.5 border-t border-gray-50 dark:border-gray-700/30 flex items-center justify-between">
-        <div className="min-w-0">
+        <div className="min-w-0 flex flex-col">
           {skill.source && (
             <a
               href={`https://skills.sh/${skill.source}`}
@@ -112,7 +112,7 @@ function InstalledSkillCard({
               {skill.source}
             </a>
           )}
-          {skill.path && !skill.source && (
+          {skill.path && (
             <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-[200px]">
               {skill.path}
             </p>
@@ -272,18 +272,17 @@ export function SkillManagerPage() {
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<InstalledSkill | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerInitialSource, setDrawerInitialSource] = useState<string | undefined>(undefined);
   const [projects, setProjects] = useState<Project[]>([]);
   const [marketSearch, setMarketSearch] = useState('');
-  const [installingMarket, setInstallingMarket] = useState<string | null>(null);
 
   useEffect(() => {
     fetchEnv();
     fetchAgents();
     fetchInstalled();
     fetchLegacy();
-    fetchMarketTopSkills();
     listProjects().then(setProjects).catch(() => setProjects([]));
-  }, [fetchEnv, fetchAgents, fetchInstalled, fetchLegacy, fetchMarketTopSkills]);
+  }, [fetchEnv, fetchAgents, fetchInstalled, fetchLegacy]);
 
   useEffect(() => {
     if (activeTab === 'market' && marketSkills.length === 0) {
@@ -329,22 +328,9 @@ export function SkillManagerPage() {
     }
   };
 
-  const handleInstallMarket = async (skill: MarketSkill) => {
-    setInstallingMarket(skill.id);
-    try {
-      await installSkill({
-        source: skill.source,
-        skills: [],
-        agents: [],
-        scope,
-        projectPath,
-        copy: false,
-      });
-    } catch {
-      // error handled in store
-    } finally {
-      setInstallingMarket(null);
-    }
+  const handleInstallMarket = (skill: MarketSkill) => {
+    setDrawerInitialSource(skill.source);
+    setDrawerOpen(true);
   };
 
   const handleRemove = async (skill: InstalledSkill) => {
@@ -363,7 +349,7 @@ export function SkillManagerPage() {
       await installSkill({
         source,
         skills: [skill.name],
-        agents: skill.agents,
+        agents: agentIdsFromNames(skill.agents, agents),
         scope: skill.scope === 'project' ? 'project' : 'global',
         projectPath,
         copy: false,
@@ -502,7 +488,7 @@ export function SkillManagerPage() {
               <MarketSkillCard
                 key={skill.id}
                 skill={skill}
-                installing={installingMarket === skill.id}
+                installing={false}
                 installed={isInstalled(skill.name, installed)}
                 onInstall={() => handleInstallMarket(skill)}
               />
@@ -639,6 +625,12 @@ export function SkillManagerPage() {
         ) : undefined
       }
     >
+      {skillError && (
+        <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400 flex items-start gap-2">
+          <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+          <span>{skillError}</span>
+        </div>
+      )}
       {activeTab === 'installed' && (
         <>
           {legacySkills.length > 0 && (
@@ -648,19 +640,22 @@ export function SkillManagerPage() {
               onImport={importLegacy}
             />
           )}
-          {skillError && (
-            <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400 flex items-start gap-2">
-              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
-              <span>{skillError}</span>
-            </div>
-          )}
           {renderInstalledTab()}
         </>
       )}
       {activeTab === 'market' && renderMarketTab()}
-      {activeTab === 'updates' && <UpdatePanel scope={scope} projectPath={projectPath} />}
+      {activeTab === 'updates' && <UpdatePanel />}
 
-      {drawerOpen && <InstallSkillDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />}
+      {drawerOpen && (
+        <InstallSkillDrawer
+          open={drawerOpen}
+          initialSource={drawerInitialSource}
+          onClose={() => {
+            setDrawerOpen(false);
+            setDrawerInitialSource(undefined);
+          }}
+        />
+      )}
 
       {selectedSkill && (
         <SkillDetailPanel skill={selectedSkill} onClose={() => setSelectedSkill(null)} />
