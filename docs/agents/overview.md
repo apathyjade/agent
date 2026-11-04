@@ -35,7 +35,7 @@ agent/
 │   │   ├── mcp/                     # Model Context Protocol
 │   │   ├── memory/                  # 记忆系统
 │   │   ├── pipeline/                # 工作流引擎
-│   │   ├── skills/                  # 技能系统
+│   │   ├── skills/                  # 技能系统（外部 skills CLI 桥接）
 │   │   └── tests/                   # 测试
 │   ├── Cargo.toml
 │   └── tauri.conf.json              # CSP 白名单配置
@@ -128,7 +128,7 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 1. `config.json` → `ProviderRegistry::new()` → 为每个启用的 model 创建 `RigProvider`（内部持有 `DynModel<Completion>`）
 2. `MemoryManager::new()` — 传入 OpenAI API key → 可选初始化 `DynModel<Embedding>`
 3. `IntentRouter::new()` — 创建 `LlmClassifier`（Rig extraction 优先）
-4. `seed_defaults()` / `reconcile_skills()` — 预先注入内置记忆和技能
+4. `seed_defaults()` — 预先注入内置记忆与人格设定（已填充则跳过）
 
 ## IPC 通信
 
@@ -151,7 +151,9 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 | `file_system` | ❌ | 文件读写 |
 | `web_search` | ❌ | 网络搜索 |
 | `code_executor` | ✅ | 代码执行沙箱 |
-| 动态脚本工具 | 按需 | 由 SkillManager 注册 |
+
+> 技能（Skill）不在上表中：技能是 SKILL.md 指令包，由外部 `skills` CLI 安装到各编码代理目录，
+> 供 Claude Code / Codex / OpenCode 等外部代理读取，**不**注册为本应用的 `ToolRegistry` 工具。
 
 ## 记忆系统
 

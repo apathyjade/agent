@@ -29,7 +29,8 @@
 
 ## 工具系统
 
-- **静态注册**：内置工具硬编码在 `ToolRegistry::new()` 中。动态工具通过 SkillManager 的 `register_dynamic` 注册（脚本工具）
+- **静态注册**：内置工具硬编码在 `ToolRegistry::new()` 中；MCP 工具在连接时批量注册、断开时注销。技能不参与工具注册
+- **技能只服务外部代理**：技能管理页不做本应用的工具注册，只调用外部 `skills` CLI 安装/移除 SKILL.md 指令包；清单来自 `skills list --json`，前端不自己解析目录
 - **测试覆盖**：测试文件在 `src-tauri/tests/` 下（calculator、toolchain\*、project_detector、llm）
 
 ## 运行时管理
