@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::error::{AppError, Result};
-use crate::llm::intent::IntentRouterConfig;
 use crate::llm::model::{ModelConfig, ModelProvider};
 use crate::features::mcp::config::McpServerConfig;
 
@@ -32,9 +31,34 @@ pub struct AppConfig {
     /// Key = runtime_type string (e.g. "node"), Value = exact version (e.g. "20.18.3").
     #[serde(default)]
     pub runtime_defaults: std::collections::HashMap<String, String>,
-    /// Intent routing configuration.
+    /// Application-level intent routing switches. Per-intent configuration
+    /// lives in the `intents` table, not here.
     #[serde(default)]
-    pub intent_routing: IntentRouterConfig,
+    pub intent: IntentAppConfig,
+}
+
+/// Application-level intent routing switches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentAppConfig {
+    /// Master switch: when false every message is handled as plain chat.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Model used for classification; `None` uses the default model.
+    #[serde(default)]
+    pub classifier_model_id: Option<String>,
+}
+
+impl Default for IntentAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            classifier_model_id: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -79,7 +103,7 @@ impl Default for AppConfig {
             download_proxy: None,
             active_managers: std::collections::HashMap::new(),
             runtime_defaults: std::collections::HashMap::new(),
-            intent_routing: IntentRouterConfig::default(),
+            intent: IntentAppConfig::default(),
         }
     }
 }
@@ -165,5 +189,45 @@ impl AppConfig {
             model.is_default = model.id == id;
         }
         self.models.iter().any(|m| m.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn old_config_json_with_intent_routing_still_loads() {
+        // `intent_routing` no longer exists; `AppConfig` has no
+        // `deny_unknown_fields`, so the key must be ignored rather than
+        // turning a user's config into a startup error.
+        let json = r#"{
+            "models": [],
+            "enabled_tools": [],
+            "intent_routing": {
+                "enabled": true,
+                "classifier_model_id": null,
+                "intents": { "code": { "auto_escalate": true } }
+            }
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("旧配置必须仍然能加载");
+
+        assert!(config.intent.enabled, "缺失的 intent 段必须默认开启");
+        assert_eq!(config.intent.classifier_model_id, None);
+    }
+
+    #[test]
+    fn empty_intent_section_defaults_to_enabled() {
+        let json = r#"{
+            "models": [],
+            "enabled_tools": [],
+            "intent": {}
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("intent 段缺省字段必须可加载");
+
+        assert!(config.intent.enabled);
+        assert_eq!(config.intent.classifier_model_id, None);
     }
 }

@@ -79,7 +79,12 @@ impl AppState {
         let mcp = McpServerManager::new(tools_arc.clone())
             .with_runtime_manager(toolchain.manager.clone());
 
-        let intent_router = Arc::new(IntentRouter::new(&config.intent_routing));
+        let intent_router = Arc::new(IntentRouter::new(
+            db_arc.clone(),
+            providers_arc.clone(),
+            config.intent.classifier_model_id.clone(),
+            config.intent.enabled,
+        ));
 
         // Build OrchestratorAgent with registered workers
         let mut dispatcher = Dispatcher::new();

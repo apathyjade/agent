@@ -358,7 +358,7 @@ pub async fn send_message_stream(
 
     // ── LLM Intent Classification ──
     let _intent_result: crate::llm::intent::IntentResult = state.intent_router.classify(&content).await;
-    let should_escalate = state.intent_router.should_auto_escalate(&_intent_result.name);
+    let should_escalate = _intent_result.config.auto_escalate;
     log::info!(
         "LLM classified: intent={}, should_escalate={}",
         _intent_result.name,
@@ -507,7 +507,7 @@ pub async fn send_message_stream(
             }
         }
     } else {
-        emit_log(&app_handle, "info", "intent", format!("不触发自主模式，走普通 Chat 流程"));
+        emit_log(&app_handle, "info", "intent", "不触发自主模式，走普通 Chat 流程".to_string());
     }
 
     // ── Phase: building context ──

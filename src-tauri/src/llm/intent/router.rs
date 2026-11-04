@@ -1,109 +1,118 @@
-use crate::llm::intent::classifier::LlmClassifier;
-use crate::llm::intent::{ClassificationResult, IntentConfig, IntentResult, IntentRouterConfig};
+use std::sync::Arc;
 
-/// The intent router: uses LLM to classify user messages and resolves intent configs.
+use tokio::sync::Mutex;
+
+use crate::core::db::models::IntentRecord;
+use crate::core::db::repository::Database;
+use crate::llm::intent::classifier::{apply_confidence, score_intents, LlmClassifier};
+use crate::llm::intent::{IntentConfig, IntentResult, PathSelection};
+use crate::llm::provider::ProviderRegistry;
+
+/// Stable id reported when routing is disabled or cannot be performed.
+const FALLBACK_INTENT_ID: &str = "builtin.software_dev.chat";
+
+/// The intent router: classifies a user message against the enabled intents of
+/// the active intent domain, then projects the winning row into [`IntentResult`].
 pub struct IntentRouter {
+    db: Arc<Mutex<Database>>,
     classifier: LlmClassifier,
-    /// Map from intent name → IntentConfig
-    configs: std::collections::HashMap<String, IntentConfig>,
-    /// Default config (for unknown intents)
-    default_config: IntentConfig,
-    /// Whether routing is enabled
+    /// Whether routing is enabled at all.
     enabled: bool,
 }
 
 impl IntentRouter {
-    /// Build an IntentRouter from config.
-    pub fn new(config: &IntentRouterConfig) -> Self {
-        // TODO(Task 7): construct with the real `Database` + `ProviderRegistry`.
-        // Until the DB-backed intents are wired in, the classifier has nothing
-        // to choose from and always returns `None`; `classify` degrades to chat.
-        let classifier = LlmClassifier::new(
-            std::sync::Arc::new(tokio::sync::Mutex::new(
-                crate::llm::provider::ProviderRegistry::new(&[]),
-            )),
-            config.classifier_model_id.clone(),
-        );
-
-        // Merge default intents with user-configured intents
-        let mut configs = super::default_intents();
-        for (name, cfg) in &config.intents {
-            configs.insert(name.clone(), cfg.clone());
-        }
-
+    pub fn new(
+        db: Arc<Mutex<Database>>,
+        providers: Arc<Mutex<ProviderRegistry>>,
+        classifier_model_id: Option<String>,
+        enabled: bool,
+    ) -> Self {
         Self {
-            classifier,
-            configs,
-            default_config: IntentConfig {
-                system_prompt_appendix: None,
-                enabled_tools: None,
-                model_id: None,
-                max_iterations: None,
-                auto_escalate: false,
-            },
-            enabled: config.enabled,
+            db,
+            classifier: LlmClassifier::new(providers, classifier_model_id),
+            enabled,
         }
     }
 
-    /// Classify a user message into an intent. Uses LLM with fallback.
+    /// Classify a user message into an intent. Never fails: every degraded case
+    /// returns the same "plain chat" shape so the message still gets answered.
     pub async fn classify(&self, content: &str) -> IntentResult {
         if !self.enabled {
-            return IntentResult {
-                name: "chat".to_string(),
-                config: self.default_config.clone(),
-                path: IntentResult::path_for_intent("chat"),
-            };
+            return Self::fallback();
         }
 
-        // Task 7 loads the enabled intents from the database and passes them
-        // here. With an empty slice the classifier returns `None` and routing
-        // degrades to chat instead of blocking message handling.
-        let result = match self.classifier.classify(content, &[]).await {
-            Some((intent, _confidence)) => ClassificationResult {
-                intent,
-                reason: String::new(),
-                auto_escalate: true,
-                max_iterations: 10,
-            },
-            None => ClassificationResult {
-                intent: "chat".to_string(),
-                reason: "router: no intents configured for classification".to_string(),
-                auto_escalate: false,
-                max_iterations: 1,
+        // Read the domain and intents into an owned `Vec`, then drop the guard.
+        // Holding the DB guard across the classifier's `.await` would stall
+        // every other DB user for the duration of an LLM round-trip.
+        let intents = {
+            let db = self.db.lock().await;
+            match db.get_active_intent_domain() {
+                Ok(Some(domain)) => match db.list_enabled_intents(&domain.id) {
+                    Ok(intents) if !intents.is_empty() => Some(intents),
+                    Ok(_) => {
+                        log::warn!(
+                            "intent routing: active domain '{}' has no enabled intents, falling back to plain chat",
+                            domain.id
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "intent routing: failed to list intents for domain '{}': {error}, falling back to plain chat",
+                            domain.id
+                        );
+                        None
+                    }
+                },
+                Ok(None) => {
+                    log::warn!(
+                        "intent routing: no active intent domain, falling back to plain chat"
+                    );
+                    None
+                }
+                Err(error) => {
+                    log::warn!(
+                        "intent routing: failed to read the active intent domain: {error}, falling back to plain chat"
+                    );
+                    None
+                }
+            }
+        };
+
+        let Some(intents) = intents else {
+            return Self::fallback();
+        };
+
+        // LLM first, then the data-driven scorer, then `clarify` (else the
+        // first enabled intent). The classifier returns `None` on every
+        // failure, so this chain always resolves to an id from `intents`.
+        let (chosen, score) = match self.classifier.classify(content, &intents).await {
+            Some(hit) => hit,
+            None => match score_intents(content, &intents) {
+                Some(hit) => hit,
+                None => {
+                    let fallback = intents
+                        .iter()
+                        .find(|intent| intent.id.ends_with(".clarify"))
+                        .or_else(|| intents.first());
+                    match fallback {
+                        Some(record) => (record.id.clone(), 1.0),
+                        None => return Self::fallback(),
+                    }
+                }
             },
         };
 
-        // Get config for detected intent, or use default
-        let config = self
-            .configs
-            .get(&result.intent)
-            .cloned()
-            .unwrap_or_else(|| {
-                // Create config from LLM result for unknown intents
-                IntentConfig {
-                    system_prompt_appendix: None,
-                    enabled_tools: None,
-                    model_id: None,
-                    max_iterations: Some(result.max_iterations),
-                    auto_escalate: result.auto_escalate,
-                }
-            });
+        let intent_id = apply_confidence(&intents, &chosen, score);
+        let record = intents
+            .iter()
+            .find(|intent| intent.id == intent_id)
+            .or_else(|| intents.first());
+        let Some(record) = record else {
+            return Self::fallback();
+        };
 
-        let intent_name = result.intent;
-        let path = IntentResult::path_for_intent(&intent_name);
-        IntentResult {
-            name: intent_name,
-            config,
-            path,
-        }
-    }
-
-    /// Check if an intent should trigger autonomous session mode.
-    pub fn should_auto_escalate(&self, intent_name: &str) -> bool {
-        self.configs
-            .get(intent_name)
-            .map(|cfg| cfg.auto_escalate)
-            .unwrap_or(true) // Unknown intents default to true (conservative)
+        Self::project(record, score)
     }
 
     /// Resolve the final tool list by intersecting session tools with intent tools.
@@ -128,51 +137,265 @@ impl IntentRouter {
             (None, _) => None,
         }
     }
+
+    /// Plain-chat result: fast path, no tool restriction, no iteration cap.
+    fn fallback() -> IntentResult {
+        IntentResult {
+            id: FALLBACK_INTENT_ID.to_string(),
+            name: "chat".to_string(),
+            config: IntentConfig {
+                system_prompt_appendix: None,
+                enabled_tools: None,
+                model_id: None,
+                max_iterations: None,
+                auto_escalate: false,
+            },
+            path: PathSelection::Fast,
+            confidence: 0.0,
+        }
+    }
+
+    /// Project a stored intent row into the router's result type.
+    fn project(record: &IntentRecord, confidence: f32) -> IntentResult {
+        let optional = |value: &str| {
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        };
+
+        IntentResult {
+            id: record.id.clone(),
+            name: record.name.clone(),
+            config: IntentConfig {
+                system_prompt_appendix: optional(&record.system_prompt_appendix),
+                enabled_tools: if record.allowed_tools.is_empty() {
+                    None
+                } else {
+                    Some(record.allowed_tools.clone())
+                },
+                model_id: optional(&record.model_id),
+                max_iterations: record.max_iterations,
+                auto_escalate: record.auto_escalate,
+            },
+            path: if record.path.eq_ignore_ascii_case("deep") {
+                PathSelection::Deep
+            } else {
+                PathSelection::Fast
+            },
+            confidence: confidence.clamp(0.0, 1.0),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::intent::IntentRouterConfig;
+    use crate::core::db::models::IntentDomainRecord;
 
-    fn make_config(enabled: bool) -> IntentRouterConfig {
-        IntentRouterConfig {
-            enabled,
-            classifier_model_id: None,
-            intents: std::collections::HashMap::new(),
+    const TS: &str = "2026-11-04T00:00:00Z";
+    /// An example that `score_intents` can match by substring.
+    const MATCHING_MESSAGE: &str = "把这段改成异步";
+
+    fn test_db() -> Arc<Mutex<Database>> {
+        Arc::new(Mutex::new(Database::new_test().expect("in-memory db")))
+    }
+
+    /// Empty registry: provider resolution fails, so every test exercises the
+    /// data-driven fallback chain rather than a network call.
+    fn empty_providers() -> Arc<Mutex<ProviderRegistry>> {
+        Arc::new(Mutex::new(ProviderRegistry::new(&[])))
+    }
+
+    fn router(db: Arc<Mutex<Database>>, enabled: bool) -> IntentRouter {
+        IntentRouter::new(db, empty_providers(), None, enabled)
+    }
+
+    fn mk_domain(id: &str) -> IntentDomainRecord {
+        IntentDomainRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            is_active: false,
+            source: "user".to_string(),
+            version: 1,
+            created_at: TS.to_string(),
+            updated_at: TS.to_string(),
         }
     }
 
-    #[test]
-    fn test_should_auto_escalate_known() {
-        let cfg = IntentRouterConfig::default();
-        // can't create router without providers in test, but we can test the default configs
-        assert_eq!(cfg.intents.get("code").map(|c| c.auto_escalate), Some(true));
-        assert_eq!(cfg.intents.get("chat").map(|c| c.auto_escalate), Some(false));
-        assert_eq!(cfg.intents.get("auto").map(|c| c.auto_escalate), Some(true));
+    fn mk_intent(id: &str, domain_id: &str, path: &str) -> IntentRecord {
+        IntentRecord {
+            id: id.to_string(),
+            domain_id: domain_id.to_string(),
+            name: format!("意图 {id}"),
+            description: "测试意图".to_string(),
+            examples: vec![MATCHING_MESSAGE.to_string()],
+            workflow: String::new(),
+            allowed_tools: vec!["read_file".to_string()],
+            default_agent: String::new(),
+            scope: "global".to_string(),
+            enabled: true,
+            version: 1,
+            confidence_threshold: 0.5,
+            fallback_intent: String::new(),
+            path: path.to_string(),
+            auto_escalate: false,
+            system_prompt_appendix: String::new(),
+            model_id: String::new(),
+            max_iterations: None,
+            sort_order: 0,
+            created_at: TS.to_string(),
+            updated_at: TS.to_string(),
+        }
+    }
+
+    /// Insert a domain plus one enabled intent and make the domain active.
+    fn seed_active_domain(db: &Database, intent: &IntentRecord) {
+        db.insert_intent_domain(&mk_domain(&intent.domain_id))
+            .expect("insert domain");
+        db.insert_intent(intent).expect("insert intent");
+        db.set_active_intent_domain(&intent.domain_id)
+            .expect("activate domain");
+    }
+
+    #[tokio::test]
+    async fn disabled_router_returns_fast_path() {
+        let db = test_db();
+        // A deep intent is stored and active: if the router read the DB it
+        // would route deep. Disabled must win before any query.
+        {
+            let guard = db.lock().await;
+            seed_active_domain(
+                &guard,
+                &mk_intent("test.deep", "test.domain", "deep"),
+            );
+        }
+
+        let result = router(db, false).classify(MATCHING_MESSAGE).await;
+
+        assert_eq!(result.id, "builtin.software_dev.chat");
+        assert_eq!(result.path, PathSelection::Fast);
+        assert!(result.config.enabled_tools.is_none());
+        assert!(result.config.max_iterations.is_none());
+        assert!(!result.config.auto_escalate);
+    }
+
+    #[tokio::test]
+    async fn no_active_domain_returns_fast_path_without_panicking() {
+        let db = test_db();
+        // Domain exists but is not active.
+        {
+            let guard = db.lock().await;
+            guard
+                .insert_intent_domain(&mk_domain("test.inactive"))
+                .expect("insert domain");
+            guard
+                .insert_intent(&mk_intent("test.inactive.intent", "test.inactive", "deep"))
+                .expect("insert intent");
+        }
+
+        let result = router(db, true).classify(MATCHING_MESSAGE).await;
+
+        assert_eq!(result.id, "builtin.software_dev.chat");
+        assert_eq!(result.path, PathSelection::Fast);
+        assert!(result.config.enabled_tools.is_none());
+        assert!(result.config.max_iterations.is_none());
+    }
+
+    #[tokio::test]
+    async fn domain_with_zero_enabled_intents_returns_fast_path() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_active_domain(&guard, &mk_intent("test.disabled", "test.domain", "deep"));
+            // Bypass the "cannot disable the last enabled intent" guard to
+            // reproduce a domain left without enabled intents.
+            guard
+                .conn
+                .execute("UPDATE intents SET enabled = 0", [])
+                .expect("disable intents");
+        }
+
+        let result = router(db, true).classify(MATCHING_MESSAGE).await;
+
+        assert_eq!(result.id, "builtin.software_dev.chat");
+        assert_eq!(result.path, PathSelection::Fast);
+        assert!(result.config.max_iterations.is_none());
+    }
+
+    #[tokio::test]
+    async fn path_comes_from_the_intent_row() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_active_domain(&guard, &mk_intent("test.deep", "test.domain", "deep"));
+        }
+
+        let result = router(db, true).classify(MATCHING_MESSAGE).await;
+
+        assert_eq!(result.id, "test.deep");
+        assert_eq!(result.path, PathSelection::Deep);
+    }
+
+    #[tokio::test]
+    async fn config_projects_row_fields() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            let mut intent = mk_intent("test.configured", "test.domain", "fast");
+            intent.name = "配置意图".to_string();
+            intent.allowed_tools = vec!["read_file".to_string(), "code_executor".to_string()];
+            intent.max_iterations = Some(7);
+            intent.model_id = "gpt-4o-mini".to_string();
+            intent.auto_escalate = true;
+            intent.system_prompt_appendix = "be strict".to_string();
+            seed_active_domain(&guard, &intent);
+        }
+
+        let result = router(db, true).classify(MATCHING_MESSAGE).await;
+
+        assert_eq!(result.id, "test.configured");
+        assert_eq!(result.name, "配置意图");
+        assert_eq!(
+            result.config.enabled_tools,
+            Some(vec!["read_file".to_string(), "code_executor".to_string()])
+        );
+        assert_eq!(result.config.max_iterations, Some(7));
+        assert_eq!(result.config.model_id.as_deref(), Some("gpt-4o-mini"));
+        assert!(result.config.auto_escalate);
+        assert_eq!(
+            result.config.system_prompt_appendix.as_deref(),
+            Some("be strict")
+        );
+        assert_eq!(result.path, PathSelection::Fast);
     }
 
     #[test]
-    fn test_resolve_tools_intersection() {
-        let cfg = make_config(true);
-        let router = IntentRouter::new(&cfg);
-
+    fn resolve_tools_intersects_session_and_intent_tools() {
+        let router = router(test_db(), true);
         let session = Some(vec![
             "calculator".to_string(),
             "code_executor".to_string(),
             "web_search".to_string(),
         ]);
         let intent = Some(vec!["code_executor".to_string(), "file_system".to_string()]);
-        let result = router.resolve_tools(session, intent.as_ref());
-        assert_eq!(result, Some(vec!["code_executor".to_string()]));
+
+        assert_eq!(
+            router.resolve_tools(session, intent.as_ref()),
+            Some(vec!["code_executor".to_string()])
+        );
     }
 
     #[test]
-    fn test_resolve_tools_no_intent_restriction() {
-        let cfg = make_config(true);
-        let router = IntentRouter::new(&cfg);
+    fn resolve_tools_without_intent_restriction_keeps_session_tools() {
+        let router = router(test_db(), true);
         let session = Some(vec!["calculator".to_string(), "web_search".to_string()]);
-        let result = router.resolve_tools(session, None);
-        assert_eq!(result, Some(vec!["calculator".to_string(), "web_search".to_string()]));
+
+        assert_eq!(
+            router.resolve_tools(session, None),
+            Some(vec!["calculator".to_string(), "web_search".to_string()])
+        );
     }
 }
