@@ -98,7 +98,7 @@ agent/
 **硬性约束（可自动检查，`#[cfg(test)]` 代码同样适用）：**
 
 - `core/` 下不得出现 `crate::llm|agent|features|app|runtime`。
-- `core/db/` 下不得出现 `crate::agent|features`（DB 记录类型已下沉到 `core/db/models.rs`）。
+- `core/db/` 下不得出现 `crate::agent|features`（DB 记录类型已下沉到 `core/db/models.rs`）。`agent/` 内仅允许 `agent/workers/memory.rs` 的 rustdoc 链接提及 `crate::features::…`，那不是依赖边。
 - `app/` 之外不得出现 `crate::app`（含 `crate::app::config`、`crate::app::commands`、`crate::app::state`）；唯一例外是 crate 根 `lib.rs` 作为组合根的那行导入。
 - `llm/` 下不得出现 `crate::app`。
 
@@ -119,7 +119,7 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│   AgentLoop / Lifecycle / Intent / Execution        │  ← AI 消费者模块
+│   ToolLoop / Lifecycle / Intent / Execution         │  ← AI 消费者模块
 ├─────────────────────────────────────────────────────┤
 │               ProviderBox trait                      │  ← 统一适配层
 │    prompt() / chat() / prompt_with_tools()          │
@@ -160,10 +160,10 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 |------|----------|----------|
 | **LLM 对话** | `ProviderBox::prompt()` / `chat()` → `rig::agent::Agent` | `llm/rig.rs` — `RigProvider` |
 | **工具调用** | `AgentBuilder::dynamic_tools()` + `rig::tool::DynamicTool`，agent 内部驱动工具循环 | `llm/rig.rs` / `agent/tools/registry.rs` — `to_rig_tools()` |
-| **流式传输** | `AgentRunner::stream()` → `MultiTurnStreamItem`（取 `StreamEvent::Text` 与 `FinalResponse`） | `llm/rig.rs` — `stream_prompt()` / `stream_with_tools()` |
+| **流式传输** | `ProviderBox::stream_prompt()` / `stream_with_tools()` → `MultiTurnStreamItem`（取 `StreamEvent::Text` 与 `FinalResponse`） | `llm/rig.rs` — `stream_prompt()` / `stream_with_tools()` |
 | **语义搜索** | `provider.embedding(id, None)` → `DynModel<Embedding>` + `InMemoryVectorIndex` | `features/memory/mod.rs` — `retrieve_relevant()` |
 | **结构化提取** | `rig::extractor::ExtractorBuilder::<T>::new(model)` — 编译期类型安全 | `llm/rig.rs` — `extract_structured::<T>()` |
-| **工具执行** | `agent/fast_loop.rs` + `ToolRegistry` — AgentLoop 执行 tool_calls | `agent/fast_loop.rs` — `run()` / `run_stream()` |
+| **工具执行** | `agent/fast_loop.rs` + `ToolRegistry` — `ToolLoop` 执行 tool_calls | `agent/fast_loop.rs` — `run()` / `run_stream()` |
 
 ### 关键设计决策
 
