@@ -48,7 +48,8 @@ agent/
 │   │   │   ├── skills/              # 技能系统（外部 skills CLI 桥接）
 │   │   │   ├── mcp/                 # Model Context Protocol
 │   │   │   ├── workspace/           # 工作区与代码索引
-│   │   │   └── workflow/            # 工作流引擎（engine + models + scanner）
+│   │   │   ├── workflow/            # 工作流引擎（engine + models + scanner）
+│   │   │   └── intent_management/   # 意图库（seeds + json 导入导出）
 │   │   └── app/                     # 第 6 层：组合根与 Tauri 适配层
 │   │       ├── config.rs            # AppConfig（load/save、runtime_options）
 │   │       ├── state.rs             # AppState（Arc<Mutex<>> 共享状态）
@@ -101,6 +102,17 @@ agent/
 - `core/db/` 下不得出现 `crate::agent|features`（DB 记录类型已下沉到 `core/db/models.rs`）。`agent/` 内仅允许 `agent/workers/memory.rs` 的 rustdoc 链接提及 `crate::features::…`，那不是依赖边。
 - `app/` 之外不得出现 `crate::app`（含 `crate::app::config`、`crate::app::commands`、`crate::app::state`）；唯一例外是 crate 根 `lib.rs` 作为组合根的那行导入。
 - `llm/` 下不得出现 `crate::app`。
+
+## 意图管理
+
+意图是**可管理的数据**，不是代码常量：两张表（`intent_domains` / `intents`）落在 `core/db`，仓库方法在 `core/db/intent_repo.rs`，内置模板与导入导出在 `features/intent_management/`，IPC 在 `app/commands/intent.rs`，界面是 `src-ui/src/components/management/IntentManagerPage.tsx`。
+
+- **领域（domain）是一套可切换的工作集**，同一时刻恰好一个活跃；路由只读活跃领域里**启用**的意图。
+- **首次启动播种**内置的「程序开发」领域（12 条意图），成功后写 `settings` 的 `intent.seeded` 标记，之后永不重播——用户删掉内置领域也不会复活。整段播种在一个事务里完成，进程中途崩溃不会留下半成品。
+- **分类提示词由数据生成**（描述 + 示例），所以「加一条意图」不需要改提示词；LLM 走 `ProviderRegistry`，取不到就退回到示例/双字重合度打分，仍无结果再按 `confidence_threshold` 落到 `fallback_intent`。
+- **`fallback_intent` 存的是意图 id**：导入时接受 id 或名字并改写成新 id，命令层同样归一化；删除意图会在同一事务里清空指向它的引用。
+- **`allowed_tools: []` 表示「不允许任何工具」**，不是「不限制」；但这条只在快路径成立——`path = deep` 会先返回 orchestrator，所以「深路径 + 空工具清单」被 `IntentInput::validate` 直接拒绝。
+- `workflow` / `default_agent` / `scope` 目前**只存不用**，等后续接入执行链；界面上标注为「后续接入」。
 
 ## AI 基础设施 — Rig Framework
 
