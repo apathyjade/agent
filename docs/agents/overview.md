@@ -18,25 +18,43 @@
 agent/
 ├── src-tauri/                        # Tauri Rust 后端
 │   ├── src/
-│   │   ├── lib.rs                   # 入口：模块声明 + invoke_handler
 │   │   ├── main.rs                  # 二进制入口
-│   │   ├── config.rs                # AppConfig、ModelProvider 枚举
-│   │   ├── state.rs                 # AppState（Arc<Mutex<>> 共享状态）
-│   │   ├── error.rs                 # AppError + Result<T>
-│   │   ├── keychain.rs              # 安全凭据存储
-│   │   ├── agent/loop.rs            # Agent 执行循环
-│   │   ├── api/                     # LLM API 客户端（openai, anthropic）
-│   │   ├── cli/                     # CLI 入口（toolchain 子命令，独立于桌面应用）
-│   │   ├── commands/                # IPC 命令，按功能拆分
-│   │   ├── db/                      # SQLite 存储（models + repository）
-│   │   ├── tools/                   # 工具系统（calculator, file_system 等）
-│   │   ├── toolchain/               # 独立运行时引擎（检测、安装、解析、别名）
-│   │   ├── project_env/             # 应用侧项目绑定（依赖 db，建立在 toolchain 之上）
-│   │   ├── mcp/                     # Model Context Protocol
-│   │   ├── memory/                  # 记忆系统
-│   │   ├── pipeline/                # 工作流引擎
-│   │   ├── skills/                  # 技能系统（外部 skills CLI 桥接）
-│   │   └── tests/                   # 测试
+│   │   ├── lib.rs                   # 入口：模块声明 + invoke_handler（组合根）
+│   │   ├── core/                    # 第 1 层：无内部依赖
+│   │   │   ├── error.rs             # AppError + Result<T>
+│   │   │   ├── keychain.rs          # 安全凭据存储
+│   │   │   ├── ipc.rs               # IPC 事件类型（StreamChunk 等）
+│   │   │   └── db/                  # SQLite 存储（models + repository）
+│   │   ├── runtime/                 # 第 2 层：本地运行时引擎
+│   │   │   ├── toolchain/           # 独立运行时引擎（检测、安装、解析、别名）
+│   │   │   └── project_env/         # 应用侧项目绑定（建立在 toolchain 之上）
+│   │   ├── llm/                     # 第 3 层（与 runtime 并列，互不依赖）：模型接入与意图路由
+│   │   │   ├── model.rs             # ModelProvider、ModelConfig
+│   │   │   ├── catalog.rs           # ModelInfo、PROVIDER_OPTIONS、PROVIDER_MODELS
+│   │   │   ├── provider.rs          # ProviderBox 适配层
+│   │   │   ├── rig.rs               # RigProvider（DynModel<Completion>）
+│   │   │   ├── util.rs
+│   │   │   └── intent/              # 意图路由（classifier + router）
+│   │   ├── agent/                   # 第 4 层：Agent 运行时
+│   │   │   ├── fast_loop.rs         # Agent 执行循环
+│   │   │   ├── tools/               # 工具系统（base + registry + calculator 等）
+│   │   │   ├── workers/
+│   │   │   ├── critic/
+│   │   │   └── orchestrator/
+│   │   ├── features/                # 第 5 层：业务能力
+│   │   │   ├── session/             # 会话域（lifecycle/ 生命周期管理）
+│   │   │   ├── memory/              # 记忆系统
+│   │   │   ├── persona/             # 人格设定
+│   │   │   ├── skills/              # 技能系统（外部 skills CLI 桥接）
+│   │   │   ├── mcp/                 # Model Context Protocol
+│   │   │   ├── workspace/           # 工作区与代码索引
+│   │   │   └── workflow/            # 工作流引擎（engine + models + scanner）
+│   │   └── app/                     # 第 6 层：组合根与 Tauri 适配层
+│   │       ├── config.rs            # AppConfig（load/save、runtime_options）
+│   │       ├── state.rs             # AppState（Arc<Mutex<>> 共享状态）
+│   │       ├── cli/                 # CLI 入口（toolchain 子命令，独立于桌面应用）
+│   │       └── commands/            # IPC 命令，按功能拆分
+│   ├── tests/                       # 集成测试
 │   ├── Cargo.toml
 │   └── tauri.conf.json              # CSP 白名单配置
 ├── src-ui/                          # React 前端
@@ -49,6 +67,40 @@ agent/
 ├── scripts/                         # AI 工作流脚本
 └── docs/                            # 项目文档
 ```
+
+## 模块分层与依赖规则
+
+顶层只有 6 个目录 + `lib.rs` + `main.rs`，依赖方向单向下行：读目录名就能判断谁能引用谁。
+
+**允许方向（只允许自上而下引用）：**
+
+| 层 | 可依赖 |
+|---|---|
+| `core` | 仅外部 crate |
+| `runtime` | `core` |
+| `llm` | `core` |
+| `agent` | `core`, `llm` |
+| `features` | `core`, `runtime`, `llm`, `agent` |
+| `app` | 全部 |
+
+`runtime` 与 `llm` 是并列的两条腿，互不依赖。
+
+**已记录例外（3 处，均为「Agent 运行时调用具体能力」，允许保留）：**
+
+| 文件 | 引用 | 理由 |
+|---|---|---|
+| `agent/orchestrator/pipeline_adapter.rs` | `features::workflow` | 把 workflow 定义转换成执行计划，是 orchestrator 的适配器 |
+| `agent/tools/run_workflow.rs` | `features::workflow` | 工具直接驱动工作流引擎 |
+| `agent/workers/code_explorer.rs` | `features::workspace::search` | 代码探索 Worker 使用工作区索引 |
+
+> 这三处要清零，做法是把对应实现移入 `features/`、由 `app/state.rs` 注入——那属于行为重构，不在结构重组范围内。
+
+**硬性约束（可自动检查，`#[cfg(test)]` 代码同样适用）：**
+
+- `core/` 下不得出现 `crate::llm|agent|features|app|runtime`。
+- `core/db/` 下不得出现 `crate::agent|features`（DB 记录类型已下沉到 `core/db/models.rs`）。
+- `app/` 之外不得出现 `crate::app`（含 `crate::app::config`、`crate::app::commands`、`crate::app::state`）；唯一例外是 crate 根 `lib.rs` 作为组合根的那行导入。
+- `llm/` 下不得出现 `crate::app`。
 
 ## AI 基础设施 — Rig Framework
 
@@ -106,19 +158,19 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 
 | 能力 | Rust API | 实现位置 |
 |------|----------|----------|
-| **LLM 对话** | `ProviderBox::prompt()` / `chat()` → `rig::agent::Agent` | `api/rig.rs` — `RigProvider` |
-| **工具调用** | `AgentBuilder::dynamic_tools()` + `rig::tool::DynamicTool`，agent 内部驱动工具循环 | `api/rig.rs` / `tools/registry.rs` — `to_rig_tools()` |
-| **流式传输** | `AgentRunner::stream()` → `MultiTurnStreamItem`（取 `StreamEvent::Text` 与 `FinalResponse`） | `api/rig.rs` — `stream_prompt()` / `stream_with_tools()` |
-| **语义搜索** | `provider.embedding(id, None)` → `DynModel<Embedding>` + `InMemoryVectorIndex` | `memory/mod.rs` — `retrieve_relevant()` |
-| **结构化提取** | `rig::extractor::ExtractorBuilder::<T>::new(model)` — 编译期类型安全 | `api/rig.rs` — `extract_structured::<T>()` |
-| **工具执行** | `agent/loop.rs` + `ToolRegistry` — AgentLoop 执行 tool_calls | `agent/loop.rs` — `run()` / `run_stream()` |
+| **LLM 对话** | `ProviderBox::prompt()` / `chat()` → `rig::agent::Agent` | `llm/rig.rs` — `RigProvider` |
+| **工具调用** | `AgentBuilder::dynamic_tools()` + `rig::tool::DynamicTool`，agent 内部驱动工具循环 | `llm/rig.rs` / `agent/tools/registry.rs` — `to_rig_tools()` |
+| **流式传输** | `AgentRunner::stream()` → `MultiTurnStreamItem`（取 `StreamEvent::Text` 与 `FinalResponse`） | `llm/rig.rs` — `stream_prompt()` / `stream_with_tools()` |
+| **语义搜索** | `provider.embedding(id, None)` → `DynModel<Embedding>` + `InMemoryVectorIndex` | `features/memory/mod.rs` — `retrieve_relevant()` |
+| **结构化提取** | `rig::extractor::ExtractorBuilder::<T>::new(model)` — 编译期类型安全 | `llm/rig.rs` — `extract_structured::<T>()` |
+| **工具执行** | `agent/fast_loop.rs` + `ToolRegistry` — AgentLoop 执行 tool_calls | `agent/fast_loop.rs` — `run()` / `run_stream()` |
 
 ### 关键设计决策
 
 - **类型擦除一次**：`create_rig_provider()` 在配置加载时把各 provider 的 `Model<W>` 擦除为 `DynModel<Completion>`，因此所有后端共享同一个 `RigProvider`，可以直接放进 `Arc<dyn ProviderBox>`
 - **适配器而非替换**：`ProviderBox` trait 隔离内部模块与 Rig 类型；Rig 的 `Message`、`DynamicTool` 仅在适配层和工具层出现
 - **agent 按请求构建**：`AgentBuilder::new(model.clone()).preamble(..).build()` 每次调用构建，preamble 由调用方传入
-- **工具契约自有**：Rig 0.45 起不再有 object-safe 的 `ToolDyn`，项目保留 `AgentTool`（`tools/trait.rs`），在构建工具集时转成 `DynamicTool`
+- **工具契约自有**：Rig 0.45 起不再有 object-safe 的 `ToolDyn`，项目保留 `AgentTool`（`agent/tools/base.rs`），在构建工具集时转成 `DynamicTool`
 - **降级策略**：embedding 不可用时 → LIKE 搜索；extraction 失败时 → 回退到 chat JSON 解析
 
 ### 进程启动
@@ -135,7 +187,7 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 约 100 个 IPC 命令，通过 Tauri `invoke()` 调用。Rust 端 `snake_case` 命名，前端 `invoke()` 使用驼峰参数。
 流式传输通过 Tauri 事件 `stream_chunk` 实现，前端通过 `listen('stream_chunk', callback)` 接收。
 
-## Agent 循环（`agent/loop.rs`）
+## Agent 循环（`agent/fast_loop.rs`）
 
 - 重试 ×3，指数退避，仅重试可恢复错误（网络超时等）
 - 上下文窗口优化：保留 system 消息，从后往前裁剪

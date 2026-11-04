@@ -6,7 +6,7 @@
 - **Provider 非 feature-gated**：Rig 0.46 中所有 provider 内置在 rig-core 中，**没有** `openai`/`anthropic` 等 feature flag。`features = ["openai", "anthropic"]` 会导致构建失败——正确方式：`rig = "0.46"`
 - **schemars 版本匹配**：`extract_structured<T>()` 要求 T 实现 `schemars::JsonSchema`。Rig 内部使用 `schemars v1.2.x`，项目中需使用相同版本，否则 trait bound 不满足（错误："trait `schemars::JsonSchema` is not satisfied"）
 - **客户端构造不再返回 Result**：`OpenAI::new(key)` / `Anthropic::new(key)` 现在是直接返回客户端；只有 `from_env()` 返回 `Result`。真正的错误边界在 `AgentRunner` 执行时
-- **工具不是 `ToolDyn`**：自定义工具实现项目内的 `tools::r#trait::AgentTool`，由 `ToolRegistry::to_rig_tools()` 转成 `rig::tool::DynamicTool`；直接 `impl rig::tool::ToolDyn` 会编译失败
+- **工具不是 `ToolDyn`**：自定义工具实现项目内的 `agent::tools::base::AgentTool`，由 `ToolRegistry::to_rig_tools()` 转成 `rig::tool::DynamicTool`；直接 `impl rig::tool::ToolDyn` 会编译失败
 - **流式传输不携带工具调用**：当前流式适配器只透出文本 delta（`StreamEvent::Text`）和 `FinalResponse`。工具调用走 `prompt_with_tools()` 的非流式路径，通过 `AgentLoop` 的输出通道推送 ToolCall/ToolResult 事件
 - **记忆语义搜索依赖 OpenAI API**：`MemoryManager` 的语义搜索需要 OpenAI API key（`OPENAI_API_KEY` 环境变量或 config 中第一个 OpenAI 模型的 key）。无 key 时自动降级到关键词 LIKE 搜索
 

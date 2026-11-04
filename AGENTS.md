@@ -71,6 +71,8 @@ cd src-tauri && cargo tauri build
 
 **前置依赖**：Rust 1.77.2+（edition 2021）、Node.js 18+
 
+**分层**：`core → runtime/llm → agent → features → app`（`runtime` 与 `llm` 并列，互不依赖；只允许下层被上层引用）。
+
 ---
 
 ## 速查
@@ -81,11 +83,11 @@ cd src-tauri && cargo tauri build
 |------|-----------|
 | 构建检查 | `cd src-tauri && cargo check` |
 | 前端类型检查 | `cd src-ui && npx tsc --noEmit` |
-| 添加 IPC 命令 | `commands/` 下新建文件，在 `lib.rs` 注册 handler |
-| 添加工具 | `tools/` 下实现 `AgentTool` trait，`ToolRegistry::new()` 注册 |
-| 添加 provider | `config.rs` 的 `ModelProvider` 加枚举值，`api/provider.rs` 注册 |
-| 添加运行时 | `toolchain/registry.rs` 注册，实现 detector + installer |
-| 添加记忆种子 | `memory/seeds.rs` 的 `default_seed_memories()` 中添加 |
+| 添加 IPC 命令 | `app/commands/` 下新建文件，在 `lib.rs` 注册 handler |
+| 添加工具 | `agent/tools/` 下实现 `AgentTool` trait，`ToolRegistry::new()` 注册 |
+| 添加 provider | `llm/model.rs` 的 `ModelProvider` 加枚举值，`llm/provider.rs` 注册 |
+| 添加运行时 | `runtime/toolchain/registry.rs` 注册，实现 detector + installer |
+| 添加记忆种子 | `features/memory/seeds.rs` 的 `default_seed_memories()` 中添加 |
 | 修改 CSP 白名单 | 编辑 `src-tauri/tauri.conf.json` 的 `connect-src` |
 
 ### 工作流命令
