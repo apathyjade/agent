@@ -372,7 +372,8 @@ git commit -m "feat(intent): seed builtin software-dev domain"
 **Interfaces:**
 - Consumes: `IntentRecord`、`IntentDomainRecord`。
 - Produces:
-  - `pub struct IntentJson { pub id: Option<String>, pub name: String, pub description: String, pub examples: Vec<String>, pub workflow: String, pub allowed_tools: Vec<String>, pub default_agent: String, pub scope: String, pub enabled: bool, pub confidence_threshold: f64, pub fallback_intent: String, pub path: String, pub auto_escalate: bool, pub system_prompt_appendix: String, pub model_id: String, pub max_iterations: Option<usize> }` —— 全部 `#[serde(default)]`，`id` 为 `Option` 因为导入时忽略它。
+  - `pub struct IntentJson { pub id: Option<String>, pub name: String, pub description: String, pub examples: Vec<String>, pub workflow: String, pub allowed_tools: Vec<String>, pub default_agent: String, pub scope: String, pub enabled: bool, pub confidence_threshold: f64, pub fallback_intent: String, pub path: String, pub auto_escalate: bool, pub system_prompt_appendix: String, pub model_id: String, pub max_iterations: Option<usize> }`，`id` 为 `Option` 因为导入时忽略它。
+    **缺省值必须等于表结构默认值，不能用裸 `#[serde(default)]`**：`enabled` → `true`、`confidence_threshold` → `0.7`、`scope` → `"global"`、`path` → `"fast"`（各配一个 `default_*` 函数）；其余字段的零值恰好等于表默认（`""` / `[]` / `false` / `None`）才可以用裸 `default`。裸 `default` 会让 `enabled` 缺省成 `false`、阈值缺省成 `0.0`——后者会让置信度回退永久失效且不报错。
   - `pub fn parse_intent_array(json: &str) -> Result<Vec<IntentJson>>` —— 非数组、空数组都返回 `Err(AppError::InvalidInput)`。
   - `pub fn to_records(domain_id: &str, inputs: &[IntentJson], now: &str) -> Result<Vec<IntentRecord>>` —— 生成 uuid 作 id，校验：`name` 非空且领域内不重复、`path ∈ {"fast","deep"}`、`confidence_threshold ∈ [0.0,1.0]`、`fallback_intent` 若非空必须指向本批次的某条 `id` 或 `name`，否则报错并指出是第几条（下标从 1 开始）。`fallback_intent` 在输出里统一换成最终生成的 id。
   - `pub fn to_json_array(intents: &[IntentRecord]) -> Result<String>`
