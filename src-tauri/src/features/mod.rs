@@ -1,3 +1,4 @@
+pub mod intent_management;
 pub mod mcp;
 pub mod memory;
 pub mod persona;

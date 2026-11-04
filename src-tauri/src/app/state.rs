@@ -48,6 +48,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(app_handle: &AppHandle) -> crate::core::error::Result<Self> {
         let db = Database::new()?;
+        // Seed the built-in intent domain before the DB is shared and before
+        // the router is built. `core` cannot depend on `features`, so this
+        // belongs here rather than in `Database::new()`.
+        crate::features::intent_management::seeds::seed_builtin_intents(&db)?;
         let config = AppConfig::load()?;
         let providers = ProviderRegistry::new(&config.models);
         let providers_arc = Arc::new(Mutex::new(providers));
