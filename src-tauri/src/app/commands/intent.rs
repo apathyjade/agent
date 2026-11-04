@@ -4,8 +4,10 @@
 //! `updated_at` itself: the repository never reads the clock.
 //!
 //! The frontend never sends a whole database record for a write. `IntentInput`
-//! carries only the editable fields; `id`, `domain_id`, `version` and the
-//! timestamps stay owned by the backend.
+//! carries only the editable fields and treats every field as optional:
+//! **absent on create means the schema default, absent on update means "keep
+//! the stored value"**. `id`, `domain_id`, `version` and the timestamps stay
+//! owned by the backend.
 
 use tauri::State;
 
@@ -116,99 +118,169 @@ fn default_scope() -> String {
     "global".to_string()
 }
 
+/// Deserializes a present field into `Some`, including an explicit JSON `null`,
+/// so `Option<Option<T>>` can tell "absent" from "present but null".
+fn deserialize_some<'de, T, D>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 /// Editable intent fields accepted from the frontend.
 ///
-/// Defaults mirror the schema, so a minimal payload creates a usable intent.
+/// Every field is optional: create fills absent fields from the schema
+/// defaults, update keeps the stored value for absent fields. `name` is the
+/// one field that is required on create and validated when present on update.
 #[derive(serde::Deserialize)]
 pub struct IntentInput {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub examples: Vec<String>,
-    #[serde(default)]
-    pub workflow: String,
-    #[serde(default)]
-    pub allowed_tools: Vec<String>,
-    #[serde(default)]
-    pub default_agent: String,
-    #[serde(default = "default_scope")]
-    pub scope: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_threshold")]
-    pub confidence_threshold: f64,
-    #[serde(default)]
-    pub fallback_intent: String,
-    #[serde(default = "default_path")]
-    pub path: String,
-    #[serde(default)]
-    pub auto_escalate: bool,
-    #[serde(default)]
-    pub system_prompt_appendix: String,
-    #[serde(default)]
-    pub model_id: String,
-    #[serde(default)]
-    pub max_iterations: Option<usize>,
-    #[serde(default)]
-    pub sort_order: i64,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub examples: Option<Vec<String>>,
+    pub workflow: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub default_agent: Option<String>,
+    pub scope: Option<String>,
+    pub enabled: Option<bool>,
+    pub confidence_threshold: Option<f64>,
+    pub fallback_intent: Option<String>,
+    pub path: Option<String>,
+    pub auto_escalate: Option<bool>,
+    pub system_prompt_appendix: Option<String>,
+    pub model_id: Option<String>,
+    /// `Some(None)` clears the value; `None` keeps whatever is stored.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub max_iterations: Option<Option<usize>>,
+    pub sort_order: Option<i64>,
 }
 
 impl IntentInput {
     /// Validates the fields the router relies on. Returns a message naming the
     /// offending field instead of letting a bad row reach SQLite.
-    fn validate(&self) -> Result<()> {
-        if self.name.trim().is_empty() {
-            return Err(AppError::InvalidInput("意图名称不能为空".to_string()));
+    ///
+    /// `require_name` is true on create (a nameless intent is invalid) and
+    /// false on update (absent means "keep the stored name").
+    fn validate(&self, require_name: bool) -> Result<()> {
+        match self.name.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(AppError::InvalidInput("意图名称不能为空".to_string()));
+            }
+            None if require_name => {
+                return Err(AppError::InvalidInput("意图名称不能为空".to_string()));
+            }
+            _ => {}
         }
 
-        let path = self.path.trim();
-        if !matches!(path, "fast" | "deep") {
-            return Err(AppError::InvalidInput(format!(
-                "path 必须是 fast 或 deep，实际为「{path}」"
-            )));
+        if let Some(path) = self.path.as_deref() {
+            let path = path.trim();
+            if !matches!(path, "fast" | "deep") {
+                return Err(AppError::InvalidInput(format!(
+                    "path 必须是 fast 或 deep，实际为「{path}」"
+                )));
+            }
         }
 
-        if !self.confidence_threshold.is_finite()
-            || !(0.0..=1.0).contains(&self.confidence_threshold)
-        {
-            return Err(AppError::InvalidInput(format!(
-                "confidence_threshold 必须在 [0.0, 1.0] 之间，实际为 {}",
-                self.confidence_threshold
-            )));
+        if let Some(threshold) = self.confidence_threshold {
+            if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                return Err(AppError::InvalidInput(format!(
+                    "confidence_threshold 必须在 [0.0, 1.0] 之间，实际为 {threshold}"
+                )));
+            }
         }
 
         Ok(())
     }
 
-    /// Copies the editable fields onto an existing record, leaving identity,
-    /// `version` and `created_at` untouched.
-    fn apply_to(&self, record: &mut IntentRecord) {
-        record.name = self.name.trim().to_string();
-        record.description = self.description.clone();
-        record.examples = self.examples.clone();
-        record.workflow = self.workflow.clone();
-        record.allowed_tools = self.allowed_tools.clone();
-        record.default_agent = self.default_agent.clone();
-        record.scope = self.scope.clone();
-        record.enabled = self.enabled;
-        record.confidence_threshold = self.confidence_threshold;
-        record.fallback_intent = self.fallback_intent.clone();
-        record.path = self.path.trim().to_string();
-        record.auto_escalate = self.auto_escalate;
-        record.system_prompt_appendix = self.system_prompt_appendix.clone();
-        record.model_id = self.model_id.clone();
-        record.max_iterations = self.max_iterations;
-        record.sort_order = self.sort_order;
+    /// Copies the present fields onto an existing record; absent fields keep
+    /// the stored value. Identity, `version` and `created_at` are untouched.
+    fn apply_to(self, record: &mut IntentRecord) {
+        if let Some(name) = self.name {
+            record.name = name.trim().to_string();
+        }
+        if let Some(description) = self.description {
+            record.description = description;
+        }
+        if let Some(examples) = self.examples {
+            record.examples = examples;
+        }
+        if let Some(workflow) = self.workflow {
+            record.workflow = workflow;
+        }
+        if let Some(allowed_tools) = self.allowed_tools {
+            record.allowed_tools = allowed_tools;
+        }
+        if let Some(default_agent) = self.default_agent {
+            record.default_agent = default_agent;
+        }
+        if let Some(scope) = self.scope {
+            record.scope = scope;
+        }
+        if let Some(enabled) = self.enabled {
+            record.enabled = enabled;
+        }
+        if let Some(confidence_threshold) = self.confidence_threshold {
+            record.confidence_threshold = confidence_threshold;
+        }
+        if let Some(fallback_intent) = self.fallback_intent {
+            record.fallback_intent = fallback_intent.trim().to_string();
+        }
+        if let Some(path) = self.path {
+            record.path = path.trim().to_string();
+        }
+        if let Some(auto_escalate) = self.auto_escalate {
+            record.auto_escalate = auto_escalate;
+        }
+        if let Some(system_prompt_appendix) = self.system_prompt_appendix {
+            record.system_prompt_appendix = system_prompt_appendix;
+        }
+        if let Some(model_id) = self.model_id {
+            record.model_id = model_id;
+        }
+        if let Some(max_iterations) = self.max_iterations {
+            record.max_iterations = max_iterations;
+        }
+        if let Some(sort_order) = self.sort_order {
+            record.sort_order = sort_order;
+        }
+    }
+
+    /// Builds a fresh record: absent fields fall back to the schema defaults,
+    /// present fields win.
+    fn into_new_record(self, id: String, domain_id: String, timestamp: String) -> IntentRecord {
+        let mut record = IntentRecord {
+            id,
+            domain_id,
+            name: String::new(),
+            description: String::new(),
+            examples: Vec::new(),
+            workflow: String::new(),
+            allowed_tools: Vec::new(),
+            default_agent: String::new(),
+            scope: default_scope(),
+            enabled: default_true(),
+            version: 1,
+            confidence_threshold: default_threshold(),
+            fallback_intent: String::new(),
+            path: default_path(),
+            auto_escalate: false,
+            system_prompt_appendix: String::new(),
+            model_id: String::new(),
+            max_iterations: None,
+            sort_order: 0,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+        };
+        self.apply_to(&mut record);
+        record
     }
 }
 
 // ── Helpers ──
 
 /// Returns `wanted` when it is not already taken, otherwise appends the first
-/// free ` (n)` suffix, n starting at 2. Past 20 suffixes the caller still gets
-/// a distinct string (`" (uuid)"`), which the UNIQUE constraint may reject —
-/// at that point a human has 21 domains with the same name.
+/// free ` (n)` suffix, n starting at 2. After 20 attempts a fresh uuid is
+/// appended, so the returned value is always a usable, unique domain name.
 pub(crate) fn unique_domain_name(existing: &[String], wanted: &str) -> String {
     if !existing.iter().any(|name| name == wanted) {
         return wanted.to_string();
@@ -221,7 +293,49 @@ pub(crate) fn unique_domain_name(existing: &[String], wanted: &str) -> String {
         }
     }
 
-    format!("{wanted} (uuid)")
+    format!("{wanted} ({})", uuid::Uuid::new_v4())
+}
+
+/// Rejects a name already used by another record. `items` yields `(id, name)`
+/// pairs; `except_id` skips the record being updated.
+fn ensure_name_available<'a, I>(
+    items: I,
+    name: &str,
+    except_id: Option<&str>,
+    message: String,
+) -> Result<()>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let taken = items
+        .into_iter()
+        .any(|(id, existing)| existing == name && except_id != Some(id));
+    if taken {
+        return Err(AppError::InvalidInput(message));
+    }
+    Ok(())
+}
+
+/// A non-empty `fallback_intent` must name an intent of the same domain, by id
+/// or by name. `intents` is the stored list and `merged` is the record about to
+/// be written; the merged record's own current name/id is a valid target.
+fn ensure_fallback_target(intents: &[IntentRecord], merged: &IntentRecord) -> Result<()> {
+    let target = merged.fallback_intent.trim();
+    if target.is_empty() {
+        return Ok(());
+    }
+
+    let found = std::iter::once(merged)
+        .chain(intents.iter().filter(|intent| intent.id != merged.id))
+        .any(|intent| intent.id == target || intent.name == target);
+
+    if found {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "fallback_intent「{target}」在该领域中找不到对应意图"
+        )))
+    }
 }
 
 fn now() -> String {
@@ -269,9 +383,14 @@ pub async fn create_intent_domain(
 
     let timestamp = now();
     let db = state.db.lock().await;
-    if db.list_intent_domains()?.iter().any(|d| d.name == name) {
-        return Err(AppError::InvalidInput(format!("领域名称已存在：{name}")));
-    }
+    ensure_name_available(
+        db.list_intent_domains()?
+            .iter()
+            .map(|domain| (domain.id.as_str(), domain.name.as_str())),
+        &name,
+        None,
+        format!("领域名称已存在：{name}"),
+    )?;
 
     let domain = IntentDomainRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -302,13 +421,14 @@ pub async fn update_intent_domain(
     let db = state.db.lock().await;
     let mut domain = db.get_intent_domain(&id)?.ok_or_else(|| not_found_domain(&id))?;
 
-    if db
-        .list_intent_domains()?
-        .iter()
-        .any(|d| d.id != id && d.name == name)
-    {
-        return Err(AppError::InvalidInput(format!("领域名称已存在：{name}")));
-    }
+    ensure_name_available(
+        db.list_intent_domains()?
+            .iter()
+            .map(|domain| (domain.id.as_str(), domain.name.as_str())),
+        &name,
+        Some(&id),
+        format!("领域名称已存在：{name}"),
+    )?;
 
     domain.name = name;
     domain.description = description;
@@ -357,43 +477,32 @@ pub async fn create_intent(
     domain_id: String,
     intent: IntentInput,
 ) -> Result<IntentInfo> {
-    intent.validate()?;
-    let name = intent.name.trim();
+    intent.validate(true)?;
+    let name = intent
+        .name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
 
     let timestamp = now();
     let db = state.db.lock().await;
     if db.get_intent_domain(&domain_id)?.is_none() {
         return Err(not_found_domain(&domain_id));
     }
-    if db.list_intents(&domain_id)?.iter().any(|i| i.name == name) {
-        return Err(AppError::InvalidInput(format!(
-            "该领域内已存在名为「{name}」的意图"
-        )));
-    }
 
-    let record = IntentRecord {
-        id: uuid::Uuid::new_v4().to_string(),
-        domain_id,
-        name: name.to_string(),
-        description: intent.description.clone(),
-        examples: intent.examples.clone(),
-        workflow: intent.workflow.clone(),
-        allowed_tools: intent.allowed_tools.clone(),
-        default_agent: intent.default_agent.clone(),
-        scope: intent.scope.clone(),
-        enabled: intent.enabled,
-        version: 1,
-        confidence_threshold: intent.confidence_threshold,
-        fallback_intent: intent.fallback_intent.clone(),
-        path: intent.path.trim().to_string(),
-        auto_escalate: intent.auto_escalate,
-        system_prompt_appendix: intent.system_prompt_appendix.clone(),
-        model_id: intent.model_id.clone(),
-        max_iterations: intent.max_iterations,
-        sort_order: intent.sort_order,
-        created_at: timestamp.clone(),
-        updated_at: timestamp,
-    };
+    let intents = db.list_intents(&domain_id)?;
+    ensure_name_available(
+        intents
+            .iter()
+            .map(|existing| (existing.id.as_str(), existing.name.as_str())),
+        &name,
+        None,
+        format!("该领域内已存在名为「{name}」的意图"),
+    )?;
+
+    let record = intent.into_new_record(uuid::Uuid::new_v4().to_string(), domain_id, timestamp);
+    ensure_fallback_target(&intents, &record)?;
     db.insert_intent(&record)?;
     Ok(record.into())
 }
@@ -404,24 +513,26 @@ pub async fn update_intent(
     id: String,
     intent: IntentInput,
 ) -> Result<IntentInfo> {
-    intent.validate()?;
-    let name = intent.name.trim().to_string();
+    intent.validate(false)?;
 
     let db = state.db.lock().await;
     let mut existing = db.get_intent(&id)?.ok_or_else(|| not_found_intent(&id))?;
+    let intents = db.list_intents(&existing.domain_id)?;
 
-    if db
-        .list_intents(&existing.domain_id)?
-        .iter()
-        .any(|i| i.id != id && i.name == name)
-    {
-        return Err(AppError::InvalidInput(format!(
-            "该领域内已存在名为「{name}」的意图"
-        )));
+    if let Some(name) = intent.name.as_deref().map(str::trim) {
+        ensure_name_available(
+            intents
+                .iter()
+                .map(|record| (record.id.as_str(), record.name.as_str())),
+            name,
+            Some(&id),
+            format!("该领域内已存在名为「{name}」的意图"),
+        )?;
     }
 
     intent.apply_to(&mut existing);
     existing.updated_at = now();
+    ensure_fallback_target(&intents, &existing)?;
     db.update_intent(&existing)?;
 
     let updated = db.get_intent(&id)?.ok_or_else(|| not_found_intent(&id))?;
@@ -509,6 +620,55 @@ pub async fn export_intent_domain(
 mod tests {
     use super::*;
 
+    const TEST_TS: &str = "2026-11-04T00:00:00Z";
+
+    fn mk_record() -> IntentRecord {
+        IntentRecord {
+            id: "intent-a".to_string(),
+            domain_id: "domain-a".to_string(),
+            name: "意图甲".to_string(),
+            description: "旧描述".to_string(),
+            examples: vec!["旧示例".to_string()],
+            workflow: String::new(),
+            allowed_tools: vec!["read_file".to_string()],
+            default_agent: String::new(),
+            scope: "global".to_string(),
+            enabled: false,
+            version: 1,
+            confidence_threshold: 0.5,
+            fallback_intent: String::new(),
+            path: "deep".to_string(),
+            auto_escalate: false,
+            system_prompt_appendix: String::new(),
+            model_id: String::new(),
+            max_iterations: Some(7),
+            sort_order: 42,
+            created_at: TEST_TS.to_string(),
+            updated_at: TEST_TS.to_string(),
+        }
+    }
+
+    fn blank_input() -> IntentInput {
+        IntentInput {
+            name: None,
+            description: None,
+            examples: None,
+            workflow: None,
+            allowed_tools: None,
+            default_agent: None,
+            scope: None,
+            enabled: None,
+            confidence_threshold: None,
+            fallback_intent: None,
+            path: None,
+            auto_escalate: None,
+            system_prompt_appendix: None,
+            model_id: None,
+            max_iterations: None,
+            sort_order: None,
+        }
+    }
+
     #[test]
     fn unique_name_returns_base_when_free() {
         let existing = vec!["程序开发".to_string(), "写作".to_string()];
@@ -522,11 +682,135 @@ mod tests {
     }
 
     #[test]
-    fn unique_name_falls_back_after_twenty_suffixes() {
+    fn unique_name_falls_back_to_a_real_uuid() {
         let mut existing = vec!["领域".to_string()];
         for n in 2..=21 {
             existing.push(format!("领域 ({n})"));
         }
-        assert_eq!(unique_domain_name(&existing, "领域"), "领域 (uuid)");
+
+        let name = unique_domain_name(&existing, "领域");
+        assert!(!existing.contains(&name), "兜底名称不得与已有名称重复");
+
+        let suffix = name
+            .strip_prefix("领域 (")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .expect("兜底名称必须保留「名称 (后缀)」形状");
+        assert!(
+            uuid::Uuid::parse_str(suffix).is_ok(),
+            "兜底后缀必须是合法 uuid，实际：{suffix}"
+        );
+    }
+
+    #[test]
+    fn sparse_update_keeps_absent_fields() {
+        let mut record = mk_record();
+        let input = IntentInput {
+            name: Some("新名字".to_string()),
+            ..blank_input()
+        };
+
+        input.apply_to(&mut record);
+
+        assert_eq!(record.name, "新名字");
+        assert!(!record.enabled, "未提供 enabled 时不得重新启用");
+        assert_eq!(record.description, "旧描述", "未提供 description 时不得清空");
+        assert_eq!(record.examples, vec!["旧示例".to_string()]);
+        assert_eq!(record.path, "deep");
+        assert_eq!(record.confidence_threshold, 0.5);
+        assert_eq!(record.max_iterations, Some(7));
+        assert_eq!(record.sort_order, 42);
+    }
+
+    #[test]
+    fn create_fills_absent_fields_with_schema_defaults() {
+        let input = IntentInput {
+            name: Some("新意图".to_string()),
+            ..blank_input()
+        };
+
+        let record = input.into_new_record(
+            "new-id".to_string(),
+            "domain-a".to_string(),
+            TEST_TS.to_string(),
+        );
+
+        assert_eq!(record.name, "新意图");
+        assert_eq!(record.path, "fast");
+        assert!(record.enabled);
+        assert_eq!(record.confidence_threshold, 0.7);
+        assert_eq!(record.scope, "global");
+        assert_eq!(record.version, 1);
+        assert_eq!(record.sort_order, 0);
+        assert!(record.max_iterations.is_none());
+        assert!(record.description.is_empty());
+        assert!(record.examples.is_empty());
+    }
+
+    #[test]
+    fn explicit_null_clears_max_iterations() {
+        let explicit: IntentInput =
+            serde_json::from_str(r#"{"max_iterations": null}"#).unwrap();
+        assert_eq!(explicit.max_iterations, Some(None));
+
+        let absent: IntentInput = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.max_iterations, None);
+    }
+
+    #[test]
+    fn fallback_must_resolve_within_domain() {
+        let mut target = mk_record();
+        target.id = "target".to_string();
+        target.name = "目标意图".to_string();
+
+        let mut referencing = mk_record();
+        referencing.id = "referencing".to_string();
+        referencing.fallback_intent = "目标意图".to_string();
+        assert!(ensure_fallback_target(&[target.clone()], &referencing).is_ok());
+
+        referencing.fallback_intent = "target".to_string();
+        assert!(ensure_fallback_target(&[target.clone()], &referencing).is_ok());
+
+        referencing.fallback_intent = "不存在的意图".to_string();
+        let err = ensure_fallback_target(&[target], &referencing).unwrap_err();
+        match err {
+            AppError::InvalidInput(message) => {
+                assert!(message.contains("不存在的意图"), "错误必须点名该值：{message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fallback_can_target_the_merged_name_of_itself() {
+        let stored = mk_record(); // stored name is 意图甲
+        let mut merged = stored.clone();
+        merged.name = "改名后的意图".to_string();
+        merged.fallback_intent = "改名后的意图".to_string();
+
+        assert!(
+            ensure_fallback_target(&[stored], &merged).is_ok(),
+            "合并后的新名称必须能作为自身的 fallback 目标"
+        );
+    }
+
+    #[test]
+    fn duplicate_name_check_skips_the_record_being_updated() {
+        let record = mk_record();
+        let items = [(record.id.as_str(), record.name.as_str())];
+
+        assert!(ensure_name_available(
+            items,
+            "意图甲",
+            Some("intent-a"),
+            "重复".to_string()
+        )
+        .is_ok());
+        assert!(ensure_name_available(
+            items,
+            "意图甲",
+            None,
+            "重复".to_string()
+        )
+        .is_err());
     }
 }
