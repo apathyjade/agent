@@ -11,6 +11,7 @@ import { SkillManagerPage } from './components/management/SkillManagerPage';
 import { McpManagerPage } from './components/management/McpManagerPage';
 import { MemoryManagerPage } from './components/management/MemoryManagerPage';
 import { PersonaManagerPage } from './components/management/PersonaManagerPage';
+import { IntentManagerPage } from './components/management/IntentManagerPage';
 import { RuntimeManagerPage } from './components/management/RuntimeManagerPage';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { WorkflowManagerPage } from './components/management/WorkflowManagerPage';
@@ -154,6 +155,9 @@ function App() {
     if (currentView === 'persona-manager') {
       return <PersonaManagerPage />;
     }
+    if (currentView === 'intent-manager') {
+      return <IntentManagerPage />;
+    }
     if (currentView === 'runtime-manager') {
       return <RuntimeManagerPage />;
     }
@@ -184,6 +188,7 @@ function App() {
              currentView === 'mcp-manager' ? 'MCP 连接' :
              currentView === 'memory-manager' ? '记忆系统' :
              currentView === 'persona-manager' ? '虚拟人管理' :
+             currentView === 'intent-manager' ? '意图管理' :
              currentView === 'runtime-manager' ? '运行时管理' :
              currentView === 'settings' ? '系统设置' :
              currentView === 'workflows' ? '工作流' : ''}

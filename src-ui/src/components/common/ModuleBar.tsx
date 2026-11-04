@@ -1,4 +1,4 @@
-import { Kanban, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen, Users } from 'lucide-react';
+import { Kanban, BrainCircuit, PlugZap, Workflow, Settings, Sun, Moon, Server, BookOpen, Users, Target } from 'lucide-react';
 import { Tooltip } from 'antd';
 import { Col } from '@jelper/component';
 import { useStore } from '../../store';
@@ -37,6 +37,11 @@ export function ModuleBar() {
 
   const handlePersonaClick = () => {
     setCurrentView('persona-manager');
+    setSidebarOpen(false);
+  };
+
+  const handleIntentClick = () => {
+    setCurrentView('intent-manager');
     setSidebarOpen(false);
   };
 
@@ -94,6 +99,12 @@ export function ModuleBar() {
               <button onClick={handlePersonaClick} className={btnClass(currentView === 'persona-manager')}>
                 {activeIndicator(currentView === 'persona-manager')}
                 <Users size={18} />
+              </button>
+            </Tooltip>
+            <Tooltip title="意图管理" placement="right">
+              <button onClick={handleIntentClick} className={btnClass(currentView === 'intent-manager')}>
+                {activeIndicator(currentView === 'intent-manager')}
+                <Target size={18} />
               </button>
             </Tooltip>
             <Tooltip title="运行时管理" placement="right">
