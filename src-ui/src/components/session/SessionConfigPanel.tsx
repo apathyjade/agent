@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Select, Switch } from 'antd';
-import { Sparkles, Wrench, BrainCircuit, Server, FolderOpen, X } from 'lucide-react';
+import { Sparkles, Wrench, Server, FolderOpen, X, Puzzle } from 'lucide-react';
 import { useStore } from '../../store';
 
 interface SessionConfigPanelProps {
@@ -12,13 +12,11 @@ export function SessionConfigPanel({ onStart, onCancel }: SessionConfigPanelProp
   const models = useStore((s) => s.models);
   const personas = useStore((s) => s.personas);
   const tools = useStore((s) => s.tools);
-  const skills = useStore((s) => s.skills);
   const mcpConnections = useStore((s) => s.mcpConnections);
   const defaultModel = useStore((s) => s.defaultModel);
   const fetchModels = useStore((s) => s.fetchModels);
   const fetchPersonas = useStore((s) => s.fetchPersonas);
   const fetchTools = useStore((s) => s.fetchTools);
-  const fetchSkills = useStore((s) => s.fetchSkills);
   const fetchMcpConnections = useStore((s) => s.fetchMcpConnections);
 
   const [selectedModel, setSelectedModel] = useState(defaultModel || '');
@@ -34,7 +32,6 @@ export function SessionConfigPanel({ onStart, onCancel }: SessionConfigPanelProp
     if (models.length === 0) fetchModels();
     if (personas.length === 0) fetchPersonas();
     if (tools.length === 0) fetchTools();
-    if (skills.length === 0) fetchSkills();
     if (mcpConnections.length === 0) fetchMcpConnections();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -133,36 +130,14 @@ export function SessionConfigPanel({ onStart, onCancel }: SessionConfigPanelProp
             )}
           </div>
 
-          {/* Skills section — collapsible */}
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
-            <button
-              onClick={() => setExpandedSection(expandedSection === 'skills' ? null : 'skills')}
-              className="w-full flex items-center gap-2 px-3 py-2.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-            >
-              <BrainCircuit size={14} className="text-purple-500" />
-              <span>技能 (Skills)</span>
-              <span className="ml-auto text-gray-400">{skills.filter(s => s.enabled).length} 个可用</span>
-            </button>
-            {expandedSection === 'skills' && (
-              <div className="px-3 pb-2 space-y-1 border-t border-gray-100 dark:border-gray-700 pt-2">
-                {skills.filter(s => s.enabled).map(skill => (
-                  <div key={skill.id} className="flex items-center justify-between py-1">
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs text-gray-700 dark:text-gray-300">{skill.name}</span>
-                      <p className="text-[10px] text-gray-400 truncate">{skill.description}</p>
-                    </div>
-                    <Switch
-                      size="small"
-                      checked={enabledTools.has(skill.name)}
-                      onChange={() => toggleTool(skill.name)}
-                    />
-                  </div>
-                ))}
-                {skills.filter(s => s.enabled).length === 0 && (
-                  <p className="text-xs text-gray-400 py-2">暂无已启用的技能，请在设置中安装</p>
-                )}
-              </div>
-            )}
+          {/* Skills hint */}
+          <div className="p-3 bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-800/30 rounded-xl">
+            <div className="flex items-start gap-2">
+              <Puzzle size={14} className="text-purple-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-purple-800 dark:text-purple-200">
+                技能管理已移动到「技能管理」模块。安装的技能会按范围自动生效。
+              </p>
+            </div>
           </div>
 
           {/* Workspace section */}

@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { EmptyState } from '../EmptyState';
+import { EmptyState } from '../common/EmptyState';
 
 describe('EmptyState', () => {
   it('renders conversations empty state', () => {
   render(<EmptyState type="sessions" />);
-    expect(screen.getByText('暂无对话')).toBeDefined();
-    expect(screen.getByText('点击"新对话"按钮开始第一个对话')).toBeDefined();
+    expect(screen.getByText('暂无会话')).toBeDefined();
+    expect(screen.getByText('开始一段新的对话')).toBeDefined();
   });
 
   it('renders messages empty state', () => {

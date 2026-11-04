@@ -1,273 +1,263 @@
-import { useState, useEffect } from 'react';
-import { X, Loader2, Trash2 } from 'lucide-react';
-import { Select } from 'antd';
-import * as api from '../../api/tauri';
-import type { SkillDetail } from '../../types';
+import { useEffect, useState } from 'react';
+import { X, Loader2, Trash2, Check, AlertTriangle, ExternalLink, RotateCcw } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { useStore } from '../../store';
+import type { InstalledSkill, SkillScope } from '../../types';
+import { CodeBlock } from '../common/CodeBlock';
 
 interface SkillDetailPanelProps {
-  skillId: string;
+  skill: InstalledSkill;
   onClose: () => void;
 }
 
-interface SchemaProperty {
-  title?: string;
-  description?: string;
-  type?: string;
-  default?: unknown;
-  enum?: string[];
-}
+export function SkillDetailPanel({ skill, onClose }: SkillDetailPanelProps) {
+  const {
+    skillContent,
+    skillLoading,
+    busy,
+    skillError,
+    fetchContent,
+    removeSkill,
+    installSkill,
+    projectPath,
+    clearSkillContent,
+    clearSkillError,
+  } = useStore();
 
-type SchemaProperties = Record<string, SchemaProperty>;
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [localBusy, setLocalBusy] = useState(false);
 
-export function SkillDetailPanel({ skillId, onClose }: SkillDetailPanelProps) {
-  const [detail, setDetail] = useState<SkillDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [config, setConfig] = useState<Record<string, unknown>>({});
-  const [saving, setSaving] = useState(false);
-  const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const scope: SkillScope = skill.scope === 'project' ? 'project' : 'global';
+  const isMissing = skill.status === 'missing';
 
   useEffect(() => {
-    loadDetail();
-  }, [skillId]);
-
-  const loadDetail = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const d = await api.getSkillDetail(skillId);
-      setDetail(d);
-      setConfig(d.config || {});
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
+    clearSkillError();
+    if (!isMissing) {
+      fetchContent(skill.name, scope);
     }
-  };
+    return () => {
+      clearSkillContent();
+    };
+  }, [skill.name, scope, isMissing, fetchContent, clearSkillContent, clearSkillError]);
 
-  const handleSaveConfig = async () => {
-    if (!detail) return;
-    setSaving(true);
-    setError(null);
+  const handleRemove = async () => {
+    setLocalBusy(true);
     try {
-      await api.configureSkill(skillId, config);
+      await removeSkill(skill.name);
       onClose();
-    } catch (err) {
-      setError(String(err));
+    } catch {
+      // error handled in store
     } finally {
-      setSaving(false);
+      setLocalBusy(false);
     }
   };
 
-  const handleUninstall = async () => {
-    setSaving(true);
+  const handleReinstall = async () => {
+    const source = skill.source_url || skill.source || '';
+    if (!source) return;
+    setLocalBusy(true);
     try {
-      await api.uninstallSkill(skillId);
+      await installSkill({
+        source,
+        skills: [skill.name],
+        agents: skill.agents,
+        scope,
+        projectPath,
+        copy: false,
+      });
       onClose();
-    } catch (err) {
-      setError(String(err));
-      setSaving(false);
+    } catch {
+      // error handled in store
+    } finally {
+      setLocalBusy(false);
     }
   };
 
-  const updateConfigField = (key: string, value: unknown) => {
-    setConfig((prev) => ({ ...prev, [key]: value }));
-  };
+  const loading = skillLoading || busy === 'content' || busy === 'remove' || busy === 'install' || localBusy;
 
-  if (loading) {
-    return (
-      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-        <div className="bg-white rounded-2xl p-8 shadow-2xl">
-          <Loader2 size={24} className="animate-spin text-purple-600 mx-auto" />
-        </div>
-      </div>
-    );
-  }
-
-  if (error && !detail) {
-    return (
-      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-        <div className="bg-white rounded-2xl p-6 shadow-2xl">
-          <p className="text-sm text-red-600 mb-4">{error}</p>
-          <button onClick={onClose} className="px-4 py-2 bg-gray-100 rounded-lg text-sm">关闭</button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!detail) return null;
-
-  // Render form fields from config_schema
-  const renderConfigFields = () => {
-    const schema = detail.config_schema;
-    if (!schema) return <p className="text-xs text-gray-400">此 Skill 没有可配置的选项</p>;
-
-    const properties = (schema as Record<string, unknown>).properties as SchemaProperties | undefined;
-    if (!properties) return <p className="text-xs text-gray-400">此 Skill 没有可配置的选项</p>;
-
-    return Object.entries(properties).map(([key, prop]) => {
-      const value = config[key] ?? prop.default ?? '';
-
-      if (prop.enum) {
-        return (
-          <div key={key}>
-            <label className="text-xs text-gray-500 mb-1 block capitalize">{prop.title || key}</label>
-            <Select
-              value={String(value)}
-              onChange={(v) => updateConfigField(key, v)}
-              className="w-full"
-              size="small"
-              options={prop.enum.map((opt: string) => ({ value: opt, label: opt }))}
-            />
-            {prop.description && <p className="text-xs text-gray-400 mt-0.5">{prop.description}</p>}
-          </div>
-        );
-      }
-
-      if (prop.type === 'boolean') {
-        return (
-          <div key={key} className="flex items-center justify-between">
-            <label className="text-sm text-gray-700 capitalize">{prop.title || key}</label>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={!!value}
-                onChange={(e) => updateConfigField(key, e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-sm"></div>
-            </label>
-          </div>
-        );
-      }
-
-      return (
-        <div key={key}>
-          <label className="text-xs text-gray-500 mb-1 block capitalize">{prop.title || key}</label>
-          <input
-            type={prop.type === 'number' ? 'number' : 'text'}
-            value={String(value)}
-            onChange={(e) => updateConfigField(key, prop.type === 'number' ? Number(e.target.value) : e.target.value)}
-            placeholder={prop.description || ''}
-            className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-          />
-          {prop.description && <p className="text-xs text-gray-400 mt-0.5">{prop.description}</p>}
-        </div>
-      );
-    });
-  };
+  const sourceLink = skill.source
+    ? `https://skills.sh/${skill.source}`
+    : skill.source_url || null;
 
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl w-[520px] max-h-[85vh] flex flex-col shadow-2xl">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-700">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{detail.name}</h2>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {/* Metadata */}
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <span className="text-xs text-gray-400 block">ID</span>
-              <span className="text-gray-700 dark:text-gray-300">{detail.id}</span>
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">版本</span>
-              <span className="text-gray-700 dark:text-gray-300">{detail.version}</span>
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">作者</span>
-              <span className="text-gray-700 dark:text-gray-300">{detail.author || '-'}</span>
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">来源</span>
-              <span className="text-gray-700 dark:text-gray-300 capitalize">{detail.source}</span>
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">执行类型</span>
-              <span className="text-gray-700 dark:text-gray-300">{detail.entry_type}</span>
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">已启用</span>
-              <span className={detail.enabled ? 'text-green-600' : 'text-gray-400'}>{detail.enabled ? '是' : '否'}</span>
-            </div>
-          </div>
-
-          <div>
-            <span className="text-xs text-gray-400 block">描述</span>
-            <p className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{detail.description}</p>
-          </div>
-
-          {detail.source_path && (
-            <div>
-              <span className="text-xs text-gray-400 block">路径</span>
-              <p className="text-xs text-gray-500 mt-0.5 break-all">{detail.source_path}</p>
-            </div>
-          )}
-
-          {/* Config form */}
-          <div>
-            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">配置</h3>
-            <div className="space-y-3">
-              {renderConfigFields()}
-            </div>
-          </div>
-
-          {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-              {error}
-            </div>
+    <div className="fixed inset-y-0 right-0 w-full max-w-lg bg-white dark:bg-gray-800 shadow-2xl z-50 flex flex-col border-l border-gray-200 dark:border-gray-700 animate-in slide-in-from-right duration-200">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-700">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">
+            {skill.name}
+          </h2>
+          {skill.version && (
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+              版本 {skill.version}
+            </p>
           )}
         </div>
+        <button
+          onClick={onClose}
+          className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+        >
+          <X size={18} />
+        </button>
+      </div>
 
-        {/* Actions */}
-        <div className="flex items-center justify-between p-5 border-t border-gray-100 dark:border-gray-700">
-          {confirmUninstall ? (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-red-600">确认卸载？</span>
-              <button
-                onClick={handleUninstall}
-                disabled={saving}
-                className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm transition-colors"
-              >
-                {saving ? <Loader2 size={12} className="animate-spin" /> : null}
-                确认
-              </button>
-              <button
-                onClick={() => setConfirmUninstall(false)}
-                className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm transition-colors"
-              >
-                取消
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmUninstall(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg text-sm transition-colors"
-              title="卸载此 Skill"
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        {isMissing && (
+          <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-2 text-sm text-red-700 dark:text-red-400">
+            <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+            <span>该技能记录存在但本地文件缺失，建议重新安装或移除。</span>
+          </div>
+        )}
+
+        <div>
+          <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+            {skill.description}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          {skill.agents.map((agent) => (
+            <span
+              key={agent}
+              className="text-[11px] px-2 py-0.5 rounded-full bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-100 dark:border-purple-800"
             >
-              <Trash2 size={14} />
-              卸载
-            </button>
-          )}
+              {agent}
+            </span>
+          ))}
+        </div>
 
-          <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm transition-colors">
+        {sourceLink && (
+          <div>
+            <a
+              href={sourceLink}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400 hover:underline"
+            >
+              <ExternalLink size={12} />
+              {sourceLink}
+            </a>
+          </div>
+        )}
+
+        {skill.path && (
+          <div>
+            <span className="text-xs text-gray-400 dark:text-gray-500 block mb-0.5">路径</span>
+            <p className="text-xs text-gray-600 dark:text-gray-400 break-all font-mono">
+              {skill.path}
+            </p>
+          </div>
+        )}
+
+        {skillError && (
+          <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400 flex items-start gap-2">
+            <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+            <span>{skillError}</span>
+          </div>
+        )}
+
+        {!isMissing && (
+          <div className="border-t border-gray-100 dark:border-gray-700 pt-4">
+            <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">
+              SKILL.md
+            </h3>
+            {loading && !skillContent ? (
+              <div className="flex items-center justify-center py-12 text-gray-400 dark:text-gray-500">
+                <Loader2 size={20} className="animate-spin text-purple-500 mr-2" />
+                加载中...
+              </div>
+            ) : skillContent ? (
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    pre({ children }) {
+                      const child = children as React.ReactElement<{
+                        className?: string;
+                        children?: React.ReactNode;
+                      }>;
+                      if (child?.type === 'code' && child?.props?.className) {
+                        const match = /language-(\w+)/.exec(String(child.props.className));
+                        if (match) {
+                          return (
+                            <CodeBlock
+                              language={match[1]}
+                              value={String(child.props.children).replace(/\n$/, '')}
+                            />
+                          );
+                        }
+                      }
+                      return (
+                        <pre className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 overflow-x-auto text-sm text-gray-700 dark:text-gray-300">
+                          {children}
+                        </pre>
+                      );
+                    },
+                    code({ children, ...props }) {
+                      return (
+                        <code
+                          className="bg-gray-100 dark:bg-gray-700 text-pink-600 dark:text-pink-300 px-1.5 py-0.5 rounded text-sm font-mono"
+                          {...props}
+                        >
+                          {children}
+                        </code>
+                      );
+                    },
+                  }}
+                >
+                  {skillContent}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400 dark:text-gray-500 py-8 text-center">
+                暂无文档内容
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="p-5 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between">
+        {confirmRemove ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-red-600 dark:text-red-400">确认移除？</span>
+            <button
+              onClick={handleRemove}
+              disabled={loading}
+              className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-lg text-xs transition-colors"
+            >
+              {loading && <Loader2 size={11} className="animate-spin" />}
+              <Check size={11} />
+              确认
+            </button>
+            <button
+              onClick={() => setConfirmRemove(false)}
+              disabled={loading}
+              className="px-3 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-xs transition-colors"
+            >
               取消
             </button>
-            <button
-              onClick={handleSaveConfig}
-              disabled={saving || !detail.config_schema}
-              className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm transition-colors"
-            >
-              {saving && <Loader2 size={14} className="animate-spin" />}
-              保存
-            </button>
           </div>
-        </div>
+        ) : (
+          <button
+            onClick={() => setConfirmRemove(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg text-sm transition-colors"
+          >
+            <Trash2 size={14} />
+            移除
+          </button>
+        )}
+
+        {isMissing ? (
+          <button
+            onClick={handleReinstall}
+            disabled={loading || !skill.source_url && !skill.source}
+            className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white rounded-lg text-sm transition-all"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+            重新安装
+          </button>
+        ) : null}
       </div>
     </div>
   );
