@@ -52,15 +52,15 @@
 - Produces: `crate::core::error::{AppError, Result}`、`crate::core::keychain`、`crate::core::db::{models, repository}`、`crate::core::ipc::{StreamChunk, ToolCallEvent}`。
 - Produces: `crate::core::db::models::{ExecutionPlanRecord, PlanStepRecord, WorkflowRunRecord}`，并由原模块 `pub use` 再导出。
 
-- [ ] **Step 1: 建分支并记录基线**
+- [ ] **Step 1: 确认分支并记录基线**
 
 ```bash
-git switch -c refactor/src-restructure
+git rev-parse --abbrev-ref HEAD
 cargo test --manifest-path src-tauri/Cargo.toml 2>&1 | Select-String 'test result:'
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets 2>&1 | Select-String '^(warning|error)' | Measure-Object
 ```
 
-Expected: 测试 `199 passed` + 集成 `3 / 7 / 11 / 3 / 38 passed`；clippy `Count : 88`。
+Expected: 当前分支已是 `refactor/src-restructure`（**不要新建分支**）；测试 `199 passed` + 集成 `3 / 7 / 11 / 3 / 38 passed`；clippy `Count : 88`。
 
 - [ ] **Step 2: 写路径改写脚本**
 
@@ -299,7 +299,7 @@ pub fn get_default_model(&self) -> Option<&ModelConfig> {
 pub use crate::llm::catalog::{ModelInfo, PROVIDER_OPTIONS, PROVIDER_MODELS};
 ```
 
-`llm/provider.rs`：删除 `use crate::config::AppConfig;`，改签名为（语义不变）：
+`llm/provider.rs`：删除 `use crate::config::AppConfig;`，补 `use crate::llm::model::ModelConfig;`，改签名为（语义不变）：
 
 ```rust
 pub fn new(models: &[ModelConfig]) -> Self   // 遍历 models；default_id 用 crate::llm::model::default_model(models)
@@ -307,6 +307,21 @@ pub fn add_model(&mut self, model: ModelConfig)
 ```
 
 `state.rs`：`ProviderRegistry::new(&config.models)`；`use crate::config::{AppConfig, ModelProvider};` 拆成 `use crate::config::AppConfig;` 与 `use crate::llm::model::ModelProvider;`。
+
+- [ ] **Step 4b: 改掉 13 处测试构造（必须在本任务内完成）**
+
+签名改成 `&[ModelConfig]` 后，`#[cfg(test)]` 里的 13 处 `ProviderRegistry::new(&crate::config::AppConfig::default())` 会让本任务的 `cargo check --all-targets` 直接失败，所以在 Task 3 内改完：
+
+```bash
+Get-ChildItem -Recurse src-tauri/src -Filter *.rs | ForEach-Object {
+  $p = $_.FullName
+  $t = [System.IO.File]::ReadAllText($p)
+  $n = [regex]::Replace($t, 'ProviderRegistry::new\(\s*&crate::config::AppConfig::default\(\),?\s*\)', 'ProviderRegistry::new(&[])')
+  if ($n -ne $t) { [System.IO.File]::WriteAllText($p, $n, (New-Object System.Text.UTF8Encoding($false))) }
+}
+```
+
+涉及文件（13 处）：`critic/agent.rs`、`orchestrator/agent.rs`（2 处）、`workers/{code_editor,code_explorer,mcp_bridge×6,shell,thinker}.rs`。`state.rs:51` 的 `ProviderRegistry::new(&config)` 不在本步范围，由 Step 4 单独改。
 
 - [ ] **Step 5: 改写路径**
 
@@ -413,20 +428,15 @@ pub mod workers;
 
 `lib.rs` 删除 `pub mod critic;`、`pub mod orchestrator;`、`pub mod tools;`、`pub mod workers;`。
 
-- [ ] **Step 5: 测试不再依赖 `AppConfig`**
+- [ ] **Step 5: 确认测试已不依赖 `AppConfig`**
 
-把 13 处 `ProviderRegistry::new(&crate::config::AppConfig::default())` 改为 `ProviderRegistry::new(&[])`（含跨行写法）：
+13 处构造在 Task 3 的 Step 4b 已经改成 `ProviderRegistry::new(&[])`，本步只做核对，不改代码：
 
 ```bash
-Get-ChildItem -Recurse src-tauri/src -Filter *.rs | ForEach-Object {
-  $p = $_.FullName
-  $t = [System.IO.File]::ReadAllText($p)
-  $n = [regex]::Replace($t, 'ProviderRegistry::new\(\s*&crate::config::AppConfig::default\(\),?\s*\)', 'ProviderRegistry::new(&[])')
-  if ($n -ne $t) { [System.IO.File]::WriteAllText($p, $n, (New-Object System.Text.UTF8Encoding($false))) }
-}
+Select-String -Path (Get-ChildItem -Recurse src-tauri/src -Filter *.rs).FullName -Pattern 'ProviderRegistry::new\(&crate::config::AppConfig'
 ```
 
-涉及文件：`agent/critic/agent.rs`、`agent/orchestrator/agent.rs`（2 处）、`agent/workers/{code_editor,code_explorer,mcp_bridge×6,shell,thinker}.rs`。
+Expected: 无匹配。若有残留，说明 Task 3 未按 Step 4b 完成，就地补改成 `ProviderRegistry::new(&[])`。
 
 - [ ] **Step 6: 编译并跑测试**
 
