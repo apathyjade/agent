@@ -179,7 +179,7 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 
 1. `config.json` → `ProviderRegistry::new()` → 为每个启用的 model 创建 `RigProvider`（内部持有 `DynModel<Completion>`）
 2. `MemoryManager::new()` — 传入 OpenAI API key → 可选初始化 `DynModel<Embedding>`
-3. `IntentRouter::new()` — 创建 `LlmClassifier`（Rig extraction 优先）
+3. `IntentRouter::new()` — 创建 `LlmClassifier`（从 `ProviderRegistry` 解析 `ProviderBox`，走 `prompt` 后解析 JSON；`llm/intent/classifier.rs`）
 4. `seed_defaults()` — 预先注入内置记忆与人格设定（已填充则跳过）
 
 ## IPC 通信

@@ -332,6 +332,16 @@ pub fn seed_builtin_intents(db: &Database) -> Result<()> {
         return Ok(());
     }
 
+    // A hand-edited database, or one upgraded from a build that predates the
+    // marker, may already hold the built-in domain. Re-seeding would hit a
+    // primary-key conflict and abort startup with no UI to repair it, so adopt
+    // what is there instead: write the marker and leave the rows untouched.
+    if db.get_intent_domain(DOMAIN_ID)?.is_some() {
+        db.set_setting(SEEDED_SETTING, "1")?;
+        log::info!("Adopted existing built-in intent domain {DOMAIN_ID}");
+        return Ok(());
+    }
+
     let (domain, intents) = builtin_software_dev();
     db.seed_intent_domain_atomic(&domain, &intents, SEEDED_SETTING, "1")?;
 
@@ -498,6 +508,43 @@ mod tests {
         seed_builtin_intents(&db).unwrap();
         assert_eq!(db.list_intent_domains().unwrap().len(), 1);
         assert_eq!(db.count_intents(DOMAIN), 12);
+    }
+
+    /// A database upgraded from a build without the marker, or hand-edited,
+    /// may already hold the built-in domain. Startup must adopt it instead of
+    /// failing on a primary-key conflict — otherwise the app never starts.
+    #[test]
+    fn existing_builtin_domain_is_adopted_without_reseeding() {
+        let db = Database::new_test().unwrap();
+        let ts = Utc::now().to_rfc3339();
+        db.insert_intent_domain(&IntentDomainRecord {
+            id: DOMAIN.to_string(),
+            name: "我改过的名字".to_string(),
+            description: String::new(),
+            is_active: true,
+            source: "builtin".to_string(),
+            version: 3,
+            created_at: ts.clone(),
+            updated_at: ts,
+        })
+        .unwrap();
+
+        seed_builtin_intents(&db).expect("已存在内置领域时必须平稳启动");
+
+        assert_eq!(
+            db.get_setting(SEEDED_SETTING).unwrap().as_deref(),
+            Some("1"),
+            "认领后必须补写标记，否则每次启动都会重走这条分支"
+        );
+        let domain = db.get_intent_domain(DOMAIN).unwrap().unwrap();
+        assert_eq!(domain.name, "我改过的名字", "认领不得覆盖已有数据");
+        assert_eq!(domain.version, 3, "认领不得重置版本");
+        assert_eq!(db.count_intents(DOMAIN), 0, "认领不得重新播种意图");
+        assert_eq!(db.list_intent_domains().unwrap().len(), 1);
+
+        // The marker now governs: a later call is a plain no-op.
+        seed_builtin_intents(&db).unwrap();
+        assert_eq!(db.count_intents(DOMAIN), 0);
     }
 
     /// The atomic seed must roll back writes that already landed, not merely

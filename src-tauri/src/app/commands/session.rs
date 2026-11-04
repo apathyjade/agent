@@ -360,7 +360,8 @@ pub async fn send_message_stream(
     let _intent_result: crate::llm::intent::IntentResult = state.intent_router.classify(&content).await;
     let should_escalate = _intent_result.config.auto_escalate;
     log::info!(
-        "LLM classified: intent={}, should_escalate={}",
+        "LLM classified: intent={} ({}), should_escalate={}",
+        _intent_result.id,
         _intent_result.name,
         should_escalate
     );
@@ -370,11 +371,11 @@ pub async fn send_message_stream(
         let entry = ExecutionLogEntry::new(level, step, message);
         let _ = app_handle.emit("execution_log", entry);
     };
-    emit_log(&app_handle, "info", "intent", format!("LLM 分类结果: intent={}, path={:?}, should_escalate={}", _intent_result.name, _intent_result.path, should_escalate));
+    emit_log(&app_handle, "info", "intent", format!("LLM 分类结果: intent={} ({}), path={:?}, should_escalate={}", _intent_result.id, _intent_result.name, _intent_result.path, should_escalate));
 
     // ── Path Selection: Deep path → OrchestratorAgent ──
     if _intent_result.path == PathSelection::Deep {
-        emit_log(&app_handle, "info", "planner", format!("路由到深度思考: {}", _intent_result.name));
+        emit_log(&app_handle, "info", "planner", format!("路由到深度思考: intent={} ({})", _intent_result.id, _intent_result.name));
         let _ = app_handle.emit("stream_chunk", StreamChunk {
             content: String::new(), done: false, tool_calls: None,
             phase: Some("deep_think".to_string()),
@@ -562,8 +563,8 @@ pub async fn send_message_stream(
     // ── Intent Routing: append intent system prompt appendix ──
     if let Some(appendix) = &_intent_result.config.system_prompt_appendix {
         api_messages.push(Message::system(format!(
-            "[Intent: {}]\n{}",
-            _intent_result.name, appendix
+            "[Intent: {} ({})]\n{}",
+            _intent_result.id, _intent_result.name, appendix
         )));
     }
 

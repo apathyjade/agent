@@ -120,7 +120,7 @@
 - LLM 调用改走 `ProviderRegistry`（优先 `classifier_model_id`，否则默认模型），不再只认 `OPENAI_API_KEY`；取不到 provider 时直接走回退，不发请求。
 - `ClassificationResult` 增加 `confidence: f32`。`confidence < 该意图的 confidence_threshold` 时改走 `fallback_intent`（空则该领域的 `clarify`，再空则取 `sort_order` 最小的启用意图）。
 - 回退路径（无 provider / LLM 失败）：用 `examples` 做子串与词元重合度打分，归一化后与阈值比较，规则与 LLM 路径一致。修掉现在「中英文关键词表硬编码」的问题——关键词表由数据提供。
-- `IntentResult` 的 `name` 改为意图 id（日志与事件里出现的是稳定标识，不再随显示名变化）。
+- `IntentResult` 同时带 `id`（稳定标识）与 `name`（用户可见的显示名）。日志、执行日志与 system prompt 一律以 `id (name)` 的形式同时记录两者：机器按 `id` 检索，操作者读中文名。
 - `resolve_tools` 行为不变。
 - **无活跃领域 / 零启用意图时**：`classify()` 不发 LLM 请求，直接返回一个 fast 路径、无工具限制、`max_iterations` 取默认值的结果，并 `log::warn!` 记一次。宁可退化成普通对话，也不能让消息发不出去。
 - **种子必须早于 router 构造**：内置领域要在 `AppState::new` 构造 `IntentRouter` 之前就写进库——放在 `Database::new()` 之后同步执行，不能留在 `lib.rs` 的异步启动任务里。否则首条消息可能读到空库，正好落进上面那条退化分支。
@@ -331,7 +331,7 @@
 |---|---|
 | 删 `intent_routing` 时漏改调用点 | `cargo check --all-targets` 会直接报错，编译器兜底 |
 | 领域切换与意图编辑并发 | 单连接 `Arc<Mutex<Database>>`，天然串行 |
-| 内置领域被用户改坏后无法恢复 | `reset_intent_domain_to_builtin`（可选实现）+ `source` 字段保留判断依据 |
+| 内置领域被用户改坏后无法恢复 | 把 §6.3 的 JSON 走 `import_intent_domain` 恢复（§11 已决定不做专用命令）+ `source` 字段保留判断依据 |
 | 分类提示词随意图增多而变长 | 当前 12 个意图，可接受；超过约 40 个时应改为两阶段筛选——记入后续 |
 | 新旧 path 分配导致路由行为漂移 | 第 6.3 节显式记录，评审时确认 |
 
@@ -339,6 +339,7 @@
 
 - `IntentManager` 放在 `features/intent_management/mod.rs` 里作为薄服务层，还是让命令层直接操作 `Database`。倾向后者（与 `persona` 不完全一致，但少一层转发）；若仓储接口膨胀再抽。
 - `reset_intent_domain_to_builtin` 做或不做。
+  **决定：不做。** 误删的内置领域可以通过把 §6.3 的 JSON 走 `import_intent_domain` 粘贴回来恢复，一个专用命令不值得配上一整套确认流程。
 - 前端编辑用抽屉还是弹窗，沿用 `PersonaManagerPage` 的做法即可。
 - 领域色标、图标等纯展示细节。
 - `sort_order` 是否暴露为可拖拽排序。

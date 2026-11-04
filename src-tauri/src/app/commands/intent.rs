@@ -181,6 +181,17 @@ impl IntentInput {
             }
         }
 
+        // Deep-routed messages leave this command before `resolve_tools` runs,
+        // so an empty tool list would silently grant the whole registry. The
+        // data model must not promise a restriction the runtime cannot apply.
+        if self.path.as_deref().map(str::trim) == Some("deep")
+            && matches!(self.allowed_tools.as_deref(), Some([]))
+        {
+            return Err(AppError::InvalidInput(
+                "path 为 deep 的意图无法限制工具：allowed_tools 不能为空".to_string(),
+            ));
+        }
+
         if let Some(threshold) = self.confidence_threshold {
             if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
                 return Err(AppError::InvalidInput(format!(
@@ -671,6 +682,56 @@ mod tests {
             max_iterations: None,
             sort_order: None,
         }
+    }
+
+    #[test]
+    fn deep_intent_with_empty_tool_list_is_rejected() {
+        let input = IntentInput {
+            name: Some("深度意图".to_string()),
+            path: Some("deep".to_string()),
+            allowed_tools: Some(Vec::new()),
+            ..blank_input()
+        };
+
+        let err = input.validate(true).unwrap_err();
+        match err {
+            AppError::InvalidInput(message) => {
+                assert!(message.contains("deep"), "错误必须点名 path：{message}");
+                assert!(
+                    message.contains("allowed_tools"),
+                    "错误必须点名 allowed_tools：{message}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deep_intent_with_tools_and_fast_intent_without_tools_pass() {
+        let deep_with_tools = IntentInput {
+            name: Some("深度意图".to_string()),
+            path: Some("deep".to_string()),
+            allowed_tools: Some(vec!["file_system".to_string()]),
+            ..blank_input()
+        };
+        assert!(deep_with_tools.validate(true).is_ok());
+
+        let fast_without_tools = IntentInput {
+            name: Some("快速意图".to_string()),
+            path: Some("fast".to_string()),
+            allowed_tools: Some(Vec::new()),
+            ..blank_input()
+        };
+        assert!(fast_without_tools.validate(true).is_ok());
+
+        // An absent tool list says nothing about the runtime contract, so the
+        // schema default (also empty) must not be blocked at validation time.
+        let deep_without_tools_field = IntentInput {
+            name: Some("深度意图".to_string()),
+            path: Some("deep".to_string()),
+            ..blank_input()
+        };
+        assert!(deep_without_tools_field.validate(true).is_ok());
     }
 
     #[test]

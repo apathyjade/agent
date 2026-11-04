@@ -157,7 +157,7 @@ src-tauri/src/
 | `ModelProvider`, `ModelConfig`（含 `default_base_url` 等 3 个方法）+ 自由函数 `default_model(&[ModelConfig])` | `llm/model.rs` | 模型接入域的类型；`llm` 与 `app` 都用 |
 | `AppConfig`（含 `runtime_options()`、`load`/`save`、模型增删查方法） | `app/config.rs` | 桌面应用的持久化设置聚合，天然属于组合根；模型查询方法委托 `llm::model::default_model` |
 | `McpServerConfig`, `StartupPolicy`, `ToolConfig`, `ConfirmationMode`, `ConnectionStatus` | 留在 `features/mcp/config.rs` | 含 `effective_runtime()`，依赖 `runtime::toolchain::RuntimeType` |
-| `IntentRouterConfig`, `IntentConfig` | 留在 `llm/intent/mod.rs` | 意图路由域的类型 |
+| `IntentConfig` | 留在 `llm/intent/mod.rs` | 意图路由域的类型 |
 
 结果：`app/config.rs` 只向下引用 `llm::model`、`llm::intent`、`features::mcp::config`；`core` 不再需要知道任何配置结构。`cli` 因为要 `AppConfig::load()`，整体归入 `app/cli/`（它本来就是二进制入口的组合根）。
 
