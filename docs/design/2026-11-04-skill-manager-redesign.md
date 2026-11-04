@@ -328,9 +328,9 @@ search_market_skills(query, limit) -> Vec<MarketSkill>
   legacySkills: LegacySkill[];
   marketSkills: MarketSkill[];
   skillContent: string | null;   // 当前详情抽屉的 SKILL.md
-  loading: boolean;
+  skillLoading: boolean;      // 命名避开 uiSlice 的 loading
   busy: string | null;        // 正在执行的操作标识
-  error: string | null;
+  skillError: string | null;  // 命名避开 uiSlice 的 error
   updates: UpdateCheck | null;
 }
 ```

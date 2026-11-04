@@ -747,7 +747,7 @@ git commit -m "feat(ui): add skill manager types and IPC bindings"
 
 **Interfaces:**
 - Consumes: Task 9 的 `api` 与类型。
-- Produces `SkillSlice`：`cliStatus / scope / projectPath / installed / legacySkills / marketSkills / skillContent / loading / busy / error / updates`，以及 `fetchEnv / fetchAgents / fetchInstalled / fetchContent / installSkill / removeSkill / checkUpdates / updateAll / fetchLegacy / importLegacy / fetchMarketTopSkills / searchMarketSkills / setScope / setProjectPath`。
+- Produces `SkillSlice`：`cliStatus / agents / scope / projectPath / installed / legacySkills / marketSkills / skillContent / skillLoading / busy / skillError / updates`，以及 `fetchEnv / fetchAgents / fetchInstalled / fetchContent / installSkill / removeSkill / checkSkillUpdates / updateAll / fetchLegacy / importLegacy / fetchMarketTopSkills / searchMarketSkills / setScope / setProjectPath`。
 
 - [ ] **Step 1: 写失败测试**
 
