@@ -413,29 +413,40 @@ pub fn build_update_args(scope: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Parse the indented skill listing printed by `skills add <source> --list`.
+/// Parse the skill listing printed by `skills add <source> --list`.
 ///
-/// The real CLI frames every line with a glyph (`│`, `└`, `├`, `◇`, `●`, `•`)
-/// and indents the content behind it, while older/synthetic fixtures use plain
-/// two-space indentation. Both shapes are handled the same way: strip leading
-/// frame glyphs, then use the remaining leading spaces as the line's depth.
+/// The CLI is piped in the app, so two renderings are observed:
 ///
-/// A line followed by a deeper line is a skill name; the deeper line (or a run
-/// of deeper lines, joined with spaces) is its description. Parsing stops at
-/// the `Use --skill` hint that closes the listing. Unknown lines are ignored,
-/// so format drift degrades to fewer entries rather than an error.
+/// * framed multi-line rows — a name line followed by deeper-indented
+///   description lines;
+/// * single-line rows — `name   description` on one line.
+///
+/// Both may be preceded by a header (`Available Skills`) and noise
+/// (`Source:`, `Fetching`, `Found N skills`, ...). Parsing starts after the
+/// `Available Skills` header when present, otherwise it considers every
+/// non-noise line. Header and noise lines are never returned as skills.
 pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
     let clean = strip_ansi(stdout);
+    let lines: Vec<&str> = clean.lines().map(str::trim_end).collect();
 
-    // (depth, text) for every non-empty line before the closing hint.
+    let has_header = lines
+        .iter()
+        .any(|line| is_available_skills_header(strip_frame_glyphs(line).trim()));
+
     let mut rows: Vec<(usize, String)> = Vec::new();
-    for line in clean.lines() {
-        if line.contains("Use --skill") {
-            break;
-        }
+    let mut started = !has_header;
+
+    for line in lines {
         let stripped = strip_frame_glyphs(line);
         let text = stripped.trim();
         if text.is_empty() {
+            continue;
+        }
+        if is_available_skills_header(text) {
+            started = true;
+            continue;
+        }
+        if !started || is_noise_line(text) {
             continue;
         }
         let depth = stripped.chars().take_while(|c| *c == ' ').count();
@@ -443,14 +454,25 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
     }
 
     let mut skills: Vec<RepoSkill> = Vec::new();
-    let mut name_depth: Option<usize> = None;
     let mut i = 0;
 
     while i < rows.len() {
         let (depth, text) = &rows[i];
-        let next_is_deeper = rows.get(i + 1).is_some_and(|(next, _)| next > depth);
 
-        if next_is_deeper {
+        // Single-line form: the first run of 2+ spaces separates name and
+        // description.
+        if let Some((name, description)) = split_inline_row(text) {
+            skills.push(RepoSkill {
+                name: name.to_string(),
+                description: Some(description.to_string()),
+            });
+            i += 1;
+            continue;
+        }
+
+        // Multi-line form: a deeper next line marks this line as the name and
+        // every following deeper line as its (possibly wrapped) description.
+        if rows.get(i + 1).is_some_and(|(next, _)| next > depth) {
             let mut parts: Vec<String> = Vec::new();
             let mut j = i + 1;
             while j < rows.len() && rows[j].0 > *depth {
@@ -459,32 +481,66 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
             }
             skills.push(RepoSkill {
                 name: text.clone(),
-                description: if parts.is_empty() {
-                    None
-                } else {
-                    Some(parts.join(" "))
-                },
+                description: Some(parts.join(" ")),
             });
-            name_depth = Some(*depth);
             i = j;
-        } else if name_depth == Some(*depth) {
-            // A name at the established depth with no description.
-            skills.push(RepoSkill {
-                name: text.clone(),
-                description: None,
-            });
-            i += 1;
-        } else {
-            i += 1;
+            continue;
         }
+
+        // Anything else is a name without a description.
+        skills.push(RepoSkill {
+            name: text.clone(),
+            description: None,
+        });
+        i += 1;
     }
 
     skills
 }
 
-/// Frame glyphs the CLI puts before every content line.
+/// Split a single-line listing row at its first run of two or more spaces.
+fn split_inline_row(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    for i in 0..bytes.len().saturating_sub(1) {
+        if bytes[i] == b' ' && bytes[i + 1] == b' ' {
+            let name = text[..i].trim();
+            let description = text[i..].trim();
+            if !name.is_empty() && !description.is_empty() {
+                return Some((name, description));
+            }
+        }
+    }
+    None
+}
+
+/// The explicit start-of-listing header.
+fn is_available_skills_header(text: &str) -> bool {
+    text.eq_ignore_ascii_case("Available Skills")
+}
+
+/// Header/progress lines that must never be mistaken for a skill.
+fn is_noise_line(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    is_available_skills_header(text)
+        || lower.contains("use --skill")
+        || (lower.starts_with("found ") && lower.contains("skill"))
+        || [
+            "source:",
+            "fetching",
+            "selected",
+            "installing",
+            "installed",
+            "security",
+            "done",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+/// Frame glyphs the CLI puts before every content line. `ℹ` prefixes the
+/// single-line rendering.
 fn is_frame_glyph(c: char) -> bool {
-    matches!(c, '│' | '└' | '├' | '◇' | '●' | '•')
+    matches!(c, '│' | '└' | '├' | '◇' | '●' | '•' | 'ℹ')
 }
 
 /// Drop leading frame glyphs from a line while preserving the content
@@ -1045,6 +1101,74 @@ mod mutation_tests {
         assert_eq!(skills[0].description.as_deref(), Some("First skill"));
         assert_eq!(skills[1].name, "beta");
         assert_eq!(skills[1].description.as_deref(), Some("Second skill"));
+    }
+
+    #[test]
+    fn parses_single_line_cli_output() {
+        let raw = "\
+ℹ   find-skills   Helps users discover and install agent skills
+ℹ   other-skill   Does other things
+";
+        let skills = parse_available_skills(raw);
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "find-skills");
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("Helps users discover and install agent skills")
+        );
+        assert_eq!(skills[1].name, "other-skill");
+        assert_eq!(skills[1].description.as_deref(), Some("Does other things"));
+    }
+
+    #[test]
+    fn parses_header_and_noise_around_framed_list() {
+        let raw = "\
+Available Skills
+Source: vercel-labs/agent-skills
+Fetching skills from GitHub...
+Found 9 skills
+│    alpha
+│      First skill
+│    beta
+│      Second skill
+│    gamma
+│      Third skill
+│    delta
+│      Fourth skill
+│    epsilon
+│      Fifth skill
+│    zeta
+│      Sixth skill
+│    eta
+│      Seventh skill
+│    theta
+│      Eighth skill
+│    iota
+│      Ninth skill
+Use --skill <name> to install specific skills
+";
+        let skills = parse_available_skills(raw);
+        assert_eq!(skills.len(), 9);
+        assert_eq!(skills[0].name, "alpha");
+        assert_eq!(skills[0].description.as_deref(), Some("First skill"));
+        assert_eq!(skills[8].name, "iota");
+        assert_eq!(skills[8].description.as_deref(), Some("Ninth skill"));
+        assert!(skills.iter().all(|skill| skill.name != "Available Skills"));
+        assert!(skills
+            .iter()
+            .all(|skill| !skill.name.contains("Found 9 skills")));
+    }
+
+    #[test]
+    fn skips_header_even_when_list_is_empty() {
+        let raw = "\
+Available Skills
+Source: vercel-labs/agent-skills
+Fetching skills...
+Found 0 skills
+Use --skill <name> to install specific skills
+";
+        assert!(parse_available_skills(raw).is_empty());
     }
 
     #[test]

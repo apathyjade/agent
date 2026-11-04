@@ -1,19 +1,32 @@
 import { useState } from 'react';
-import { RefreshCw, Download, ChevronDown, ChevronRight, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
+import {
+  RefreshCw,
+  Download,
+  ChevronDown,
+  ChevronRight,
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  FolderKanban,
+} from 'lucide-react';
 import { useStore } from '../../store';
 
 export function UpdatePanel() {
-  const { updates, busy, checkUpdates, updateAll, skillError, clearSkillError } = useStore();
+  const { updates, busy, checkUpdates, updateAll, skillError, clearSkillError, scope, projectPath } =
+    useStore();
   const [rawOpen, setRawOpen] = useState(false);
 
   const isBusy = busy === 'update';
+  const needsProject = scope === 'project' && !projectPath;
 
   const handleCheck = async () => {
+    if (needsProject) return;
     clearSkillError();
     await checkUpdates();
   };
 
   const handleUpdateAll = async () => {
+    if (needsProject) return;
     clearSkillError();
     await updateAll();
     if (useStore.getState().skillError) {
@@ -21,6 +34,20 @@ export function UpdatePanel() {
     }
     await checkUpdates();
   };
+
+  if (needsProject) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12">
+        <div className="w-14 h-14 rounded-2xl bg-purple-50 dark:bg-purple-900/20 flex items-center justify-center mb-4">
+          <FolderKanban size={28} className="text-purple-500" />
+        </div>
+        <h3 className="text-base font-medium text-gray-900 dark:text-gray-100 mb-1">选择项目</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          切换到「项目」范围后，请选择一个项目以查看该项目的技能。
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

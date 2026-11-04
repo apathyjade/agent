@@ -44,7 +44,7 @@
 | `skills` npm 包 v1.7.6，要求 Node ≥ 22.20 | 启动时检测，缺依赖给可操作提示，不自动安装运行时 |
 | `skills list --json` 实测输出：`name / path / scope / agents / source / sourceUrl / sourceType / status`，**不含描述与版本** | 清单以它为准；描述/版本需读 `SKILL.md`，缺失时留空 |
 | `skills find` 是 fzf 式交互 TUI | 不能程序化调用；搜索继续用同一个 `/api/search` API |
-| `skills add <source> --list` 输出带 ANSI 的人类可读列表 | 只能尽力解析为「名称 + 描述」；解析失败时回退为手动输入技能名 |
+| `skills add <source> --list` 输出带 ANSI 的人类可读列表 | 只能尽力解析为「名称 + 描述」；解析失败时回退为安装该仓库全部技能 |
 | `-a universal` 会展开为所有直接读取 `.agents/skills` 的代理 | 不做默认值；安装时传明确的代理 ID，避免范围歧义 |
 | canonical 目录是 `<base>/.agents/skills`，全局 `~/.agents/skills` | 代理目录通过 symlink/copy 指向 canonical |
 | `skills add` 支持 `-g`、`-a`、`-s`、`--copy`、`-y`、`--list` | 安装与预览都可非交互执行 |
@@ -174,7 +174,7 @@ pub struct RepoSkill {            // `skills add <source> --list`
 
 pub struct RepoSkillPreview {
     pub skills: Vec<RepoSkill>,
-    pub raw: String,               // 解析失败时供前端展示/手动选择
+    pub raw: String,               // 解析失败时供前端展示原始输出
 }
 
 pub struct LegacySkill {          // 旧体系遗留目录
@@ -218,8 +218,8 @@ pub struct UpdateCheck {
 
 `preview_source(source)`：
 
-- 执行 `skills add <source> --list`（`NO_COLOR=1`），先剥离 ANSI，再按「缩进较浅的行为技能名、下一行缩进较深的行为描述」解析为 `RepoSkill`。
-- 该输出不是稳定接口，解析失败时返回空列表与原始输出；前端回退为「手动输入技能名」或「安装该仓库全部技能」。
+- 执行 `skills add <source> --list`（`NO_COLOR=1`），先剥离 ANSI，再兼容两种渲染：框线多行（名称行 + 更深缩进的描述行）与单行（`名称  描述`）。`Available Skills` 标题、`Source:` / `Fetching` / `Found N skills` 等噪声行不会作为技能返回。
+- 该输出不是稳定接口，解析失败时返回空列表与原始输出；前端唯一的回退是「安装该仓库全部技能」。
 
 ### 5.5 变更操作
 
