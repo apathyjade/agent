@@ -24,6 +24,25 @@ fn default_path() -> String {
     "fast".to_string()
 }
 
+/// Missing `enabled` means enabled, matching the column default. A `false`
+/// default would turn a minimal paste into an all-disabled batch that the
+/// "at least one enabled intent" guard rejects wholesale.
+fn default_true() -> bool {
+    true
+}
+
+/// Missing `confidence_threshold` uses the column default. Defaulting to `0.0`
+/// would silently disable the confidence fallback, since a confidence can
+/// never be negative.
+fn default_threshold() -> f64 {
+    0.7
+}
+
+/// Missing `scope` uses the column default instead of leaving the value blank.
+fn default_scope() -> String {
+    "global".to_string()
+}
+
 /// Wire shape of one intent in the §6.3 array format.
 ///
 /// Every field except `name` is optional on input. `id` is carried through
@@ -43,11 +62,11 @@ pub struct IntentJson {
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub default_agent: String,
-    #[serde(default)]
+    #[serde(default = "default_scope")]
     pub scope: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_threshold")]
     pub confidence_threshold: f64,
     #[serde(default)]
     pub fallback_intent: String,
@@ -274,6 +293,33 @@ mod tests {
         let err = parse_intent_array(r#"{"name":"单个对象"}"#).unwrap_err();
         let msg = invalid_message(err);
         assert!(msg.contains("数组"), "错误文案应说明需要数组，实际：{msg}");
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        let err = parse_intent_array("{not json").unwrap_err();
+        let msg = invalid_message(err);
+        assert!(
+            msg.contains("JSON 解析失败"),
+            "错误文案应说明 JSON 无法解析，实际：{msg}"
+        );
+    }
+
+    #[test]
+    fn minimal_entry_gets_schema_defaults() {
+        let inputs = parse_intent_array(r#"[{"name":"最简条目"}]"#).unwrap();
+        let records = to_records("domain", &inputs, NOW).unwrap();
+
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.name, "最简条目");
+        assert!(record.enabled, "缺省 enabled 必须为 true");
+        assert_eq!(
+            record.confidence_threshold, 0.7,
+            "缺省 confidence_threshold 必须取列默认值 0.7"
+        );
+        assert_eq!(record.scope, "global", "缺省 scope 必须取列默认值");
+        assert_eq!(record.path, "fast", "缺省 path 必须为 fast");
     }
 
     #[test]
