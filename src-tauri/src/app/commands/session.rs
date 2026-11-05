@@ -14,7 +14,9 @@ use crate::app::state::AppState;
 use crate::core::db::models::{Message as DbMessage, Session as DbSession};
 use crate::core::error::{AppError, Result};
 use crate::features::persona::{PersonaInfo, PersonaResolution};
-use crate::llm::intent::{IntentResult, PathSelection, RouteOutcome, RouteRequest, RouteSource};
+use crate::llm::intent::{
+    DecisionSource, ExecutionPolicy, IntentResult, PathSelection, RouteContext, RouteDecision,
+};
 use rig::completion::Message;
 
 /// Rebuild a persisted tool result as a Rig user message.
@@ -241,17 +243,8 @@ pub async fn send_message_stream(
     tools_enabled: Option<bool>,
     active_persona_id: Option<String>,
 ) -> Result<String> {
-    // ── Phase: classifying intent ──
-    let _ = app_handle.emit("stream_chunk", StreamChunk {
-        content: String::new(), done: false, tool_calls: None,
-        phase: Some("classifying".to_string()),
-    });
-
-    // ── Phase: building context ──
-    let _ = app_handle.emit("stream_chunk", StreamChunk {
-        content: String::new(), done: false, tool_calls: None,
-        phase: Some("building_context".to_string()),
-    });
+    // Routing emits `intent_resolved` when it actually completes; do not
+    // announce a classification phase before any work has started.
 
     // One resolver for both entry points: routing, recipe, model and context
     // cannot drift between streaming and non-streaming.
@@ -282,7 +275,7 @@ pub async fn send_message_stream(
                 &app_handle,
                 "info",
                 "planner",
-                format!("路由到深度执行: intent={} ({})", turn.route.intent.id, turn.route.intent.name),
+                format!("路由到深度执行: intent={} ({})", turn.route.chosen.id, turn.route.chosen.name),
             );
             let _ = app_handle.emit("stream_chunk", StreamChunk {
                 content: String::new(), done: false, tool_calls: None,
@@ -348,7 +341,7 @@ pub async fn get_request_context(
 pub(crate) struct PreparedTurn {
     pub session: DbSession,
     pub messages: Vec<DbMessage>,
-    pub route: RouteOutcome,
+    pub route: RouteDecision,
     pub path: PathSelection,
     pub tools_enabled: bool,
     pub allowed_tools: Option<Vec<String>>,
@@ -369,7 +362,7 @@ pub(crate) struct PreparedTurn {
 impl PreparedTurn {
     /// Intent appendix rendered as the existing system block, if configured.
     fn intent_appendix(&self) -> Option<String> {
-        intent_appendix(&self.route.intent)
+        intent_appendix(&self.route.chosen)
     }
 
     /// Session system prompt + persona + intent appendix.
@@ -416,7 +409,7 @@ pub(crate) async fn prepare_turn(
     tools_enabled: Option<bool>,
     active_persona_id: Option<String>,
 ) -> Result<PreparedTurn> {
-    let (sess, messages) = {
+    let (sess, messages, user_message_id) = {
         let db = state.db.lock().await;
 
         let sess = db
@@ -436,25 +429,46 @@ pub(crate) async fn prepare_turn(
 
         db.insert_message(&user_msg)?;
         let messages = db.get_messages(session_id)?;
-        (sess, messages)
+        (sess, messages, user_msg.id)
     };
 
     // ── Route with the session's persisted domain prior ──
     let pinned = sess.intent_domain_mode == "pinned";
+    let project_root: Option<std::path::PathBuf> = {
+        let db = state.db.lock().await;
+        sess.project_id
+            .as_deref()
+            .and_then(|id| db.get_project(id).ok().flatten())
+            .map(|project| std::path::PathBuf::from(project.path))
+    };
+    let recent_messages: Vec<DbMessage> = {
+        let mut recent: Vec<DbMessage> = messages
+            .iter()
+            .filter(|message| message.id != user_message_id)
+            .cloned()
+            .collect();
+        if recent.len() > 6 {
+            recent = recent.split_off(recent.len() - 6);
+        }
+        recent
+    };
     let route = state
         .intent_router
-        .route(RouteRequest {
+        .route(RouteContext {
+            session_id,
             content,
+            recent_messages: &recent_messages,
             prior_domain: sess.intent_domain_id.as_deref(),
             pinned,
+            project_root: project_root.as_deref(),
         })
         .await;
 
     // ── Persist the winning domain as the next message's prior ──
     if let PriorWriteBack::Persist { domain_id } = prior_write_back(
         &sess.intent_domain_mode,
-        &route.intent.domain_id,
-        &route.intent.domain_name,
+        &route.chosen.domain_id,
+        &route.chosen.domain_name,
     ) {
         let db = state.db.lock().await;
         if let Err(error) = db.set_session_intent_domain(session_id, Some(&domain_id), "auto") {
@@ -496,7 +510,7 @@ pub(crate) async fn prepare_turn(
         let providers = state.providers.lock().await;
         let default_model = providers.default_model_id().to_string();
         let resolution = resolve_model_id(
-            route.intent.config.model_id.as_deref(),
+            route.chosen.config.model_id.as_deref(),
             persona_model.as_deref(),
             &sess.model_id,
             Some(default_model.as_str()).filter(|id| !id.is_empty()),
@@ -526,7 +540,7 @@ pub(crate) async fn prepare_turn(
     });
     let allowed_tools = state.intent_router.resolve_tools(
         session_allowed_tools,
-        route.intent.config.enabled_tools.as_ref(),
+        route.chosen.config.enabled_tools.as_ref(),
     );
 
     // ── Memory (one call; deep reuses it in the goal prefix) ──
@@ -543,7 +557,7 @@ pub(crate) async fn prepare_turn(
     if let Some(persona) = &persona_block {
         fast_messages.push(Message::system(persona.clone()));
     }
-    if let Some(appendix) = intent_appendix(&route.intent) {
+    if let Some(appendix) = intent_appendix(&route.chosen) {
         fast_messages.push(Message::system(appendix));
     }
     if let Some(memory) = &memory_prompt {
@@ -575,14 +589,16 @@ pub(crate) async fn prepare_turn(
         )?;
     }
 
+    let policy = build_execution_policy(&route, allowed_tools, model_id);
+
     Ok(PreparedTurn {
         session: sess,
         messages,
-        path: route.intent.path,
+        path: policy.path,
         tools_enabled: tools_enabled.unwrap_or(true),
-        allowed_tools,
-        model_id,
-        max_iterations: route.intent.config.max_iterations,
+        allowed_tools: policy.allowed_tools,
+        model_id: policy.model_id,
+        max_iterations: policy.max_iterations,
         session_system_prompt,
         persona_block,
         memory_prompt,
@@ -1126,6 +1142,23 @@ fn step_summary(result: &serde_json::Value) -> String {
 
 // ── Small shared helpers ───────────────────────────────────────────────────
 
+/// Project a routing decision into the execution recipe. `uncertain` is
+/// intentionally ignored: it changes what the user is told, never what the
+/// turn is allowed to do.
+fn build_execution_policy(
+    route: &RouteDecision,
+    allowed_tools: Option<Vec<String>>,
+    model_id: String,
+) -> ExecutionPolicy {
+    ExecutionPolicy {
+        path: route.chosen.path,
+        allowed_tools,
+        model_id,
+        system_prompt_appendix: route.chosen.config.system_prompt_appendix.clone(),
+        max_iterations: route.chosen.config.max_iterations,
+    }
+}
+
 fn intent_appendix(intent: &IntentResult) -> Option<String> {
     intent
         .config
@@ -1170,28 +1203,36 @@ fn emit_execution_log(
 }
 
 #[derive(Serialize, Clone)]
-struct IntentResolvedEvent<'a> {
-    session_id: &'a str,
-    domain_id: &'a str,
-    domain_name: &'a str,
-    intent_id: &'a str,
-    intent_name: &'a str,
+struct IntentResolvedEvent {
+    session_id: String,
+    domain_id: String,
+    domain_name: String,
+    intent_id: String,
+    intent_name: String,
     confidence: f32,
-    source: RouteSource,
-    widened: bool,
+    uncertain: bool,
+    source: DecisionSource,
+    candidates: Vec<crate::llm::intent::IntentCandidate>,
+    elapsed_ms: u64,
+    llm_calls: usize,
+    probe_used: bool,
 }
 
 /// Emit the per-turn routing decision for the frontend badge.
-fn emit_intent_resolved(state: &AppState, session_id: &str, route: &RouteOutcome) {
+fn emit_intent_resolved(state: &AppState, session_id: &str, route: &RouteDecision) {
     let event = IntentResolvedEvent {
-        session_id,
-        domain_id: &route.intent.domain_id,
-        domain_name: &route.intent.domain_name,
-        intent_id: &route.intent.id,
-        intent_name: &route.intent.name,
-        confidence: route.intent.confidence,
+        session_id: session_id.to_string(),
+        domain_id: route.chosen.domain_id.clone(),
+        domain_name: route.chosen.domain_name.clone(),
+        intent_id: route.chosen.id.clone(),
+        intent_name: route.chosen.name.clone(),
+        confidence: route.confidence,
+        uncertain: route.uncertain,
         source: route.source,
-        widened: route.widened,
+        candidates: route.candidates.clone(),
+        elapsed_ms: route.evidence.elapsed_ms,
+        llm_calls: route.evidence.llm_calls,
+        probe_used: route.evidence.probe_used,
     };
     let _ = state.app_handle.emit("intent_resolved", event);
 }
@@ -1373,5 +1414,97 @@ mod tests {
     #[test]
     fn deep_failure_after_execution_started_returns_partial() {
         assert_eq!(deep_failure_action(true), DeepFailureAction::ReturnPartial);
+    }
+
+    fn route_decision(uncertain: bool) -> RouteDecision {
+        RouteDecision {
+            chosen: IntentResult {
+                id: "test.intent".to_string(),
+                name: "实现功能".to_string(),
+                domain_id: "test.domain".to_string(),
+                domain_name: "程序开发".to_string(),
+                config: crate::llm::intent::IntentConfig {
+                    system_prompt_appendix: Some("be strict".to_string()),
+                    enabled_tools: Some(vec!["file_system".to_string()]),
+                    model_id: Some("model-a".to_string()),
+                    max_iterations: Some(7),
+                    auto_escalate: false,
+                },
+                path: PathSelection::Deep,
+                confidence: 0.4,
+            },
+            confidence: 0.4,
+            uncertain,
+            source: DecisionSource::Llm,
+            candidates: vec![crate::llm::intent::IntentCandidate {
+                intent_id: "test.intent".to_string(),
+                name: "实现功能".to_string(),
+                domain_id: "test.domain".to_string(),
+                score: 0.4,
+                signal: DecisionSource::Llm,
+            }],
+            evidence: crate::llm::intent::DecisionEvidence {
+                llm_calls: 1,
+                elapsed_ms: 12,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn execution_policy_projects_the_chosen_intent() {
+        let decision = route_decision(false);
+        let policy = build_execution_policy(
+            &decision,
+            Some(vec!["file_system".to_string()]),
+            "model-a".to_string(),
+        );
+
+        assert_eq!(policy.path, PathSelection::Deep);
+        assert_eq!(policy.model_id, "model-a");
+        assert_eq!(policy.max_iterations, Some(7));
+        assert_eq!(
+            policy.system_prompt_appendix.as_deref(),
+            Some("be strict")
+        );
+        assert_eq!(
+            policy.allowed_tools,
+            Some(vec!["file_system".to_string()])
+        );
+    }
+
+    #[test]
+    fn uncertainty_does_not_change_the_tool_policy() {
+        let tools = Some(vec!["file_system".to_string()]);
+        let certain =
+            build_execution_policy(&route_decision(false), tools.clone(), "m".to_string());
+        let uncertain = build_execution_policy(&route_decision(true), tools, "m".to_string());
+
+        assert_eq!(certain.allowed_tools, uncertain.allowed_tools);
+    }
+
+    #[test]
+    fn intent_resolved_event_exposes_uncertainty_and_drops_widened() {
+        let decision = route_decision(true);
+        let event = IntentResolvedEvent {
+            session_id: "session".to_string(),
+            domain_id: decision.chosen.domain_id.clone(),
+            domain_name: decision.chosen.domain_name.clone(),
+            intent_id: decision.chosen.id.clone(),
+            intent_name: decision.chosen.name.clone(),
+            confidence: decision.confidence,
+            uncertain: decision.uncertain,
+            source: decision.source,
+            candidates: decision.candidates.clone(),
+            elapsed_ms: decision.evidence.elapsed_ms,
+            llm_calls: decision.evidence.llm_calls,
+            probe_used: decision.evidence.probe_used,
+        };
+
+        let value = serde_json::to_value(event).expect("event serializes");
+
+        assert_eq!(value["uncertain"], true);
+        assert!(value.get("widened").is_none());
+        assert_eq!(value["candidates"][0]["intent_id"], "test.intent");
     }
 }

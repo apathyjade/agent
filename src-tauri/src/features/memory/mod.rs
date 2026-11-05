@@ -8,9 +8,8 @@ use crate::core::db::models::MemoryRecord;
 use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
 
-// Rig imports for embedding support
-use rig::driver::DynModel;
-use rig::operation::Embedding;
+// Shared Rig embedding boundary used by intent recall as well.
+use crate::llm::embedding::EmbeddingService;
 
 pub mod seeds;
 pub mod vector_index;
@@ -94,24 +93,13 @@ pub struct UpdateMemoryParams {
 /// to SQLite keyword search.
 pub struct MemoryManager {
     db: Arc<Mutex<Database>>,
-    embedder: Option<DynModel<Embedding>>,
+    embedder: Option<Arc<EmbeddingService>>,
     vector_index: Arc<Mutex<InMemoryVectorIndex>>,
 }
 
 impl MemoryManager {
-    /// Create a new memory manager.
-    ///
-    /// If `openai_api_key` is `Some`, the manager will attempt to initialise
-    /// a Rig embedding model and rebuild the vector index from existing
-    /// memories on first `retrieve_relevant` call.
-    pub fn new(db: Arc<Mutex<Database>>, openai_api_key: Option<String>) -> Self {
-        let embedder = openai_api_key.map(|key| {
-            let client = rig::providers::openai::OpenAI::new(key);
-            let model = client.embedding(rig::providers::openai::TEXT_EMBEDDING_3_SMALL, None);
-            log::info!("MemoryManager: embedding model initialised");
-            model.erase()
-        });
-
+    /// Create a new memory manager with the shared embedding service.
+    pub fn new(db: Arc<Mutex<Database>>, embedder: Option<Arc<EmbeddingService>>) -> Self {
         Self {
             db,
             embedder,
@@ -119,11 +107,16 @@ impl MemoryManager {
         }
     }
 
+    fn active_embedder(&self) -> Option<&EmbeddingService> {
+        self.embedder
+            .as_deref()
+            .filter(|embedder| embedder.available())
+    }
+
     /// Lazily rebuild the vector index from the database.
     async fn ensure_index_built(&self) -> Result<()> {
-        let embedder = match &self.embedder {
-            Some(e) => e,
-            None => return Ok(()), // no embedder available
+        let Some(embedder) = self.active_embedder() else {
+            return Ok(()); // no embedder available
         };
 
         let mut index = self.vector_index.lock().await;
@@ -136,18 +129,12 @@ impl MemoryManager {
         drop(db); // release lock before network calls
 
         for record in &records {
-                match embedder.embed_text(&record.content).await {
-                    Ok(embedding) => {
-                        let vec_f32: Vec<f32> = embedding.vec.iter().map(|&x| x as f32).collect();
-                        index.insert(record.id.clone(), record.content.clone(), vec_f32);
-                    }
-                    Err(e) => {
-                        log::warn!("MemoryManager: failed to embed '{}': {}", record.id, e);
-                    }
-                }
+            if let Some(vec_f32) = embedder.embed(&record.content).await {
+                index.insert(record.id.clone(), record.content.clone(), vec_f32);
             }
+        }
 
-            log::info!("MemoryManager: rebuilt index with {} entries", index.len());
+        log::info!("MemoryManager: rebuilt index with {} entries", index.len());
         Ok(())
     }
 
@@ -189,16 +176,10 @@ impl MemoryManager {
         drop(db);
 
         // Compute embedding and add to vector index (best-effort)
-        if let Some(ref embedder) = self.embedder {
-            match embedder.embed_text(&record.content).await {
-                Ok(embedding) => {
-                    let vec_f32: Vec<f32> = embedding.vec.iter().map(|&x| x as f32).collect();
-                    let mut index = self.vector_index.lock().await;
-                    index.insert(record.id.clone(), record.content.clone(), vec_f32);
-                }
-                Err(e) => {
-                    log::warn!("MemoryManager: failed to embed new memory: {}", e);
-                }
+        if let Some(embedder) = self.active_embedder() {
+            if let Some(vec_f32) = embedder.embed(&record.content).await {
+                let mut index = self.vector_index.lock().await;
+                index.insert(record.id.clone(), record.content.clone(), vec_f32);
             }
         }
 
@@ -247,31 +228,25 @@ impl MemoryManager {
         self.ensure_index_built().await?;
 
         // Semantic search path
-        if let Some(ref embedder) = self.embedder {
+        if let Some(embedder) = self.active_embedder() {
             let index = self.vector_index.lock().await;
             if !index.is_empty() {
-                match embedder.embed_text(context).await {
-                    Ok(query_emb) => {
-                        let query_vec: Vec<f32> = query_emb.vec.iter().map(|&x| x as f32).collect();
-                        let results = index.search(&query_vec, limit as usize);
-                        if !results.is_empty() {
-                            let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
-                            let db = self.db.lock().await;
-                            let mut records = Vec::with_capacity(results.len());
-                            for id in ids {
-                                if let Some(record) = db.get_memory(id)? {
-                                    records.push(MemoryInfo::from(record));
-                                }
+                if let Some(query_vec) = embedder.embed(context).await {
+                    let results = index.search(&query_vec, limit as usize);
+                    if !results.is_empty() {
+                        let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
+                        let db = self.db.lock().await;
+                        let mut records = Vec::with_capacity(results.len());
+                        for id in ids {
+                            if let Some(record) = db.get_memory(id)? {
+                                records.push(MemoryInfo::from(record));
                             }
-                            // Bump access
-                            for r in &records {
-                                let _ = db.touch_memory(&r.id);
-                            }
-                            return Ok(records);
                         }
-                    }
-                    Err(e) => {
-                        log::warn!("MemoryManager: embedding failed, falling back: {}", e);
+                        // Bump access
+                        for r in &records {
+                            let _ = db.touch_memory(&r.id);
+                        }
+                        return Ok(records);
                     }
                 }
             }
@@ -326,16 +301,10 @@ impl MemoryManager {
 
         // Re-embed if content changed
         if content_changed {
-            if let Some(ref embedder) = self.embedder {
-                match embedder.embed_text(&record.content).await {
-                    Ok(embedding) => {
-                        let vec_f32: Vec<f32> = embedding.vec.iter().map(|&x| x as f32).collect();
-                        let mut index = self.vector_index.lock().await;
-                        index.insert(record.id.clone(), record.content.clone(), vec_f32);
-                    }
-                    Err(e) => {
-                        log::warn!("MemoryManager: failed to re-embed '{}': {}", record.id, e);
-                    }
+            if let Some(embedder) = self.active_embedder() {
+                if let Some(vec_f32) = embedder.embed(&record.content).await {
+                    let mut index = self.vector_index.lock().await;
+                    index.insert(record.id.clone(), record.content.clone(), vec_f32);
                 }
             }
         }

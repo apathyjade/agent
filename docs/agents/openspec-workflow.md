@@ -51,3 +51,5 @@ change 产物在 `openspec/changes/<name>/` 下，是工具工作目录。有长
 | `add-streaming-abort` | 🔄 in-progress | 流式传输中断能力 |
 | `local-skill-management` | 📦 archived | 本地技能管理功能 |
 | `intent-routing` | 📦 archived | 意图路由功能 |
+| `intent-domain-runtime-integration` | ✅ complete | 意图领域接入 Agent 运行时 |
+| `intent-routing-redesign` | 🔄 in-progress | 信号 → 决策 → 策略的意图链路重构 |

@@ -7,7 +7,10 @@ use crate::app::config::AppConfig;
 use crate::agent::critic::agent::CriticAgent;
 use crate::core::db::repository::Database;
 use crate::features::session::lifecycle::LifecycleManager;
+use crate::llm::embedding::EmbeddingService;
+use crate::llm::intent::classifier::LlmReranker;
 use crate::llm::intent::router::IntentRouter;
+use crate::llm::intent::RouterConfig;
 use crate::llm::model::ModelProvider;
 use crate::llm::provider::ProviderRegistry;
 use crate::features::mcp::McpServerManager;
@@ -61,16 +64,48 @@ impl AppState {
         let tools_arc = Arc::new(Mutex::new(tools));
 
         let skills = SkillsService::new();
-        // Pass the first available OpenAI API key for memory embedding.
-        // Embedding is best-effort — if no key is available the memory
-        // manager falls back to keyword search.
+        // One embedding client shared by memory retrieval and intent recall.
+        // Best-effort: without a key both features degrade gracefully.
         let openai_key = config
             .models
             .iter()
             .find(|m| m.provider == ModelProvider::OpenAI && !m.api_key.is_empty())
             .map(|m| m.api_key.clone())
             .or_else(|| std::env::var("OPENAI_API_KEY").ok());
-        let memory = MemoryManager::new(db_arc.clone(), openai_key);
+        let embedding = Arc::new(EmbeddingService::new(
+            openai_key,
+            config.intent.embedding_model_id.as_deref(),
+        ));
+        let memory = MemoryManager::new(db_arc.clone(), Some(embedding.clone()));
+
+        let router_config = RouterConfig {
+            enabled: config.intent.enabled,
+            embedding_floor: config.intent.embedding_floor,
+            embedding_margin: config.intent.embedding_margin,
+            prior_boost: config.intent.prior_boost,
+            llm_rerank_enabled: config.intent.llm_rerank_enabled,
+            llm_timeout_ms: config.intent.llm_timeout_ms,
+            probe_enabled: config.intent.probe_enabled,
+            probe_timeout_ms: config.intent.probe_timeout_ms,
+            second_rerank_min_budget_ms: config.intent.second_rerank_min_budget_ms,
+            routing_budget_ms: config.intent.routing_budget_ms,
+        };
+        let reranker = Arc::new(LlmReranker::new(
+            providers_arc.clone(),
+            config.intent.classifier_model_id.clone(),
+        ));
+        let intent_router = Arc::new(IntentRouter::new(
+            db_arc.clone(),
+            Some(embedding),
+            reranker,
+            router_config,
+        ));
+        {
+            let warm_router = intent_router.clone();
+            tauri::async_runtime::spawn(async move {
+                warm_router.warm_up().await;
+            });
+        }
         let persona = PersonaManager::new(db_arc.clone());
         let lifecycle = LifecycleManager::new(db_arc.clone(), providers_arc.clone());
 
@@ -78,13 +113,6 @@ impl AppState {
 
         let mcp = McpServerManager::new(tools_arc.clone())
             .with_runtime_manager(toolchain.manager.clone());
-
-        let intent_router = Arc::new(IntentRouter::new(
-            db_arc.clone(),
-            providers_arc.clone(),
-            config.intent.classifier_model_id.clone(),
-            config.intent.enabled,
-        ));
 
         // Build OrchestratorAgent with registered workers
         let mut dispatcher = Dispatcher::new();

@@ -335,14 +335,12 @@ type EditorState = { mode: 'create' } | { mode: 'edit'; intent: IntentInfo };
 function IntentEditorDrawer({
   state,
   domainId,
-  siblings,
   onClose,
   onSaved,
   onDeleted,
 }: {
   state: EditorState;
   domainId: string;
-  siblings: IntentInfo[];
   onClose: () => void;
   onSaved: () => Promise<void>;
   onDeleted: () => Promise<void>;
@@ -355,16 +353,10 @@ function IntentEditorDrawer({
   const [selectedTools, setSelectedTools] = useState<string[]>(editing?.allowed_tools ?? []);
   const [path, setPath] = useState(editing?.path === 'deep' ? 'deep' : 'fast');
   const [threshold, setThreshold] = useState(editing?.confidence_threshold ?? 0.7);
-  const [fallback, setFallback] = useState(editing?.fallback_intent ?? '');
   const [appendix, setAppendix] = useState(editing?.system_prompt_appendix ?? '');
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const fallbackOptions = useMemo(
-    () => siblings.filter((item) => item.id !== editing?.id),
-    [siblings, editing?.id],
-  );
 
   // Keep tool names that came in through import even though the picker only
   // labels the five built-in tools. Unknown values stay visible and removable.
@@ -409,7 +401,6 @@ function IntentEditorDrawer({
         if (normalizedThreshold !== editing.confidence_threshold) {
           patch.confidence_threshold = normalizedThreshold;
         }
-        if (fallback !== editing.fallback_intent) patch.fallback_intent = fallback;
         if (appendix !== editing.system_prompt_appendix) {
           patch.system_prompt_appendix = appendix;
         }
@@ -425,7 +416,6 @@ function IntentEditorDrawer({
           allowed_tools: allowedTools,
           path,
           confidence_threshold: normalizedThreshold,
-          fallback_intent: fallback,
           system_prompt_appendix: appendix,
         });
         await onSaved();
@@ -569,38 +559,21 @@ function IntentEditorDrawer({
             </select>
           </div>
           <div>
-            <label className={labelClass}>置信度阈值（0–1）</label>
+            <label className={labelClass}>LLM 置信度阈值（0–1）</label>
             <input
               type="number"
               min={0}
               max={1}
               step={0.05}
               value={threshold}
-              aria-label="置信度阈值"
+              aria-label="LLM 置信度阈值"
               onChange={(e) => setThreshold(Number(e.target.value))}
               className={inputClass}
             />
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+              LLM 重排给出意图时，置信度低于该值视为不确定。
+            </p>
           </div>
-        </div>
-
-        <div>
-          <label className={labelClass}>兜底意图</label>
-          <select
-            value={fallback}
-            aria-label="兜底意图"
-            onChange={(e) => setFallback(e.target.value)}
-            className={inputClass}
-          >
-            <option value="">无（不跳转）</option>
-            {fallbackOptions.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-          <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-            分类置信度低于阈值时改走这个意图。
-          </p>
         </div>
 
         <div>
@@ -1138,7 +1111,6 @@ export function IntentManagerPage() {
           key={editor.mode === 'edit' ? editor.intent.id : 'create'}
           state={editor}
           domainId={activeDomain.id}
-          siblings={sortedIntents}
           onClose={() => setEditor(null)}
           onSaved={async () => {
             await loadDomainIntents(activeDomain.id);

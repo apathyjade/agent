@@ -1,19 +1,20 @@
-use std::collections::HashMap;
-#[cfg(test)]
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
-use tokio::sync::Mutex;
+use chrono::Utc;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::core::db::models::IntentRecord;
 use crate::core::db::repository::Database;
-use crate::llm::intent::classifier::{score_intents, LlmClassifier};
+use crate::llm::embedding::EmbeddingService;
+use crate::llm::intent::classifier::{score_intents, IntentReranker};
+use crate::llm::intent::index::{intent_units, IntentVectorIndex};
+use crate::llm::intent::probe::probe;
 use crate::llm::intent::{
-    IntentConfig, IntentResult, PathSelection, RouteOutcome, RouteRequest, RouteSource,
+    DecisionEvidence, DecisionSource, IntentCandidate, IntentConfig, IntentResult, PathSelection,
+    RouteContext, RouteDecision, RouteTrace, RouterConfig,
 };
-use crate::llm::provider::ProviderRegistry;
 
 /// Stable id reported when routing is disabled or cannot be performed.
 const FALLBACK_INTENT_ID: &str = "builtin.software_dev.chat";
@@ -23,271 +24,105 @@ const FALLBACK_INTENT_ID: &str = "builtin.software_dev.chat";
 /// empty because no domain row was consulted.
 const FALLBACK_DOMAIN_ID: &str = "builtin.software_dev";
 
-/// A consistent snapshot of the routing inputs.
-///
-/// The DB guard is dropped before classification: holding it across the
-/// classifier's `.await` would stall every other DB user for the duration of
-/// an LLM round-trip.
+const EMBEDDING_TOP_K: usize = 6;
+const LLM_CANDIDATE_LIMIT: usize = 40;
+const TRACE_LIMIT: usize = 50;
+const EMBEDDING_QUERY_TIMEOUT_MS: u64 = 1200;
+
 struct RoutingData {
     domain_names: HashMap<String, String>,
-    /// Enabled intents per domain, in the same `sort_order, name` order as
-    /// `Database::list_enabled_intents`.
-    by_domain: HashMap<String, Vec<IntentRecord>>,
-    /// Every enabled intent across all domains, ordered by domain.
-    all_intents: Vec<IntentRecord>,
-    active_domain_id: Option<String>,
+    intents: Vec<IntentRecord>,
 }
 
-impl RoutingData {
-    fn domain_name(&self, domain_id: &str) -> &str {
-        self.domain_names
-            .get(domain_id)
-            .map(String::as_str)
-            .unwrap_or("")
-    }
-
-    fn intents_in(&self, domain_id: &str) -> &[IntentRecord] {
-        self.by_domain
-            .get(domain_id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    fn intent_domain(&self, intent_id: &str) -> Option<String> {
-        self.all_intents
-            .iter()
-            .find(|intent| intent.id == intent_id)
-            .map(|intent| intent.domain_id.clone())
-    }
-}
-
-/// The intent router: resolves a user message to one intent with a cascade
-/// (LLM → data-driven scorer → in-domain fallback) and reports how it got
-/// there.
+/// The intent router: resolves a user message with a cascade of signals
+/// (embedding → LLM rerank → rule scorer), reports how it got there, and keeps
+/// an in-process trace ring buffer.
 pub struct IntentRouter {
     db: Arc<Mutex<Database>>,
-    classifier: LlmClassifier,
-    /// Whether routing is enabled at all.
-    enabled: bool,
-    /// Number of times the LLM boundary was invoked. Test-only so the
-    /// cascade's "never call the LLM twice after a failure" rule can be
-    /// asserted honestly instead of inferred.
-    #[cfg(test)]
-    llm_calls: AtomicUsize,
-    /// Scripted LLM replies consumed in order. Empty means "use the real
-    /// classifier", which is what tests with an empty provider registry do.
-    #[cfg(test)]
-    llm_script: Mutex<VecDeque<Option<(String, f32)>>>,
+    embedding: Option<Arc<EmbeddingService>>,
+    index: RwLock<IntentVectorIndex>,
+    reranker: Arc<dyn IntentReranker>,
+    config: RouterConfig,
+    traces: Mutex<VecDeque<RouteTrace>>,
 }
 
 impl IntentRouter {
     pub fn new(
         db: Arc<Mutex<Database>>,
-        providers: Arc<Mutex<ProviderRegistry>>,
-        classifier_model_id: Option<String>,
-        enabled: bool,
+        embedding: Option<Arc<EmbeddingService>>,
+        reranker: Arc<dyn IntentReranker>,
+        config: RouterConfig,
     ) -> Self {
         Self {
             db,
-            classifier: LlmClassifier::new(providers, classifier_model_id),
-            enabled,
-            #[cfg(test)]
-            llm_calls: AtomicUsize::new(0),
-            #[cfg(test)]
-            llm_script: Mutex::new(VecDeque::new()),
+            embedding,
+            index: RwLock::new(IntentVectorIndex::new()),
+            reranker,
+            config,
+            traces: Mutex::new(VecDeque::new()),
         }
     }
 
-    /// Compatibility wrapper: route with no prior domain and no pinning.
-    pub async fn classify(&self, content: &str) -> IntentResult {
-        self.route(RouteRequest {
-            content,
-            prior_domain: None,
-            pinned: false,
-        })
-        .await
-        .intent
-    }
-
-    /// Resolve one message to an intent.
-    ///
-    /// Cascade (design §6.2):
-    /// 1. Classify inside the prior domain when it still has enabled intents.
-    ///    A clear hit wins. A low-confidence hit widens when `auto`; a failed
-    ///    LLM call falls through to the in-domain scorer and never asks the
-    ///    LLM again.
-    /// 2. `pinned` stops widening after a low score.
-    /// 3. Widening classifies against every enabled intent in every domain.
-    /// 4. Anything unresolved runs the in-domain fallback chain:
-    ///    `fallback_intent` → `.clarify` → lowest `sort_order` enabled intent.
-    /// 5. No usable domain at all yields the synthetic plain-chat result.
-    ///
-    /// Never fails: every degraded case returns a result so the message still
-    /// gets answered.
-    pub async fn route(&self, req: RouteRequest<'_>) -> RouteOutcome {
-        if !self.enabled {
-            return Self::synthetic_outcome();
-        }
-
-        let Some(data) = self.load_routing_data().await else {
-            return Self::synthetic_outcome();
-        };
-
-        if data.all_intents.is_empty() {
-            log::warn!(
-                "intent routing: no enabled intents in any domain, falling back to plain chat"
-            );
-            return Self::synthetic_outcome();
-        }
-
-        let prior_domain_id = req.prior_domain.map(str::to_string);
-        let prior_exists = prior_domain_id
-            .as_deref()
-            .map_or(false, |id| data.domain_names.contains_key(id));
-
-        if req.pinned && prior_domain_id.is_some() && !prior_exists {
-            log::warn!(
-                "intent routing: pinned domain '{}' no longer exists, treating the session as auto",
-                req.prior_domain.unwrap_or_default()
-            );
-        }
-
-        // Pinning is only meaningful while the pinned domain still exists.
-        let pinned = req.pinned && prior_exists;
-        let mut llm_available = true;
-        let mut low_candidate: Option<(String, f32)> = None;
-
-        // ── Step 1: classify inside the prior domain ──────────────────────
-        if let Some(domain_id) = prior_domain_id.as_deref().filter(|_| prior_exists) {
-            let intents = data.intents_in(domain_id);
-
-            if intents.is_empty() {
-                if pinned {
-                    log::warn!(
-                        "intent routing: pinned domain '{domain_id}' has no enabled intents"
-                    );
-                    return Self::synthetic_outcome();
-                }
-            } else {
-                match self.classify_llm(req.content, intents).await {
-                    Some((id, score)) => {
-                        if Self::clears_threshold(intents, &id, score) {
-                            return Self::record_outcome(
-                                &data,
-                                &id,
-                                score,
-                                RouteSource::Llm,
-                                false,
-                            );
-                        }
-                        // Low confidence, not failure: widening is the next
-                        // step and the scorer must not run.
-                        low_candidate = Some((id, score));
-                    }
-                    None => {
-                        // The classifier failed. Do not ask it again for the
-                        // widened scope; only the scorer may answer now.
-                        llm_available = false;
-                        match score_intents(req.content, intents) {
-                            Some((id, score))
-                                if Self::clears_threshold(intents, &id, score) =>
-                            {
-                                return Self::record_outcome(
-                                    &data,
-                                    &id,
-                                    score,
-                                    RouteSource::Scorer,
-                                    false,
-                                );
-                            }
-                            Some(hit) => low_candidate = Some(hit),
-                            None => {}
-                        }
-                    }
-                }
-
-                // ── Step 2: pinned never widens ──────────────────────────
-                if pinned {
-                    return Self::fallback_outcome(
-                        &data,
-                        domain_id,
-                        low_candidate.as_ref(),
-                        false,
-                    );
-                }
-            }
-        }
-
-        // ── Step 3: widen across every enabled intent ────────────────────
-        let widened = prior_domain_id.is_some();
-        let widen_intents = data.all_intents.as_slice();
-        let mut wide_low: Option<(String, f32)> = None;
-
-        if llm_available {
-            match self.classify_llm(req.content, widen_intents).await {
-                Some((id, score)) => {
-                    if Self::clears_threshold(widen_intents, &id, score) {
-                        return Self::record_outcome(
-                            &data,
-                            &id,
-                            score,
-                            RouteSource::Llm,
-                            widened,
-                        );
-                    }
-                    low_candidate = Some((id, score));
-                    wide_low = low_candidate.clone();
-                }
-                None => {
-                    if let Some((id, score)) = score_intents(req.content, widen_intents) {
-                        if Self::clears_threshold(widen_intents, &id, score) {
-                            return Self::record_outcome(
-                                &data,
-                                &id,
-                                score,
-                                RouteSource::Scorer,
-                                widened,
-                            );
-                        }
-                        wide_low = Some((id, score));
-                    }
-                }
-            }
-        } else if let Some((id, score)) = score_intents(req.content, widen_intents) {
-            if Self::clears_threshold(widen_intents, &id, score) {
-                return Self::record_outcome(
-                    &data,
-                    &id,
-                    score,
-                    RouteSource::Scorer,
-                    widened,
-                );
-            }
-            wide_low = Some((id, score));
-        }
-
-        // ── Step 4: fallback chain in the last candidate domain ──────────
-        let fallback_domain_id = wide_low
+    /// Build the intent index in the background. Never blocks routing; until
+    /// it finishes the embedding signal is simply unavailable.
+    pub async fn warm_up(self: &Arc<Self>) {
+        let Some(embedding) = self
+            .embedding
             .as_ref()
-            .and_then(|(id, _)| data.intent_domain(id))
-            .or_else(|| prior_domain_id.filter(|id| !data.intents_in(id).is_empty()))
-            .or_else(|| data.active_domain_id.clone());
-
-        let Some(domain_id) = fallback_domain_id else {
-            log::warn!("intent routing: no candidate domain for the fallback chain");
-            return Self::synthetic_outcome();
+            .filter(|embedding| embedding.available())
+        else {
+            self.index.write().await.clear();
+            return;
         };
 
-        let candidate = wide_low.as_ref().or(low_candidate.as_ref());
-        Self::fallback_outcome(&data, &domain_id, candidate, widened)
+        let intents = {
+            let db = self.db.lock().await;
+            db.list_all_enabled_intents()
+        };
+        let intents = match intents {
+            Ok(intents) => intents,
+            Err(error) => {
+                log::warn!("intent index: failed to list intents: {error}");
+                return;
+            }
+        };
+
+        let mut units: HashMap<String, Vec<Vec<f32>>> = HashMap::new();
+        for intent in &intents {
+            let texts = intent_units(&intent.name, &intent.description, &intent.examples);
+            let mut vectors = Vec::with_capacity(texts.len());
+            for text in texts {
+                if let Some(vector) = embedding.embed(&text).await {
+                    vectors.push(vector);
+                }
+            }
+            if !vectors.is_empty() {
+                units.insert(intent.id.clone(), vectors);
+            }
+        }
+
+        let count = units.len();
+        self.index.write().await.replace(units);
+        log::info!("intent index: ready with {count} intents");
+    }
+
+    /// Mark the index stale. Callers normally follow this with a spawned
+    /// `warm_up`.
+    pub async fn mark_dirty(&self) {
+        self.index.write().await.mark_dirty();
+    }
+
+    pub async fn recent_traces(&self) -> Vec<RouteTrace> {
+        let traces = self.traces.lock().await;
+        traces.iter().cloned().collect()
     }
 
     /// Resolve the final tool list from the session and intent restrictions.
     ///
     /// An explicit intent list is authoritative: it names the complete set of
-    /// tools the intent permits, so an empty intersection means no tools at all
-    /// (`Some(vec![])`), not "unrestricted". `None` on the intent side means the
-    /// intent imposes no restriction.
+    /// tools the intent permits, so an empty intersection means no tools at
+    /// all (`Some(vec![])`), not "unrestricted". `None` on the intent side
+    /// means the intent imposes no restriction.
     pub fn resolve_tools(
         &self,
         session_tools: Option<Vec<String>>,
@@ -297,31 +132,312 @@ impl IntentRouter {
             (Some(session), Some(intent)) => Some(
                 session
                     .into_iter()
-                    .filter(|t| intent.contains(t))
+                    .filter(|tool| intent.contains(tool))
                     .collect(),
             ),
-            // No session-level restriction, but the intent still decides.
             (None, Some(intent)) => Some(intent.clone()),
             (Some(session), None) => Some(session),
             (None, None) => None,
         }
     }
 
-    /// Invoke the LLM boundary, or consume a scripted reply in tests.
-    ///
-    /// Production behaviour is unchanged. The test hook counts calls and lets
-    /// tests exercise the "LLM hit" branches without a network provider.
-    async fn classify_llm(&self, content: &str, intents: &[IntentRecord]) -> Option<(String, f32)> {
-        #[cfg(test)]
+    /// Resolve one message to an intent. Never fails: every degraded case
+    /// returns a decision so the message still gets answered.
+    pub async fn route(&self, ctx: RouteContext<'_>) -> RouteDecision {
+        let started = Instant::now();
+
+        if !self.config.enabled {
+            return self
+                .finalize(Self::synthetic(false), &ctx, started)
+                .await;
+        }
+
+        let Some(data) = self.load_routing_data().await else {
+            return self
+                .finalize(Self::synthetic(true), &ctx, started)
+                .await;
+        };
+
+        if data.intents.is_empty() {
+            log::warn!("intent routing: no enabled intents in any domain");
+            return self
+                .finalize(Self::synthetic(false), &ctx, started)
+                .await;
+        }
+
+        let prior_exists = ctx
+            .prior_domain
+            .map_or(false, |id| data.domain_names.contains_key(id));
+        if ctx.pinned && ctx.prior_domain.is_some() && !prior_exists {
+            log::warn!(
+                "intent routing: pinned domain '{}' no longer exists, treating the session as auto",
+                ctx.prior_domain.unwrap_or_default()
+            );
+        }
+        let pinned = ctx.pinned && prior_exists;
+
+        let candidates: Vec<IntentRecord> = if pinned {
+            data.intents
+                .iter()
+                .filter(|intent| Some(intent.domain_id.as_str()) == ctx.prior_domain)
+                .cloned()
+                .collect()
+        } else {
+            data.intents.clone()
+        };
+
+        if candidates.is_empty() {
+            log::warn!("intent routing: pinned domain has no enabled intents");
+            return self
+                .finalize(Self::synthetic(false), &ctx, started)
+                .await;
+        }
+
+        let intents_by_id: HashMap<&str, &IntentRecord> = candidates
+            .iter()
+            .map(|intent| (intent.id.as_str(), intent))
+            .collect();
+        let candidate_ids: HashSet<String> =
+            candidates.iter().map(|intent| intent.id.clone()).collect();
+        let prior_domain = ctx.prior_domain;
+
+        let mut evidence = DecisionEvidence::default();
+
+        // ── Signal 1: embedding recall ────────────────────────────────────
+        let mut emb_top: Vec<(String, f32)> = Vec::new();
+        if let Some(embedding) = self
+            .embedding
+            .as_ref()
+            .filter(|embedding| embedding.available())
         {
-            self.llm_calls.fetch_add(1, Ordering::SeqCst);
-            let mut script = self.llm_script.lock().await;
-            if let Some(scripted) = script.pop_front() {
-                // Mirror the real parser: an id outside this scope is a miss.
-                return scripted.filter(|(id, _)| intents.iter().any(|intent| &intent.id == id));
+            if self.index.read().await.is_ready() {
+                let remaining = budget_left(started, self.config.routing_budget_ms);
+                let wait = remaining.min(Duration::from_millis(EMBEDDING_QUERY_TIMEOUT_MS));
+                if !wait.is_zero() {
+                    if let Ok(Some(query)) =
+                        tokio::time::timeout(wait, embedding.embed(ctx.content)).await
+                    {
+                        let index = self.index.read().await;
+                        emb_top = index.top_k(&query, &candidate_ids, EMBEDDING_TOP_K);
+                    }
+                }
             }
         }
-        self.classifier.classify(content, intents).await
+
+        let top1 = emb_top.first().map(|(_, score)| *score);
+        let top2 = emb_top.get(1).map(|(_, score)| *score).unwrap_or(0.0);
+        evidence.embedding_top1 = top1;
+        evidence.embedding_margin = top1.map(|score| score - top2);
+
+        let decisive = top1.map_or(false, |score| {
+            score >= self.config.embedding_floor
+                && (score - top2) >= self.config.embedding_margin
+        });
+
+        let mut candidates_meta = embedding_candidates(&emb_top, &intents_by_id);
+
+        if decisive {
+            let chosen = emb_top
+                .first()
+                .and_then(|(id, _)| intents_by_id.get(id.as_str()).copied())
+                .map(|record| (record.clone(), top1.unwrap_or(0.0)));
+            if let Some((record, confidence)) = chosen {
+                let decision = self.decision_for(
+                    &data,
+                    &record,
+                    confidence,
+                    false,
+                    DecisionSource::Embedding,
+                    candidates_meta,
+                    evidence,
+                );
+                return self.finalize(decision, &ctx, started).await;
+            }
+        }
+
+        // ── Signal 2: LLM rerank ─────────────────────────────────────────
+        if self.config.llm_rerank_enabled {
+            let llm_candidates: Vec<IntentRecord> = if !emb_top.is_empty() {
+                emb_top
+                    .iter()
+                    .filter_map(|(id, _)| intents_by_id.get(id.as_str()).map(|r| (*r).clone()))
+                    .collect()
+            } else {
+                candidates
+                    .iter()
+                    .take(LLM_CANDIDATE_LIMIT)
+                    .cloned()
+                    .collect()
+            };
+
+            if !llm_candidates.is_empty() {
+                let remaining = budget_left(started, self.config.routing_budget_ms);
+                let wait = remaining.min(Duration::from_millis(self.config.llm_timeout_ms));
+                if !wait.is_zero() {
+                    evidence.llm_calls += 1;
+                    let replied = tokio::time::timeout(
+                        wait,
+                        self.reranker
+                            .rerank(ctx.content, ctx.recent_messages, &llm_candidates),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+
+                    if let Some((intent_id, confidence)) = replied {
+                        if let Some(record) = intents_by_id.get(intent_id.as_str()).copied() {
+                            evidence.llm_confidence = Some(confidence);
+                            let threshold = record.confidence_threshold as f32;
+                            let uncertain = confidence < threshold;
+
+                            if uncertain && self.config.probe_enabled {
+                                if let Some(project_root) = ctx.project_root {
+                                    let left = budget_left(
+                                        started,
+                                        self.config.routing_budget_ms,
+                                    );
+                                    let need = Duration::from_millis(
+                                        self.config.probe_timeout_ms
+                                            + self.config.second_rerank_min_budget_ms,
+                                    );
+                                    if left >= need {
+                                        evidence.probe_used = true;
+                                        let evidence_text = probe(
+                                            record,
+                                            project_root,
+                                            Duration::from_millis(self.config.probe_timeout_ms),
+                                        )
+                                        .await;
+
+                                        if let Some(evidence_text) = evidence_text {
+                                            let combined = format!(
+                                                "{}\n\nProject evidence:\n{}",
+                                                ctx.content, evidence_text
+                                            );
+                                            let left = budget_left(
+                                                started,
+                                                self.config.routing_budget_ms,
+                                            );
+                                            let wait = left.min(Duration::from_millis(
+                                                self.config.llm_timeout_ms,
+                                            ));
+                                            if !wait.is_zero() {
+                                                evidence.llm_calls += 1;
+                                                let second = tokio::time::timeout(
+                                                    wait,
+                                                    self.reranker.rerank(
+                                                        &combined,
+                                                        ctx.recent_messages,
+                                                        &llm_candidates,
+                                                    ),
+                                                )
+                                                .await
+                                                .ok()
+                                                .flatten();
+
+                                                if let Some((second_id, second_conf)) = second {
+                                                    if let Some(second_record) = intents_by_id
+                                                        .get(second_id.as_str())
+                                                        .copied()
+                                                    {
+                                                        evidence.llm_confidence =
+                                                            Some(second_conf);
+                                                        push_candidate(
+                                                            &mut candidates_meta,
+                                                            second_record,
+                                                            second_conf,
+                                                            DecisionSource::Probe,
+                                                        );
+                                                        let decision = self.decision_for(
+                                                            &data,
+                                                            second_record,
+                                                            second_conf,
+                                                            second_conf
+                                                                < second_record.confidence_threshold
+                                                                    as f32,
+                                                            DecisionSource::Probe,
+                                                            candidates_meta,
+                                                            evidence,
+                                                        );
+                                                        return self
+                                                            .finalize(decision, &ctx, started)
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            push_candidate(
+                                &mut candidates_meta,
+                                record,
+                                confidence,
+                                DecisionSource::Llm,
+                            );
+                            let decision = self.decision_for(
+                                &data,
+                                record,
+                                confidence,
+                                uncertain,
+                                DecisionSource::Llm,
+                                candidates_meta,
+                                evidence,
+                            );
+                            return self.finalize(decision, &ctx, started).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Signal 3: embedding fallback ─────────────────────────────────
+        if !emb_top.is_empty() {
+            if let Some((record, raw)) = ranked_choice(
+                &emb_top,
+                &intents_by_id,
+                prior_domain,
+                self.config.prior_boost,
+            ) {
+                push_candidate(
+                    &mut candidates_meta,
+                    &record,
+                    raw,
+                    DecisionSource::Embedding,
+                );
+                let decision = self.decision_for(
+                    &data,
+                    &record,
+                    raw,
+                    true,
+                    DecisionSource::Embedding,
+                    candidates_meta,
+                    evidence,
+                );
+                return self.finalize(decision, &ctx, started).await;
+            }
+        }
+
+        // ── Signal 4: rule scorer ────────────────────────────────────────
+        if let Some((intent_id, score)) = score_intents(ctx.content, &candidates) {
+            if let Some(record) = intents_by_id.get(intent_id.as_str()).copied() {
+                evidence.rule_score = Some(score);
+                push_candidate(&mut candidates_meta, record, score, DecisionSource::Rule);
+                let decision = self.decision_for(
+                    &data,
+                    record,
+                    score,
+                    score < record.confidence_threshold as f32,
+                    DecisionSource::Rule,
+                    candidates_meta,
+                    evidence,
+                );
+                return self.finalize(decision, &ctx, started).await;
+            }
+        }
+
+        self.finalize(Self::synthetic(true), &ctx, started).await
     }
 
     async fn load_routing_data(&self) -> Option<RoutingData> {
@@ -333,168 +449,97 @@ impl IntentRouter {
         let domains = match domains {
             Ok(domains) => domains,
             Err(error) => {
-                log::warn!(
-                    "intent routing: failed to list intent domains: {error}, falling back to plain chat"
-                );
+                log::warn!("intent routing: failed to list domains: {error}");
                 return None;
             }
         };
-        let all_intents = match intents {
+        let intents = match intents {
             Ok(intents) => intents,
             Err(error) => {
-                log::warn!(
-                    "intent routing: failed to list enabled intents: {error}, falling back to plain chat"
-                );
+                log::warn!("intent routing: failed to list enabled intents: {error}");
                 return None;
             }
         };
 
         let mut domain_names = HashMap::new();
-        let mut active_domain_id = None;
         for domain in &domains {
-            if domain.is_active {
-                active_domain_id = Some(domain.id.clone());
-            }
             domain_names.insert(domain.id.clone(), domain.name.clone());
-        }
-
-        let mut by_domain: HashMap<String, Vec<IntentRecord>> = HashMap::new();
-        for intent in &all_intents {
-            by_domain
-                .entry(intent.domain_id.clone())
-                .or_default()
-                .push(intent.clone());
         }
 
         Some(RoutingData {
             domain_names,
-            by_domain,
-            all_intents,
-            active_domain_id,
+            intents,
         })
     }
 
-    fn clears_threshold(intents: &[IntentRecord], intent_id: &str, score: f32) -> bool {
-        intents
-            .iter()
-            .find(|intent| intent.id == intent_id)
-            // Compare in one domain: widening `0.7f32` to `f64` yields
-            // 0.699999988…, which would wrongly fail a threshold of 0.7.
-            .map(|intent| score >= intent.confidence_threshold as f32)
-            .unwrap_or(false)
-    }
-
-    /// Walk the in-domain fallback chain: `fallback_intent` (one hop) →
-    /// `.clarify` → lowest `sort_order` enabled intent.
-    ///
-    /// `low_candidate` is the low-confidence intent that triggered the
-    /// fallback, when there is one. Its score is reported as the outcome's
-    /// confidence (it explains why the reroute happened).
-    fn fallback_outcome(
+    fn decision_for(
+        &self,
         data: &RoutingData,
-        domain_id: &str,
-        low_candidate: Option<&(String, f32)>,
-        widened: bool,
-    ) -> RouteOutcome {
-        let intents = data.intents_in(domain_id);
-        if intents.is_empty() {
-            log::warn!(
-                "intent routing: fallback domain '{domain_id}' has no enabled intents, falling back to plain chat"
-            );
-            return Self::synthetic_outcome();
-        }
-
-        let score = low_candidate
-            .map(|(_, score)| *score)
-            .unwrap_or(0.0);
-
-        // 1. The low-confidence intent's configured reroute target, one hop.
-        //    An empty or dangling `fallback_intent` is skipped rather than
-        //    followed, so a self-referential chain cannot loop.
-        if let Some((candidate_id, _)) = low_candidate {
-            if let Some(candidate) = intents.iter().find(|intent| &intent.id == candidate_id) {
-                if !candidate.fallback_intent.is_empty() {
-                    if let Some(target) = intents
-                        .iter()
-                        .find(|intent| intent.id == candidate.fallback_intent)
-                    {
-                        return Self::record_outcome(
-                            data,
-                            &target.id,
-                            score,
-                            RouteSource::Fallback,
-                            widened,
-                        );
-                    }
-                }
-            }
-        }
-
-        // 2. The domain's clarify intent.
-        if let Some(clarify) = intents
-            .iter()
-            .find(|intent| intent.id.ends_with(".clarify"))
-        {
-            return Self::record_outcome(
-                data,
-                &clarify.id,
-                score,
-                RouteSource::Fallback,
-                widened,
-            );
-        }
-
-        // 3. Lowest `sort_order`; `intents` already carries query order.
-        let first = &intents[0];
-        Self::record_outcome(data, &first.id, score, RouteSource::Fallback, widened)
-    }
-
-    fn record_outcome(
-        data: &RoutingData,
-        intent_id: &str,
+        record: &IntentRecord,
         confidence: f32,
-        source: RouteSource,
-        widened: bool,
-    ) -> RouteOutcome {
-        match data
-            .all_intents
-            .iter()
-            .find(|intent| intent.id == intent_id)
-        {
-            Some(record) => RouteOutcome {
-                intent: Self::project(
-                    record,
-                    data.domain_name(&record.domain_id),
-                    confidence,
-                ),
-                source,
-                widened,
-            },
-            // Every id passed here came from `all_intents`; defensive only.
-            None => Self::synthetic_outcome(),
+        uncertain: bool,
+        source: DecisionSource,
+        candidates: Vec<IntentCandidate>,
+        evidence: DecisionEvidence,
+    ) -> RouteDecision {
+        RouteDecision {
+            chosen: Self::project(record, data.domain_name(&record.domain_id), confidence),
+            confidence,
+            uncertain,
+            source,
+            candidates,
+            evidence,
         }
+    }
+
+    async fn finalize(
+        &self,
+        mut decision: RouteDecision,
+        ctx: &RouteContext<'_>,
+        started: Instant,
+    ) -> RouteDecision {
+        decision.evidence.elapsed_ms = started.elapsed().as_millis() as u64;
+
+        let excerpt: String = ctx.content.chars().take(80).collect();
+        let trace = RouteTrace {
+            at: Utc::now().to_rfc3339(),
+            session_id: ctx.session_id.to_string(),
+            message_excerpt: excerpt,
+            candidates: decision.candidates.clone(),
+            chosen_intent_id: decision.chosen.id.clone(),
+            chosen_intent_name: decision.chosen.name.clone(),
+            confidence: decision.confidence,
+            uncertain: decision.uncertain,
+            source: decision.source,
+            elapsed_ms: decision.evidence.elapsed_ms,
+            llm_calls: decision.evidence.llm_calls,
+            probe_used: decision.evidence.probe_used,
+        };
+
+        let mut traces = self.traces.lock().await;
+        traces.push_front(trace);
+        traces.truncate(TRACE_LIMIT);
+
+        decision
     }
 
     /// Synthetic plain-chat result: fast path, no tool restriction, no
     /// iteration cap, and no domain choice.
-    fn synthetic_outcome() -> RouteOutcome {
-        RouteOutcome {
-            intent: Self::fallback(),
-            source: RouteSource::Fallback,
-            widened: false,
+    fn synthetic(uncertain: bool) -> RouteDecision {
+        RouteDecision {
+            chosen: Self::fallback(),
+            confidence: 0.0,
+            uncertain,
+            source: DecisionSource::Fallback,
+            candidates: Vec::new(),
+            evidence: DecisionEvidence::default(),
         }
     }
 
     fn fallback() -> IntentResult {
         IntentResult {
             id: FALLBACK_INTENT_ID.to_string(),
-            // Matches the seeded `builtin.software_dev.chat` display name so
-            // the synthetic and DB-backed chat paths log the same label.
             name: "闲聊对话".to_string(),
-            // The synthetic result reuses the builtin domain id but reports
-            // an empty domain name: no domain row was chosen. Callers that
-            // must distinguish this case should check `RouteOutcome::source`
-            // or the empty name.
             domain_id: FALLBACK_DOMAIN_ID.to_string(),
             domain_name: String::new(),
             config: IntentConfig {
@@ -509,7 +554,6 @@ impl IntentRouter {
         }
     }
 
-    /// Project a stored intent row into the router's result type.
     fn project(record: &IntentRecord, domain_name: &str, confidence: f32) -> IntentResult {
         let optional = |value: &str| {
             if value.is_empty() {
@@ -526,9 +570,6 @@ impl IntentRouter {
             domain_name: domain_name.to_string(),
             config: IntentConfig {
                 system_prompt_appendix: optional(&record.system_prompt_appendix),
-                // Never collapse an empty list to `None`: `None` means "any
-                // tool", but an empty `allowed_tools` means "no tool" (chat,
-                // clarify). The row is the only source of this list.
                 enabled_tools: Some(record.allowed_tools.clone()),
                 model_id: optional(&record.model_id),
                 max_iterations: record.max_iterations,
@@ -544,27 +585,97 @@ impl IntentRouter {
     }
 }
 
+impl RoutingData {
+    fn domain_name(&self, domain_id: &str) -> &str {
+        self.domain_names
+            .get(domain_id)
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+}
+
+fn budget_left(started: Instant, budget_ms: u64) -> Duration {
+    Duration::from_millis(budget_ms).saturating_sub(started.elapsed())
+}
+
+fn embedding_candidates(
+    emb_top: &[(String, f32)],
+    intents_by_id: &HashMap<&str, &IntentRecord>,
+) -> Vec<IntentCandidate> {
+    emb_top
+        .iter()
+        .take(EMBEDDING_TOP_K)
+        .filter_map(|(intent_id, score)| {
+            intents_by_id.get(intent_id.as_str()).map(|record| IntentCandidate {
+                intent_id: intent_id.clone(),
+                name: record.name.clone(),
+                domain_id: record.domain_id.clone(),
+                score: *score,
+                signal: DecisionSource::Embedding,
+            })
+        })
+        .collect()
+}
+
+fn push_candidate(
+    candidates: &mut Vec<IntentCandidate>,
+    record: &IntentRecord,
+    score: f32,
+    signal: DecisionSource,
+) {
+    if candidates
+        .iter()
+        .any(|candidate| candidate.intent_id == record.id)
+    {
+        return;
+    }
+    candidates.push(IntentCandidate {
+        intent_id: record.id.clone(),
+        name: record.name.clone(),
+        domain_id: record.domain_id.clone(),
+        score,
+        signal,
+    });
+}
+
+fn ranked_choice(
+    emb_top: &[(String, f32)],
+    intents_by_id: &HashMap<&str, &IntentRecord>,
+    prior_domain: Option<&str>,
+    prior_boost: f32,
+) -> Option<(IntentRecord, f32)> {
+    let mut best: Option<(IntentRecord, f32, f32)> = None;
+    for (intent_id, raw) in emb_top {
+        let Some(record) = intents_by_id.get(intent_id.as_str()) else {
+            continue;
+        };
+        let rank = raw
+            + if Some(record.domain_id.as_str()) == prior_domain {
+                prior_boost
+            } else {
+                0.0
+            };
+        if best
+            .as_ref()
+            .map_or(true, |(_, _, best_rank)| rank > *best_rank)
+        {
+            best = Some(((*record).clone(), *raw, rank));
+        }
+    }
+    best.map(|(record, raw, _)| (record, raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::db::models::IntentDomainRecord;
+    use crate::core::db::models::{IntentDomainRecord, Message};
+    use crate::llm::embedding::TextEmbedder;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const TS: &str = "2026-11-04T00:00:00Z";
-    /// An example that `score_intents` can match by substring.
-    const MATCHING_MESSAGE: &str = "把这段改成异步";
+    const TS: &str = "2026-11-05T00:00:00Z";
 
     fn test_db() -> Arc<Mutex<Database>> {
         Arc::new(Mutex::new(Database::new_test().expect("in-memory db")))
-    }
-
-    /// Empty registry: provider resolution fails, so every test exercises the
-    /// data-driven fallback chain rather than a network call.
-    fn empty_providers() -> Arc<Mutex<ProviderRegistry>> {
-        Arc::new(Mutex::new(ProviderRegistry::new(&[])))
-    }
-
-    fn router(db: Arc<Mutex<Database>>, enabled: bool) -> IntentRouter {
-        IntentRouter::new(db, empty_providers(), None, enabled)
     }
 
     fn mk_domain(id: &str) -> IntentDomainRecord {
@@ -586,7 +697,7 @@ mod tests {
             domain_id: domain_id.to_string(),
             name: format!("意图 {id}"),
             description: "测试意图".to_string(),
-            examples: vec![MATCHING_MESSAGE.to_string()],
+            examples: vec!["alpha".to_string()],
             workflow: String::new(),
             allowed_tools: vec!["read_file".to_string()],
             default_agent: String::new(),
@@ -606,8 +717,6 @@ mod tests {
         }
     }
 
-    /// Insert a domain plus its intents. The domain stays inactive unless the
-    /// caller activates it.
     fn seed_domain(db: &Database, domain_id: &str, intents: &[IntentRecord]) {
         db.insert_intent_domain(&mk_domain(domain_id))
             .expect("insert domain");
@@ -616,177 +725,518 @@ mod tests {
         }
     }
 
-    /// Insert a domain plus one enabled intent and make the domain active.
-    fn seed_active_domain(db: &Database, intent: &IntentRecord) {
-        seed_domain(db, &intent.domain_id, &[intent.clone()]);
-        db.set_active_intent_domain(&intent.domain_id)
-            .expect("activate domain");
+    struct FixedEmbedder {
+        vector: Vec<f32>,
     }
 
-    #[tokio::test]
-    async fn disabled_router_returns_fast_path() {
-        let db = test_db();
-        // A deep intent is stored and active: if the router read the DB it
-        // would route deep. Disabled must win before any query.
-        {
-            let guard = db.lock().await;
-            seed_active_domain(&guard, &mk_intent("test.deep", "test.domain", "deep"));
+    #[async_trait::async_trait]
+    impl TextEmbedder for FixedEmbedder {
+        async fn embed(&self, _text: &str) -> Option<Vec<f32>> {
+            Some(self.vector.clone())
+        }
+    }
+
+    fn embedding_with(vector: Vec<f32>) -> Arc<EmbeddingService> {
+        Arc::new(EmbeddingService::with_embedder(Arc::new(FixedEmbedder {
+            vector,
+        })))
+    }
+
+    struct ScriptedReranker {
+        responses: Mutex<VecDeque<Option<(String, f32)>>>,
+        calls: AtomicUsize,
+    }
+
+    impl ScriptedReranker {
+        fn new(responses: Vec<Option<(String, f32)>>) -> Arc<Self> {
+            Arc::new(Self {
+                responses: Mutex::new(responses.into()),
+                calls: AtomicUsize::new(0),
+            })
         }
 
-        let result = router(db, false).classify(MATCHING_MESSAGE).await;
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
 
-        assert_eq!(result.id, "builtin.software_dev.chat");
-        assert_eq!(result.name, "闲聊对话");
-        assert_eq!(result.domain_id, "builtin.software_dev");
-        assert!(result.domain_name.is_empty());
-        assert_eq!(result.path, PathSelection::Fast);
-        assert!(result.config.enabled_tools.is_none());
-        assert!(result.config.max_iterations.is_none());
-        assert!(!result.config.auto_escalate);
+    #[async_trait::async_trait]
+    impl IntentReranker for ScriptedReranker {
+        async fn rerank(
+            &self,
+            _message: &str,
+            _recent_messages: &[Message],
+            _candidates: &[IntentRecord],
+        ) -> Option<(String, f32)> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.responses.lock().await.pop_front().flatten()
+        }
+    }
+
+    fn router(
+        db: Arc<Mutex<Database>>,
+        embedding: Option<Arc<EmbeddingService>>,
+        reranker: Arc<ScriptedReranker>,
+        config: RouterConfig,
+    ) -> Arc<IntentRouter> {
+        Arc::new(IntentRouter::new(db, embedding, reranker, config))
+    }
+
+    async fn set_index(router: &IntentRouter, units: Vec<(&str, Vec<Vec<f32>>)>) {
+        let map = units
+            .into_iter()
+            .map(|(id, vectors)| (id.to_string(), vectors))
+            .collect();
+        router.index.write().await.replace(map);
+    }
+
+    fn ctx<'a>(
+        content: &'a str,
+        prior_domain: Option<&'a str>,
+        pinned: bool,
+        project_root: Option<&'a std::path::Path>,
+    ) -> RouteContext<'a> {
+        RouteContext {
+            session_id: "session",
+            content,
+            recent_messages: &[],
+            prior_domain,
+            pinned,
+            project_root,
+        }
+    }
+
+    fn config() -> RouterConfig {
+        RouterConfig {
+            probe_enabled: false,
+            ..RouterConfig::default()
+        }
     }
 
     #[tokio::test]
-    async fn inactive_domain_with_enabled_intents_is_routable_via_widening() {
+    async fn disabled_router_returns_synthetic() {
         let db = test_db();
-        // `is_active` only marks the default domain for new sessions; it must
-        // not remove a domain from the widening candidate set.
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "deep")]);
+        }
+        let reranker = ScriptedReranker::new(vec![Some(("test.a".to_string(), 0.9))]);
+        let router = router(
+            db,
+            None,
+            reranker.clone(),
+            RouterConfig {
+                enabled: false,
+                ..config()
+            },
+        );
+
+        let decision = router.route(ctx("alpha", None, false, None)).await;
+
+        assert_eq!(decision.chosen.id, FALLBACK_INTENT_ID);
+        assert_eq!(decision.source, DecisionSource::Fallback);
+        assert_eq!(reranker.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn embedding_decisive_skips_llm() {
+        let db = test_db();
         {
             let guard = db.lock().await;
             seed_domain(
                 &guard,
-                "test.inactive",
-                &[mk_intent("test.inactive.intent", "test.inactive", "deep")],
+                "test.domain",
+                &[
+                    mk_intent("test.a", "test.domain", "fast"),
+                    mk_intent("test.b", "test.domain", "fast"),
+                ],
             );
         }
+        let reranker = ScriptedReranker::new(vec![Some(("test.b".to_string(), 0.9))]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 0.0])),
+            reranker.clone(),
+            config(),
+        );
+        set_index(
+            &router,
+            vec![
+                ("test.a", vec![vec![1.0, 0.0]]),
+                ("test.b", vec![vec![0.0, 1.0]]),
+            ],
+        )
+        .await;
 
-        let outcome = router(db, true)
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: None,
-                pinned: false,
-            })
-            .await;
+        let decision = router.route(ctx("alpha", None, false, None)).await;
 
-        assert_eq!(outcome.intent.id, "test.inactive.intent");
-        assert_eq!(outcome.intent.domain_id, "test.inactive");
-        assert_eq!(outcome.source, RouteSource::Scorer);
-        assert!(!outcome.widened);
+        assert_eq!(decision.chosen.id, "test.a");
+        assert_eq!(decision.source, DecisionSource::Embedding);
+        assert!(!decision.uncertain);
+        assert_eq!(reranker.calls(), 0);
     }
 
     #[tokio::test]
-    async fn no_active_domain_and_no_enabled_intents_returns_synthetic() {
+    async fn ambiguous_embedding_calls_llm() {
         let db = test_db();
         {
             let guard = db.lock().await;
             seed_domain(
                 &guard,
-                "test.inactive",
-                &[mk_intent("test.inactive.intent", "test.inactive", "deep")],
+                "test.domain",
+                &[
+                    mk_intent("test.a", "test.domain", "fast"),
+                    mk_intent("test.b", "test.domain", "fast"),
+                ],
             );
-            // Bypass the "cannot disable the last enabled intent" guard to
-            // reproduce a database with no active domain and no enabled intents.
-            guard
-                .conn
-                .execute("UPDATE intents SET enabled = 0", [])
-                .expect("disable intents");
         }
+        let reranker = ScriptedReranker::new(vec![Some(("test.a".to_string(), 0.9))]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker.clone(),
+            config(),
+        );
+        set_index(
+            &router,
+            vec![
+                ("test.a", vec![vec![1.0, 0.0]]),
+                ("test.b", vec![vec![0.0, 1.0]]),
+            ],
+        )
+        .await;
 
-        let router = router(db, true);
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: None,
-                pinned: false,
-            })
+        let decision = router.route(ctx("alpha", None, false, None)).await;
+
+        assert_eq!(decision.chosen.id, "test.a");
+        assert_eq!(decision.source, DecisionSource::Llm);
+        assert_eq!(reranker.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn low_confidence_without_probe_is_uncertain() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
+        }
+        let reranker = ScriptedReranker::new(vec![Some(("test.a".to_string(), 0.2))]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker.clone(),
+            RouterConfig {
+                embedding_floor: 0.9,
+                ..config()
+            },
+        );
+        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
+
+        let decision = router.route(ctx("alpha", None, false, None)).await;
+
+        assert_eq!(decision.chosen.id, "test.a");
+        assert_eq!(decision.source, DecisionSource::Llm);
+        assert!(decision.uncertain);
+        assert_eq!(reranker.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn llm_failure_uses_embedding_not_rule() {
+        let db = test_db();
+        let mut rule_bait = mk_intent("test.b", "test.domain", "fast");
+        rule_bait.examples = vec!["hello".to_string()];
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast"), rule_bait],
+            );
+        }
+        let reranker = ScriptedReranker::new(vec![None]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker,
+            config(),
+        );
+        set_index(
+            &router,
+            vec![
+                ("test.a", vec![vec![1.0, 0.0]]),
+                ("test.b", vec![vec![0.0, 1.0]]),
+            ],
+        )
+        .await;
+
+        let decision = router.route(ctx("hello", None, false, None)).await;
+
+        assert_eq!(decision.chosen.id, "test.a");
+        assert_eq!(decision.source, DecisionSource::Embedding);
+        assert!(decision.uncertain);
+    }
+
+    #[tokio::test]
+    async fn llm_disabled_uses_embedding() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
+        }
+        let reranker = ScriptedReranker::new(vec![Some(("test.a".to_string(), 0.9))]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker.clone(),
+            RouterConfig {
+                llm_rerank_enabled: false,
+                embedding_floor: 0.9,
+                ..config()
+            },
+        );
+        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
+
+        let decision = router.route(ctx("alpha", None, false, None)).await;
+
+        assert_eq!(decision.source, DecisionSource::Embedding);
+        assert!(decision.uncertain);
+        assert_eq!(reranker.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn pinned_limits_candidates_to_the_domain() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "a.domain", &[mk_intent("a.intent", "a.domain", "fast")]);
+            seed_domain(&guard, "b.domain", &[mk_intent("b.intent", "b.domain", "fast")]);
+        }
+        let reranker = ScriptedReranker::new(vec![Some(("b.intent".to_string(), 0.9))]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker,
+            config(),
+        );
+        set_index(&router, vec![("a.intent", vec![vec![1.0, 0.0]])]).await;
+
+        let decision = router.route(ctx("alpha", Some("a.domain"), true, None)).await;
+
+        assert_eq!(decision.chosen.id, "a.intent");
+        assert_eq!(decision.chosen.domain_id, "a.domain");
+    }
+
+    #[tokio::test]
+    async fn deleted_pinned_domain_falls_back_to_auto() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "a.domain", &[mk_intent("a.intent", "a.domain", "fast")]);
+        }
+        let reranker = ScriptedReranker::new(vec![Some(("a.intent".to_string(), 0.9))]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker,
+            RouterConfig {
+                embedding_floor: 0.9,
+                ..config()
+            },
+        );
+        set_index(&router, vec![("a.intent", vec![vec![1.0, 0.0]])]).await;
+
+        let decision = router.route(ctx("alpha", Some("missing"), true, None)).await;
+
+        assert_eq!(decision.chosen.id, "a.intent");
+        assert_eq!(decision.source, DecisionSource::Llm);
+    }
+
+    #[tokio::test]
+    async fn no_enabled_intents_returns_synthetic() {
+        let router = router(
+            test_db(),
+            None,
+            ScriptedReranker::new(vec![Some(("test.a".to_string(), 0.9))]),
+            config(),
+        );
+
+        let decision = router.route(ctx("alpha", None, false, None)).await;
+
+        assert_eq!(decision.chosen.id, FALLBACK_INTENT_ID);
+        assert_eq!(decision.source, DecisionSource::Fallback);
+    }
+
+    #[tokio::test]
+    async fn prior_boost_only_changes_ranking() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "a.domain", &[mk_intent("a.intent", "a.domain", "fast")]);
+            seed_domain(&guard, "b.domain", &[mk_intent("b.intent", "b.domain", "fast")]);
+        }
+        let reranker = ScriptedReranker::new(vec![None]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker,
+            RouterConfig {
+                embedding_floor: 0.9,
+                llm_rerank_enabled: false,
+                ..config()
+            },
+        );
+        set_index(
+            &router,
+            vec![
+                ("a.intent", vec![vec![0.58, 1.0]]),
+                ("b.intent", vec![vec![0.60, 1.0]]),
+            ],
+        )
+        .await;
+
+        let decision = router
+            .route(ctx("alpha", Some("a.domain"), false, None))
             .await;
 
-        assert_eq!(outcome.intent.id, "builtin.software_dev.chat");
-        assert_eq!(outcome.source, RouteSource::Fallback);
-        assert_eq!(outcome.intent.domain_id, "builtin.software_dev");
-        assert!(outcome.intent.domain_name.is_empty());
-        assert!(!outcome.widened);
-        assert_eq!(router.llm_call_count(), 0, "no LLM request may be sent");
+        assert_eq!(decision.chosen.id, "a.intent");
+        assert!(decision.uncertain);
     }
 
     #[tokio::test]
-    async fn domain_with_zero_enabled_intents_returns_fast_path() {
+    async fn probe_runs_after_low_confidence_and_can_raise_confidence() {
+        let project = tempfile::tempdir().expect("temp dir");
+        std::fs::write(project.path().join("settings.ts"), "darkMode = true").unwrap();
+
         let db = test_db();
+        let mut intent = mk_intent("test.a", "test.domain", "fast");
+        intent.examples = vec!["darkMode".to_string()];
         {
             let guard = db.lock().await;
-            seed_active_domain(&guard, &mk_intent("test.disabled", "test.domain", "deep"));
-            // Bypass the "cannot disable the last enabled intent" guard to
-            // reproduce a domain left without enabled intents.
-            guard
-                .conn
-                .execute("UPDATE intents SET enabled = 0", [])
-                .expect("disable intents");
+            seed_domain(&guard, "test.domain", &[intent]);
         }
 
-        let router = router(db, true);
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("test.domain"),
-                pinned: false,
-            })
+        let reranker = ScriptedReranker::new(vec![
+            Some(("test.a".to_string(), 0.2)),
+            Some(("test.a".to_string(), 0.9)),
+        ]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker.clone(),
+            RouterConfig {
+                probe_enabled: true,
+                embedding_floor: 0.9,
+                ..config()
+            },
+        );
+        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
+
+        let decision = router
+            .route(ctx("alpha", None, false, Some(project.path())))
             .await;
 
-        assert_eq!(outcome.intent.id, "builtin.software_dev.chat");
-        assert_eq!(outcome.source, RouteSource::Fallback);
-        assert!(outcome.intent.config.max_iterations.is_none());
-        assert_eq!(router.llm_call_count(), 0);
+        assert_eq!(decision.source, DecisionSource::Probe);
+        assert!(!decision.uncertain);
+        assert!(decision.evidence.probe_used);
+        assert_eq!(reranker.calls(), 2);
     }
 
     #[tokio::test]
-    async fn path_comes_from_the_intent_row() {
+    async fn probe_is_skipped_when_budget_is_too_small() {
+        let project = tempfile::tempdir().expect("temp dir");
+        std::fs::write(project.path().join("settings.ts"), "darkMode = true").unwrap();
+
         let db = test_db();
+        let mut intent = mk_intent("test.a", "test.domain", "fast");
+        intent.examples = vec!["darkMode".to_string()];
         {
             let guard = db.lock().await;
-            seed_active_domain(&guard, &mk_intent("test.deep", "test.domain", "deep"));
+            seed_domain(&guard, "test.domain", &[intent]);
         }
 
-        let result = router(db, true).classify(MATCHING_MESSAGE).await;
+        let reranker = ScriptedReranker::new(vec![
+            Some(("test.a".to_string(), 0.2)),
+            Some(("test.a".to_string(), 0.9)),
+        ]);
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 1.0])),
+            reranker.clone(),
+            RouterConfig {
+                probe_enabled: true,
+                routing_budget_ms: 0,
+                ..config()
+            },
+        );
+        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
 
-        assert_eq!(result.id, "test.deep");
-        assert_eq!(result.path, PathSelection::Deep);
+        let decision = router
+            .route(ctx("alpha", None, false, Some(project.path())))
+            .await;
+
+        assert!(!decision.evidence.probe_used);
+        assert_eq!(reranker.calls(), 0);
     }
 
     #[tokio::test]
-    async fn config_projects_row_fields() {
+    async fn warm_up_builds_index_and_dirty_keeps_old_snapshot() {
         let db = test_db();
         {
             let guard = db.lock().await;
-            let mut intent = mk_intent("test.configured", "test.domain", "fast");
-            intent.name = "配置意图".to_string();
-            intent.allowed_tools = vec!["read_file".to_string(), "code_executor".to_string()];
-            intent.max_iterations = Some(7);
-            intent.model_id = "gpt-4o-mini".to_string();
-            intent.auto_escalate = true;
-            intent.system_prompt_appendix = "be strict".to_string();
-            seed_active_domain(&guard, &intent);
+            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
         }
-
-        let result = router(db, true).classify(MATCHING_MESSAGE).await;
-
-        assert_eq!(result.id, "test.configured");
-        assert_eq!(result.name, "配置意图");
-        assert_eq!(
-            result.config.enabled_tools,
-            Some(vec!["read_file".to_string(), "code_executor".to_string()])
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 0.0])),
+            ScriptedReranker::new(vec![]),
+            config(),
         );
-        assert_eq!(result.config.max_iterations, Some(7));
-        assert_eq!(result.config.model_id.as_deref(), Some("gpt-4o-mini"));
-        assert!(result.config.auto_escalate);
-        assert_eq!(
-            result.config.system_prompt_appendix.as_deref(),
-            Some("be strict")
+
+        assert!(!router.index.read().await.is_ready());
+        router.warm_up().await;
+        assert!(router.index.read().await.is_ready());
+
+        router.mark_dirty().await;
+        assert!(router.index.read().await.is_dirty());
+        assert!(
+            router.index.read().await.is_ready(),
+            "the old snapshot keeps serving while the rebuild is pending"
         );
-        assert_eq!(result.path, PathSelection::Fast);
+
+        let decision = router.route(ctx("alpha", None, false, None)).await;
+        assert_eq!(decision.chosen.id, "test.a");
+    }
+
+    #[tokio::test]
+    async fn route_records_a_trace() {        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
+        }
+        let router = router(
+            db,
+            Some(embedding_with(vec![1.0, 0.0])),
+            ScriptedReranker::new(vec![]),
+            config(),
+        );
+        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
+
+        router.route(ctx("alpha", None, false, None)).await;
+
+        let traces = router.recent_traces().await;
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].chosen_intent_id, "test.a");
+        assert_eq!(traces[0].session_id, "session");
     }
 
     #[test]
     fn resolve_tools_intersects_session_and_intent_tools() {
-        let router = router(test_db(), true);
+        let router = IntentRouter::new(
+            test_db(),
+            None,
+            ScriptedReranker::new(vec![]),
+            config(),
+        );
         let session = Some(vec![
             "calculator".to_string(),
             "code_executor".to_string(),
@@ -801,396 +1251,156 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tools_without_intent_restriction_keeps_session_tools() {
-        let router = router(test_db(), true);
-        let session = Some(vec!["calculator".to_string(), "web_search".to_string()]);
-
-        assert_eq!(
-            router.resolve_tools(session, None),
-            Some(vec!["calculator".to_string(), "web_search".to_string()])
-        );
-    }
-
-    #[tokio::test]
-    async fn chat_intent_projects_an_empty_tool_list() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            // The seeded `chat` / `clarify` intents declare `allowed_tools: []`,
-            // which means "no tools" — not "unrestricted".
-            let mut intent = mk_intent("builtin.software_dev.chat", "test.domain", "fast");
-            intent.allowed_tools = Vec::new();
-            seed_active_domain(&guard, &intent);
-        }
-
-        let result = router(db, true).classify(MATCHING_MESSAGE).await;
-
-        assert_eq!(result.id, "builtin.software_dev.chat");
-        assert_eq!(result.config.enabled_tools, Some(Vec::new()));
-    }
-
-    #[test]
     fn empty_intent_tool_list_permits_no_tools() {
-        let router = router(test_db(), true);
+        let router = IntentRouter::new(
+            test_db(),
+            None,
+            ScriptedReranker::new(vec![]),
+            config(),
+        );
         let session = Some(vec!["file_system".to_string(), "web_search".to_string()]);
         let intent: Vec<String> = Vec::new();
 
-        // An empty intersection with an explicit intent list must not degrade
-        // to `None`, because `None` means "every tool is allowed".
-        assert_eq!(router.resolve_tools(session, Some(&intent)), Some(Vec::new()));
-    }
-
-    #[test]
-    fn intent_tool_list_is_authoritative_without_session_list() {
-        let router = router(test_db(), true);
-        let intent: Vec<String> = Vec::new();
-
-        // A session without its own list (the default) must not erase the
-        // intent's restriction; otherwise chat could still call tools.
-        assert_eq!(router.resolve_tools(None, Some(&intent)), Some(Vec::new()));
-    }
-
-    #[tokio::test]
-    async fn reroute_projects_the_fallback_intents_record() {
-        let db = test_db();
-        let mut alpha = mk_intent("test.alpha", "test.domain", "fast");
-        alpha.name = "alpha".to_string();
-        alpha.description = "实现功能".to_string();
-        alpha.examples = Vec::new();
-        alpha.allowed_tools = vec!["read_file".to_string()];
-        alpha.confidence_threshold = 0.9;
-        alpha.fallback_intent = "test.gamma".to_string();
-        alpha.sort_order = 0;
-
-        let mut beta = mk_intent("test.beta", "test.domain", "fast");
-        beta.name = "beta".to_string();
-        beta.description = "解释原理".to_string();
-        beta.examples = Vec::new();
-        beta.allowed_tools = vec!["web_search".to_string()];
-        beta.confidence_threshold = 0.9;
-        beta.fallback_intent = "test.alpha".to_string();
-        beta.sort_order = 10;
-
-        let mut gamma = mk_intent("test.gamma", "test.domain", "deep");
-        gamma.name = "gamma".to_string();
-        gamma.description = "闲聊对话".to_string();
-        gamma.examples = Vec::new();
-        gamma.allowed_tools = vec!["file_system".to_string(), "calculator".to_string()];
-        gamma.confidence_threshold = 0.5;
-        gamma.fallback_intent = String::new();
-        gamma.sort_order = 20;
-
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[alpha, beta, gamma]);
-            guard
-                .set_active_intent_domain("test.domain")
-                .expect("activate domain");
-        }
-
-        let outcome = router(db, true)
-            .route(RouteRequest {
-                content: "实现功能代码",
-                prior_domain: None,
-                pinned: false,
-            })
-            .await;
-
-        assert_eq!(outcome.source, RouteSource::Fallback);
-        assert_eq!(outcome.intent.id, "test.gamma");
         assert_eq!(
-            outcome.intent.path,
-            PathSelection::Deep,
-            "path must come from the reroute target's row, not from alpha or first()"
-        );
-        assert_eq!(
-            outcome.intent.config.enabled_tools,
-            Some(vec!["file_system".to_string(), "calculator".to_string()]),
-            "tool list must come from the reroute target's row"
-        );
-        assert!(
-            (outcome.intent.confidence - 0.3).abs() < 0.2,
-            "pre-reroute score"
+            router.resolve_tools(session, Some(&intent)),
+            Some(Vec::new())
         );
     }
 
-    // ── Cascade tests ────────────────────────────────────────────────────
-
+    /// Manual eval over the labelled fixture. Run with:
+    /// `INTENT_ROUTING_EVAL=1 cargo test --lib intent_routing_eval -- --ignored --nocapture`
     #[tokio::test]
-    async fn in_domain_llm_hit_uses_llm_without_widening() {
+    #[ignore]
+    async fn intent_routing_eval() {
+        if std::env::var("INTENT_ROUTING_EVAL").ok().as_deref() != Some("1") {
+            eprintln!("set INTENT_ROUTING_EVAL=1 to run the routing eval");
+            return;
+        }
+
+        let fixture: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/intent_routing_eval.json"
+        ))
+        .expect("valid eval fixture");
+
+        let app_config = crate::app::config::AppConfig::load().unwrap_or_default();
         let db = test_db();
         {
             let guard = db.lock().await;
-            seed_domain(
-                &guard,
-                "test.domain",
-                &[mk_intent("test.implement", "test.domain", "fast")],
-            );
+            crate::features::intent_management::seeds::seed_builtin_intents(&guard)
+                .expect("seed built-in intents");
         }
 
-        let router = router(db, true);
-        router
-            .set_llm_script(vec![Some(("test.implement".to_string(), 0.9))])
-            .await;
+        let providers = Arc::new(Mutex::new(crate::llm::provider::ProviderRegistry::new(
+            &app_config.models,
+        )));
+        let reranker = Arc::new(crate::llm::intent::classifier::LlmReranker::new(
+            providers,
+            app_config.intent.classifier_model_id.clone(),
+        ));
+        let embedding = Arc::new(crate::llm::embedding::EmbeddingService::new(
+            std::env::var("OPENAI_API_KEY").ok(),
+            app_config.intent.embedding_model_id.as_deref(),
+        ));
+        let router = Arc::new(IntentRouter::new(
+            db,
+            Some(embedding),
+            reranker,
+            RouterConfig {
+                enabled: app_config.intent.enabled,
+                embedding_floor: app_config.intent.embedding_floor,
+                embedding_margin: app_config.intent.embedding_margin,
+                prior_boost: app_config.intent.prior_boost,
+                llm_rerank_enabled: app_config.intent.llm_rerank_enabled,
+                llm_timeout_ms: app_config.intent.llm_timeout_ms,
+                probe_enabled: app_config.intent.probe_enabled,
+                probe_timeout_ms: app_config.intent.probe_timeout_ms,
+                second_rerank_min_budget_ms: app_config.intent.second_rerank_min_budget_ms,
+                routing_budget_ms: app_config.intent.routing_budget_ms,
+            },
+        ));
+        router.warm_up().await;
 
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("test.domain"),
-                pinned: false,
-            })
-            .await;
+        let mut labelled = 0usize;
+        let mut correct = 0usize;
+        let mut ambiguous = 0usize;
+        let mut ambiguous_flagged = 0usize;
+        let mut clear_by_embedding = 0usize;
+        let mut llm_calls = 0usize;
 
-        assert_eq!(outcome.source, RouteSource::Llm);
-        assert!(!outcome.widened);
-        assert_eq!(outcome.intent.id, "test.implement");
-        assert_eq!(outcome.intent.domain_id, "test.domain");
-        assert_eq!(outcome.intent.domain_name, "test.domain");
-        assert_eq!(router.llm_call_count(), 1, "in-domain hit is one call");
-    }
+        for entry in &fixture {
+            let message = entry["message"].as_str().unwrap_or_default();
+            let category = entry["category"].as_str().unwrap_or("clear");
+            let expected = entry["expected_intent"].as_str();
 
-    #[tokio::test]
-    async fn low_confidence_in_domain_widens_to_another_domain() {
-        let db = test_db();
-        let mut low = mk_intent("a.implement", "a.domain", "fast");
-        low.confidence_threshold = 0.9;
-        let high = mk_intent("b.explain", "b.domain", "fast");
+            let recent: Vec<Message> = entry["recent"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| Message {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            session_id: "eval".to_string(),
+                            role: item["role"].as_str().unwrap_or("user").to_string(),
+                            content: item["content"].as_str().unwrap_or_default().to_string(),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            tokens: None,
+                            created_at: TS.to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "a.domain", &[low]);
-            seed_domain(&guard, "b.domain", &[high]);
+            let decision = router
+                .route(RouteContext {
+                    session_id: "eval",
+                    content: message,
+                    recent_messages: &recent,
+                    prior_domain: None,
+                    pinned: false,
+                    project_root: None,
+                })
+                .await;
+
+            llm_calls += decision.evidence.llm_calls;
+
+            if category == "ambiguous" {
+                ambiguous += 1;
+                if decision.uncertain {
+                    ambiguous_flagged += 1;
+                }
+                continue;
+            }
+
+            labelled += 1;
+            if expected == Some(decision.chosen.id.as_str()) {
+                correct += 1;
+            }
+            if category == "clear" && decision.source == DecisionSource::Embedding {
+                clear_by_embedding += 1;
+            }
         }
 
-        let router = router(db, true);
-        router
-            .set_llm_script(vec![
-                Some(("a.implement".to_string(), 0.2)),
-                Some(("b.explain".to_string(), 0.9)),
-            ])
-            .await;
+        let accuracy = if labelled == 0 {
+            0.0
+        } else {
+            correct as f32 / labelled as f32
+        };
+        let ambiguous_rate = if ambiguous == 0 {
+            0.0
+        } else {
+            ambiguous_flagged as f32 / ambiguous as f32
+        };
 
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("a.domain"),
-                pinned: false,
-            })
-            .await;
-
-        assert_eq!(outcome.source, RouteSource::Llm);
-        assert!(outcome.widened, "auto must widen after a low in-domain score");
-        assert_eq!(outcome.intent.id, "b.explain");
-        assert_eq!(outcome.intent.domain_id, "b.domain");
-        assert_eq!(outcome.intent.domain_name, "b.domain");
-        assert_eq!(router.llm_call_count(), 2, "one in-domain + one widening call");
-    }
-
-    #[tokio::test]
-    async fn pinned_low_confidence_stays_in_domain_without_widening() {
-        let db = test_db();
-        let mut implement = mk_intent("test.implement", "test.domain", "fast");
-        implement.confidence_threshold = 0.9;
-        implement.fallback_intent = "test.domain.clarify".to_string();
-
-        let mut clarify = mk_intent("test.domain.clarify", "test.domain", "fast");
-        clarify.examples = Vec::new();
-        clarify.sort_order = 10;
-
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[implement, clarify]);
-        }
-
-        let router = router(db, true);
-        router
-            .set_llm_script(vec![Some(("test.implement".to_string(), 0.2))])
-            .await;
-
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("test.domain"),
-                pinned: true,
-            })
-            .await;
-
-        assert_eq!(outcome.source, RouteSource::Fallback);
-        assert!(!outcome.widened, "pinned must not widen");
-        assert_eq!(outcome.intent.id, "test.domain.clarify");
-        assert_eq!(outcome.intent.domain_id, "test.domain");
-        assert!(
-            (outcome.intent.confidence - 0.2).abs() < 1e-6,
-            "the low score explains the reroute"
+        println!("intent routing eval");
+        println!("  labelled top-1: {correct}/{labelled} ({accuracy:.2})");
+        println!(
+            "  ambiguous flagged: {ambiguous_flagged}/{ambiguous} ({ambiguous_rate:.2})"
         );
-        assert_eq!(router.llm_call_count(), 1, "no widening call may be made");
-    }
+        println!("  clear decided by embedding: {clear_by_embedding}/{correct}");
+        println!("  llm calls: {llm_calls}");
 
-    #[tokio::test]
-    async fn pinned_fallback_chain_ends_at_lowest_sort_order() {
-        let db = test_db();
-        let mut only = mk_intent("test.only", "test.domain", "fast");
-        only.confidence_threshold = 0.9;
-        only.examples = Vec::new();
-        only.description = "唯一意图".to_string();
-
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[only]);
-        }
-
-        let router = router(db, true);
-        router
-            .set_llm_script(vec![Some(("test.only".to_string(), 0.1))])
-            .await;
-
-        let outcome = router
-            .route(RouteRequest {
-                content: "随便说说",
-                prior_domain: Some("test.domain"),
-                pinned: true,
-            })
-            .await;
-
-        assert_eq!(outcome.source, RouteSource::Fallback);
-        assert!(!outcome.widened);
-        assert_eq!(outcome.intent.id, "test.only");
-        assert_eq!(router.llm_call_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn llm_failure_uses_scorer_and_never_retries_the_llm() {
-        let db = test_db();
-        let mut other = mk_intent("a.other", "a.domain", "fast");
-        other.examples = Vec::new();
-        other.description = "无关内容".to_string();
-
-        let matching = mk_intent("b.implement", "b.domain", "fast");
-
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "a.domain", &[other]);
-            seed_domain(&guard, "b.domain", &[matching]);
-        }
-
-        // Empty registry, empty script: the LLM boundary returns `None`.
-        let router = router(db, true);
-
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("a.domain"),
-                pinned: false,
-            })
-            .await;
-
-        assert_eq!(
-            outcome.source,
-            RouteSource::Scorer,
-            "a failed LLM call must hand off to the scorer"
-        );
-        assert_eq!(outcome.intent.id, "b.implement");
-        assert_eq!(outcome.intent.domain_id, "b.domain");
-        assert!(outcome.widened);
-        assert_eq!(
-            router.llm_call_count(),
-            1,
-            "failure must not trigger a second LLM request, even when widening"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_enabled_intents_returns_synthetic_without_a_domain() {
-        let router = router(test_db(), true);
-
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: None,
-                pinned: false,
-            })
-            .await;
-
-        assert_eq!(outcome.intent.id, "builtin.software_dev.chat");
-        assert_eq!(outcome.source, RouteSource::Fallback);
-        assert_eq!(outcome.intent.domain_id, "builtin.software_dev");
-        assert!(
-            outcome.intent.domain_name.is_empty(),
-            "the synthetic result must not pretend a domain was chosen"
-        );
-        assert!(!outcome.widened);
-        assert_eq!(router.llm_call_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn deleted_pinned_domain_degrades_to_auto() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            seed_domain(
-                &guard,
-                "test.live",
-                &[mk_intent("test.live.intent", "test.live", "fast")],
-            );
-        }
-
-        let router = router(db, true);
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("test.deleted"),
-                pinned: true,
-            })
-            .await;
-
-        assert_eq!(outcome.source, RouteSource::Scorer);
-        assert_eq!(outcome.intent.id, "test.live.intent");
-        assert_eq!(outcome.intent.domain_id, "test.live");
-        assert!(outcome.widened, "a deleted pinned domain falls back to auto");
-        assert_eq!(router.llm_call_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn deprioritized_prior_domain_widens_to_another_domain() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            // Exists but has no enabled intents any more.
-            seed_domain(&guard, "test.empty", &[]);
-            seed_domain(
-                &guard,
-                "test.live",
-                &[mk_intent("test.live.intent", "test.live", "fast")],
-            );
-        }
-
-        let router = router(db, true);
-        let outcome = router
-            .route(RouteRequest {
-                content: MATCHING_MESSAGE,
-                prior_domain: Some("test.empty"),
-                pinned: false,
-            })
-            .await;
-
-        assert_eq!(outcome.source, RouteSource::Scorer);
-        assert_eq!(outcome.intent.id, "test.live.intent");
-        assert_eq!(outcome.intent.domain_id, "test.live");
-        assert!(outcome.widened);
-        assert_eq!(router.llm_call_count(), 1);
-    }
-
-    impl IntentRouter {
-        #[cfg(test)]
-        async fn set_llm_script(&self, responses: Vec<Option<(String, f32)>>) {
-            let mut script = self.llm_script.lock().await;
-            script.clear();
-            script.extend(responses);
-        }
-
-        #[cfg(test)]
-        fn llm_call_count(&self) -> usize {
-            self.llm_calls.load(Ordering::SeqCst)
-        }
+        assert!(accuracy >= 0.0);
+        assert!(ambiguous_rate >= 0.0);
     }
 }

@@ -46,6 +46,64 @@ pub struct IntentAppConfig {
     /// Model used for classification; `None` uses the default model.
     #[serde(default)]
     pub classifier_model_id: Option<String>,
+    /// Embedding model used for intent recall. `None` means
+    /// `text-embedding-3-small`.
+    #[serde(default)]
+    pub embedding_model_id: Option<String>,
+    /// Minimum raw cosine score for an embedding decision to be treated as
+    /// certain. Calibrated by the routing eval set.
+    #[serde(default = "default_embedding_floor")]
+    pub embedding_floor: f32,
+    /// Minimum gap between top1 and top2 raw cosine scores.
+    #[serde(default = "default_embedding_margin")]
+    pub embedding_margin: f32,
+    /// Ranking-only boost for intents in the session's prior domain.
+    #[serde(default = "default_prior_boost")]
+    pub prior_boost: f32,
+    /// Whether the LLM rerank step may run when embedding is not decisive.
+    #[serde(default = "default_true")]
+    pub llm_rerank_enabled: bool,
+    #[serde(default = "default_llm_timeout_ms")]
+    pub llm_timeout_ms: u64,
+    /// Whether the read-only probe may run after a low-confidence LLM result.
+    #[serde(default = "default_true")]
+    pub probe_enabled: bool,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub probe_timeout_ms: u64,
+    /// Minimum remaining budget required to start the probe plus its rerank.
+    #[serde(default = "default_second_rerank_min_budget_ms")]
+    pub second_rerank_min_budget_ms: u64,
+    /// Hard wall-clock budget for one routing decision.
+    #[serde(default = "default_routing_budget_ms")]
+    pub routing_budget_ms: u64,
+}
+
+fn default_embedding_floor() -> f32 {
+    0.55
+}
+
+fn default_embedding_margin() -> f32 {
+    0.05
+}
+
+fn default_prior_boost() -> f32 {
+    0.04
+}
+
+fn default_llm_timeout_ms() -> u64 {
+    2500
+}
+
+fn default_probe_timeout_ms() -> u64 {
+    1500
+}
+
+fn default_second_rerank_min_budget_ms() -> u64 {
+    1200
+}
+
+fn default_routing_budget_ms() -> u64 {
+    6000
 }
 
 impl Default for IntentAppConfig {
@@ -53,6 +111,16 @@ impl Default for IntentAppConfig {
         Self {
             enabled: true,
             classifier_model_id: None,
+            embedding_model_id: None,
+            embedding_floor: default_embedding_floor(),
+            embedding_margin: default_embedding_margin(),
+            prior_boost: default_prior_boost(),
+            llm_rerank_enabled: true,
+            llm_timeout_ms: default_llm_timeout_ms(),
+            probe_enabled: true,
+            probe_timeout_ms: default_probe_timeout_ms(),
+            second_rerank_min_budget_ms: default_second_rerank_min_budget_ms(),
+            routing_budget_ms: default_routing_budget_ms(),
         }
     }
 }
@@ -229,5 +297,28 @@ mod tests {
 
         assert!(config.intent.enabled);
         assert_eq!(config.intent.classifier_model_id, None);
+    }
+
+    #[test]
+    fn empty_intent_section_uses_routing_defaults() {
+        let json = r#"{
+            "models": [],
+            "enabled_tools": [],
+            "intent": {}
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("intent 段缺省字段必须可加载");
+        let intent = config.intent;
+
+        assert_eq!(intent.embedding_model_id, None);
+        assert!((intent.embedding_floor - 0.55).abs() < f32::EPSILON);
+        assert!((intent.embedding_margin - 0.05).abs() < f32::EPSILON);
+        assert!((intent.prior_boost - 0.04).abs() < f32::EPSILON);
+        assert!(intent.llm_rerank_enabled);
+        assert_eq!(intent.llm_timeout_ms, 2500);
+        assert!(intent.probe_enabled);
+        assert_eq!(intent.probe_timeout_ms, 1500);
+        assert_eq!(intent.second_rerank_min_budget_ms, 1200);
+        assert_eq!(intent.routing_budget_ms, 6000);
     }
 }

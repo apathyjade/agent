@@ -13,7 +13,7 @@ import { ChatInput } from './ChatInput';
 import { ExecutionStatusBar } from '../management/ExecutionStatusBar';
 import { PlanTimeline } from './PlanTimeline';
 import { SessionIntentSelector } from './SessionIntentSelector';
-import { IntentResolvedBadge } from './IntentResolvedBadge';
+import { IntentResolvedBadge, IntentUncertaintyNotice } from './IntentResolvedBadge';
 import type { Message } from '../../types';
 
 const StreamingMessage = memo(function StreamingMessage({
@@ -217,6 +217,8 @@ export function ChatArea() {
           )}
         </div>
       </div>
+
+      <IntentUncertaintyNotice intent={currentTurnIntent} />
 
       {/* Message stream */}
       <div

@@ -369,6 +369,16 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Rebuild the in-process intent index after a write. The old snapshot keeps
+/// serving until `warm_up` atomically replaces it.
+fn refresh_intent_index(state: &AppState) {
+    let router = state.intent_router.clone();
+    tauri::async_runtime::spawn(async move {
+        router.mark_dirty().await;
+        router.warm_up().await;
+    });
+}
+
 fn not_found_domain(id: &str) -> AppError {
     AppError::NotFound(format!("领域不存在: {id}"))
 }
@@ -583,8 +593,14 @@ pub async fn update_intent_domain(
 
 #[tauri::command]
 pub async fn delete_intent_domain(state: State<'_, AppState>, id: String) -> Result<()> {
-    let db = state.db.lock().await;
-    db.delete_intent_domain(&id)
+    let result = {
+        let db = state.db.lock().await;
+        db.delete_intent_domain(&id)
+    };
+    if result.is_ok() {
+        refresh_intent_index(state.inner());
+    }
+    result
 }
 
 #[tauri::command]
@@ -656,6 +672,13 @@ pub async fn set_session_intent_domain(
 // ── Intents ──
 
 #[tauri::command]
+pub async fn get_recent_route_traces(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::llm::intent::RouteTrace>> {
+    Ok(state.intent_router.recent_traces().await)
+}
+
+#[tauri::command]
 pub async fn list_intents(
     state: State<'_, AppState>,
     domain_id: String,
@@ -708,6 +731,8 @@ pub async fn create_intent(
     let mut record = intent.into_new_record(uuid::Uuid::new_v4().to_string(), domain_id, timestamp);
     record.fallback_intent = resolve_fallback_target(&intents, &record)?;
     db.insert_intent(&record)?;
+    drop(db);
+    refresh_intent_index(state.inner());
     Ok(record.into())
 }
 
@@ -740,13 +765,21 @@ pub async fn update_intent(
     db.update_intent(&existing)?;
 
     let updated = db.get_intent(&id)?.ok_or_else(|| not_found_intent(&id))?;
+    drop(db);
+    refresh_intent_index(state.inner());
     Ok(updated.into())
 }
 
 #[tauri::command]
 pub async fn delete_intent(state: State<'_, AppState>, id: String) -> Result<()> {
-    let db = state.db.lock().await;
-    db.delete_intent(&id)
+    let result = {
+        let db = state.db.lock().await;
+        db.delete_intent(&id)
+    };
+    if result.is_ok() {
+        refresh_intent_index(state.inner());
+    }
+    result
 }
 
 #[tauri::command]
@@ -757,7 +790,12 @@ pub async fn set_intent_enabled(
 ) -> Result<()> {
     let timestamp = now();
     let db = state.db.lock().await;
-    db.set_intent_enabled(&id, enabled, &timestamp)
+    let result = db.set_intent_enabled(&id, enabled, &timestamp);
+    drop(db);
+    if result.is_ok() {
+        refresh_intent_index(state.inner());
+    }
+    result
 }
 
 // ── Import / export ──
@@ -804,6 +842,8 @@ pub async fn import_intent_domain(
         updated_at: timestamp,
     };
     db.insert_intent_domain_atomic(&domain, &intents)?;
+    drop(db);
+    refresh_intent_index(state.inner());
     Ok(domain.into())
 }
 

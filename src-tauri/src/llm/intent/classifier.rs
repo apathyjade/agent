@@ -1,25 +1,37 @@
-//! Data-driven intent classifier.
+//! Data-driven intent scorer and LLM reranker.
 //!
-//! The classification prompt is built from [`IntentRecord`] rows, so keyword
-//! capability comes from the stored `examples` instead of hard-coded tables.
-//! The LLM step returns `None` on every failure; the caller owns the fallback
-//! chain.
+//! The rerank prompt is built from [`IntentRecord`] rows, so candidate
+//! descriptions and examples live in the database instead of hard-coded
+//! tables. The LLM step returns `None` on every failure; the router owns the
+//! decision and fallback.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::core::db::models::IntentRecord;
+use crate::core::db::models::{IntentRecord, Message};
 use crate::llm::provider::ProviderRegistry;
 
-/// Classifies user messages with the configured LLM provider.
-pub struct LlmClassifier {
+/// Context-aware reranker boundary, injectable for tests.
+#[async_trait::async_trait]
+pub trait IntentReranker: Send + Sync {
+    async fn rerank(
+        &self,
+        message: &str,
+        recent_messages: &[Message],
+        candidates: &[IntentRecord],
+    ) -> Option<(String, f32)>;
+}
+
+/// Context-aware reranker: it receives recent messages and a narrowed
+/// candidate set, and it may answer `"none"`.
+pub struct LlmReranker {
     providers: Arc<Mutex<ProviderRegistry>>,
     model_id: Option<String>,
 }
 
-impl LlmClassifier {
+impl LlmReranker {
     pub fn new(providers: Arc<Mutex<ProviderRegistry>>, model_id: Option<String>) -> Self {
         Self {
             providers,
@@ -27,17 +39,17 @@ impl LlmClassifier {
         }
     }
 
-    /// Ask the LLM to pick one of `intents` for `message`.
+    /// Ask the LLM to pick one candidate for `message`.
     ///
-    /// Returns `None` for every failure: no provider, request error,
-    /// unparsable reply, or an intent id that is not in `intents`. This method
-    /// never falls back internally — the caller owns fallback.
-    pub async fn classify(
+    /// Returns `None` for every failure, including an explicit `"none"` answer.
+    /// Timeouts are owned by the caller.
+    pub async fn rerank(
         &self,
         message: &str,
-        intents: &[IntentRecord],
+        recent_messages: &[Message],
+        candidates: &[IntentRecord],
     ) -> Option<(String, f32)> {
-        if intents.is_empty() {
+        if candidates.is_empty() {
             return None;
         }
 
@@ -46,42 +58,94 @@ impl LlmClassifier {
             registry.resolve(self.model_id.as_deref()).ok()?
         };
 
-        let preamble = build_classifier_prompt(intents);
-        let reply = provider.prompt(&preamble, message).await.ok()?;
-        parse_classification_reply(&reply, intents)
+        let preamble = build_rerank_prompt(candidates);
+        let prompt = build_rerank_input(message, recent_messages);
+        let reply = provider.prompt(&preamble, &prompt).await.ok()?;
+        parse_classification_reply(&reply, candidates)
     }
 }
 
-/// Render the classifier prompt from the stored intents.
-pub fn build_classifier_prompt(intents: &[IntentRecord]) -> String {
+#[async_trait::async_trait]
+impl IntentReranker for LlmReranker {
+    async fn rerank(
+        &self,
+        message: &str,
+        recent_messages: &[Message],
+        candidates: &[IntentRecord],
+    ) -> Option<(String, f32)> {
+        LlmReranker::rerank(self, message, recent_messages, candidates).await
+    }
+}
+
+/// Render the rerank candidate list. `none` is an explicit valid answer.
+pub fn build_rerank_prompt(candidates: &[IntentRecord]) -> String {
     let mut prompt = String::from(
         "You are an intent classifier for an AI coding assistant.\n\
-         Pick exactly one intent for the user's message.\n\nIntents:\n",
+         Pick exactly one candidate intent for the user's current message.\n\
+         Use the recent conversation to resolve references such as \"that\" or \
+         \"what we just discussed\".\n\
+         If none of the candidates fits, answer with \"none\".\n\nCandidates:\n",
     );
 
-    for intent in intents {
+    for intent in candidates {
+        let examples = intent
+            .examples
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ");
         prompt.push_str(&format!(
             "- id: {}\n  name: {}\n  when: {}\n  examples: {}\n",
-            intent.id,
-            intent.name,
-            intent.description,
-            intent.examples.join(" | ")
+            intent.id, intent.name, intent.description, examples
         ));
     }
 
     prompt.push_str(
         "\nRespond with one JSON object and nothing else:\n\
-         { \"intent\": \"<id>\", \"confidence\": 0.0-1.0, \"reason\": \"...\" }\n\
-         \"intent\" must be exactly one of the ids listed above.",
+         { \"intent\": \"<id|none>\", \"confidence\": 0.0-1.0, \"reason\": \"...\" }\n\
+         \"intent\" must be exactly one of the ids listed above, or \"none\".",
     );
 
     prompt
 }
 
+/// Render the current message plus a bounded recent-conversation block.
+pub fn build_rerank_input(message: &str, recent_messages: &[Message]) -> String {
+    const MAX_TOTAL_CHARS: usize = 2000;
+    const MAX_MESSAGE_CHARS: usize = 500;
+
+    let mut input = String::new();
+    if !recent_messages.is_empty() {
+        input.push_str("Recent conversation (oldest first):\n");
+        let mut used = 0usize;
+        for recent in recent_messages {
+            if used >= MAX_TOTAL_CHARS {
+                break;
+            }
+            let role = match recent.role.as_str() {
+                "assistant" => "assistant",
+                "system" => "system",
+                "tool" => "tool",
+                _ => "user",
+            };
+            let content: String = recent.content.chars().take(MAX_MESSAGE_CHARS).collect();
+            let line = format!("{role}: {content}\n");
+            used += line.chars().count();
+            input.push_str(&line);
+        }
+        input.push('\n');
+    }
+
+    input.push_str("Current user message:\n");
+    input.push_str(message);
+    input
+}
+
 /// Fallback scoring driven purely by the stored data.
 ///
 /// 1. Any intent whose `examples` appear in `message` (case-insensitive
-///    substring) scores `1.0`; among several hits the longest example wins.
+///    substring) scores `0.9`; among several hits the longest example wins.
 /// 2. Otherwise score by Chinese bigram overlap between the message and
 ///    `description` + `name` (intersection over union).
 ///
@@ -93,7 +157,11 @@ pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String,
     for intent in intents {
         for example in &intent.examples {
             let lowered_example = example.trim().to_lowercase();
-            if lowered_example.is_empty() || !lowered_message.contains(lowered_example.as_str()) {
+            // A one-character example ("改") matches almost every sentence and
+            // steals the decision from a better signal.
+            if lowered_example.chars().count() < 2
+                || !lowered_message.contains(lowered_example.as_str())
+            {
                 continue;
             }
             let matched_len = lowered_example.chars().count();
@@ -107,7 +175,8 @@ pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String,
         }
     }
     if let Some((intent, _)) = best_example {
-        return Some((intent.id.clone(), 1.0));
+        // Deliberately below 1.0: an example hit is a strong hint, not proof.
+        return Some((intent.id.clone(), 0.9));
     }
 
     let message_bigrams = bigrams(&lowered_message);
@@ -137,37 +206,6 @@ pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String,
     }
 
     best.map(|(intent, score)| (intent.id.clone(), score))
-}
-
-/// Apply the confidence threshold of the chosen intent.
-///
-/// Returns `chosen` unchanged when `score` clears its threshold. Otherwise it
-/// falls back to `fallback_intent` (when non-empty and present), then to the
-/// `.clarify` intent, then to `chosen`.
-pub fn apply_confidence(intents: &[IntentRecord], chosen: &str, score: f32) -> String {
-    let Some(chosen_intent) = intents.iter().find(|intent| intent.id == chosen) else {
-        return chosen.to_string();
-    };
-
-    // Compare in one domain: widening `0.7f32` to `f64` yields 0.699999988…,
-    // which would wrongly fail a threshold of 0.7.
-    if score >= chosen_intent.confidence_threshold as f32 {
-        return chosen.to_string();
-    }
-
-    if !chosen_intent.fallback_intent.is_empty()
-        && intents
-            .iter()
-            .any(|intent| intent.id == chosen_intent.fallback_intent)
-    {
-        return chosen_intent.fallback_intent.clone();
-    }
-
-    if let Some(clarify) = intents.iter().find(|intent| intent.id.ends_with(".clarify")) {
-        return clarify.id.clone();
-    }
-
-    chosen.to_string()
 }
 
 /// Parse an LLM reply into `(intent_id, confidence)`.
@@ -335,32 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_lists_every_intent_id() {
-        let intents = fixtures();
-        let prompt = build_classifier_prompt(&intents);
-        for item in &intents {
-            assert!(
-                prompt.contains(&item.id),
-                "prompt should mention id {}",
-                item.id
-            );
-        }
-    }
-
-    #[test]
-    fn prompt_mentions_confidence_field() {
-        let prompt = build_classifier_prompt(&fixtures());
-        assert!(prompt.contains("confidence"));
-        assert!(prompt.contains("\"intent\""));
-    }
-
-    #[test]
     fn score_matches_example_substring() {
         let intents = fixtures();
         let scored = score_intents("帮我解释这段代码", &intents);
         assert_eq!(
             scored,
-            Some(("builtin.software_dev.explain".to_string(), 1.0))
+            Some(("builtin.software_dev.explain".to_string(), 0.9))
         );
     }
 
@@ -380,42 +398,17 @@ mod tests {
     }
 
     #[test]
-    fn low_confidence_falls_back_to_neighbour() {
-        let intents = fixtures();
-        assert_eq!(
-            apply_confidence(&intents, "builtin.software_dev.implement", 0.2),
-            "builtin.software_dev.clarify"
-        );
-        assert_eq!(
-            apply_confidence(&intents, "builtin.software_dev.implement", 0.9),
-            "builtin.software_dev.implement"
-        );
-    }
+    fn one_character_example_is_ignored() {
+        let intents = vec![intent(
+            "builtin.software_dev.implement",
+            "实现功能",
+            "写代码",
+            &["改"],
+            0.7,
+            "",
+        )];
 
-    #[test]
-    fn empty_fallback_is_terminal() {
-        let intents = vec![
-            intent(
-                "builtin.software_dev.implement",
-                "实现功能",
-                "把需求实现为代码",
-                &[],
-                0.9,
-                "",
-            ),
-            intent(
-                "builtin.software_dev.explain",
-                "解释代码",
-                "解释代码逻辑",
-                &[],
-                0.7,
-                "",
-            ),
-        ];
-        assert_eq!(
-            apply_confidence(&intents, "builtin.software_dev.implement", 0.1),
-            "builtin.software_dev.implement"
-        );
+        assert_eq!(score_intents("改一下这个", &intents), None);
     }
 
     #[test]
@@ -443,17 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn threshold_equal_to_score_is_not_rerouted() {
-        let intents = fixtures();
-        // `0.7f32` widens to 0.699999988…; if the comparison mixes f32 and
-        // f64 this intent is wrongly judged low-confidence and rerouted.
-        assert_eq!(
-            apply_confidence(&intents, "builtin.software_dev.implement", 0.7f32),
-            "builtin.software_dev.implement"
-        );
-    }
-
-    #[test]
     fn bigram_overlap_scores_positive_without_example_match() {
         let intents = fixtures();
         // No example matches; the overlap comes from 重构 / 结构 in the
@@ -462,32 +444,6 @@ mod tests {
         let (id, score) = scored.expect("bigram overlap should score");
         assert_eq!(id, "builtin.software_dev.refactor");
         assert!(score > 0.0, "expected a positive score, got {score}");
-    }
-
-    #[test]
-    fn missing_fallback_falls_back_to_clarify() {
-        let intents = vec![
-            intent(
-                "builtin.software_dev.implement",
-                "实现功能",
-                "把需求实现为代码",
-                &[],
-                0.9,
-                "",
-            ),
-            intent(
-                "builtin.software_dev.clarify",
-                "澄清需求",
-                "当意图不明确时向用户提问",
-                &[],
-                0.7,
-                "",
-            ),
-        ];
-        assert_eq!(
-            apply_confidence(&intents, "builtin.software_dev.implement", 0.1),
-            "builtin.software_dev.clarify"
-        );
     }
 
     #[test]
@@ -502,5 +458,64 @@ mod tests {
                 "confidence {raw} must be rejected"
             );
         }
+    }
+
+    fn message(role: &str, content: &str) -> Message {
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: "session".to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            tokens: None,
+            created_at: "2026-11-05T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn rerank_prompt_lists_candidates_and_none_option() {
+        let prompt = build_rerank_prompt(&fixtures());
+        assert!(prompt.contains("builtin.software_dev.implement"));
+        assert!(prompt.contains("builtin.software_dev.explain"));
+        assert!(prompt.contains("none"));
+        assert!(prompt.contains("confidence"));
+    }
+
+    #[test]
+    fn rerank_input_includes_recent_messages_and_current_message() {
+        let recent = vec![
+            message("user", "登录接口报 500"),
+            message("assistant", "我先看日志"),
+        ];
+
+        let input = build_rerank_input("先看看日志", &recent);
+
+        assert!(input.contains("user: 登录接口报 500"));
+        assert!(input.contains("assistant: 我先看日志"));
+        assert!(input.contains("Current user message:\n先看看日志"));
+    }
+
+    #[test]
+    fn rerank_input_truncates_long_messages() {
+        let long = "x".repeat(2000);
+        let recent = vec![message("user", &long), message("assistant", &long)];
+
+        let input = build_rerank_input("now", &recent);
+
+        assert!(input.chars().count() < 2600);
+        assert!(input.contains("Current user message:\nnow"));
+    }
+
+    #[test]
+    fn rerank_reply_accepts_none_as_no_match() {
+        let reply = "{\"intent\": \"none\", \"confidence\": 0.0}";
+        assert_eq!(parse_classification_reply(reply, &fixtures()), None);
+    }
+
+    #[test]
+    fn rerank_reply_rejects_unknown_candidate() {
+        let reply = "{\"intent\": \"builtin.software_dev.does_not_exist\", \"confidence\": 0.9}";
+        assert_eq!(parse_classification_reply(reply, &fixtures()), None);
     }
 }

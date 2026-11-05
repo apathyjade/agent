@@ -45,6 +45,15 @@ export interface SessionIntentState {
   mode: 'auto' | 'pinned';
 }
 
+/** One candidate considered while routing. */
+export interface IntentCandidate {
+  intent_id: string;
+  name: string;
+  domain_id: string;
+  score: number;
+  signal: 'embedding' | 'llm' | 'rule' | 'probe' | 'fallback';
+}
+
 /** Payload of the `intent_resolved` Tauri event. */
 export interface IntentResolvedEvent {
   session_id: string;
@@ -53,8 +62,28 @@ export interface IntentResolvedEvent {
   intent_id: string;
   intent_name: string;
   confidence: number;
-  source: 'llm' | 'scorer' | 'fallback';
-  widened: boolean;
+  uncertain: boolean;
+  source: 'embedding' | 'llm' | 'rule' | 'probe' | 'fallback';
+  candidates: IntentCandidate[];
+  elapsed_ms: number;
+  llm_calls: number;
+  probe_used: boolean;
+}
+
+/** One row returned by the read-only route trace IPC. */
+export interface RouteTrace {
+  at: string;
+  session_id: string;
+  message_excerpt: string;
+  candidates: IntentCandidate[];
+  chosen_intent_id: string;
+  chosen_intent_name: string;
+  confidence: number;
+  uncertain: boolean;
+  source: 'embedding' | 'llm' | 'rule' | 'probe' | 'fallback';
+  elapsed_ms: number;
+  llm_calls: number;
+  probe_used: boolean;
 }
 
 /**
@@ -153,4 +182,9 @@ export async function setSessionIntentDomain(
   domainId: string | null,
 ): Promise<SessionIntentState> {
   return invoke('set_session_intent_domain', { sessionId, domainId });
+}
+
+/** Read the most recent routing decisions (debug panel only). */
+export async function getRecentRouteTraces(): Promise<RouteTrace[]> {
+  return invoke('get_recent_route_traces');
 }

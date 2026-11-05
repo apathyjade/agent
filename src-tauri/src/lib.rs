@@ -217,6 +217,7 @@ pub fn run() {
             app::commands::export_intent_domain,
             app::commands::get_session_intent_state,
             app::commands::set_session_intent_domain,
+            app::commands::get_recent_route_traces,
             app::commands::list_providers_cmd,
             app::commands::setup_provider,
             app::commands::update_provider_config,

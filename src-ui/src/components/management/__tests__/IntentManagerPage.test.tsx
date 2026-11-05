@@ -174,6 +174,43 @@ describe('IntentManagerPage', () => {
     expect(api.deleteIntent).toHaveBeenCalledWith('intent-1');
   });
 
+  it('creates an intent without sending fallback_intent', async () => {
+    vi.mocked(api.listIntentDomains).mockResolvedValue([makeDomain()]);
+    vi.mocked(api.getActiveIntentDomain).mockResolvedValue(makeDomain());
+    vi.mocked(api.listIntents).mockResolvedValue([]);
+    vi.mocked(api.createIntent).mockResolvedValue(makeIntent());
+
+    const user = userEvent.setup();
+    render(<IntentManagerPage />);
+
+    await user.click(await screen.findByRole('button', { name: '新建意图' }));
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '写周报' } });
+    await user.click(screen.getByRole('button', { name: '创建' }));
+
+    await waitFor(() => expect(api.createIntent).toHaveBeenCalledTimes(1));
+    const [domainId, payload] = vi.mocked(api.createIntent).mock.calls[0];
+    expect(domainId).toBe('domain-1');
+    expect(payload.name).toBe('写周报');
+    expect(payload).not.toHaveProperty('fallback_intent');
+  });
+
+  it('does not render a fallback intent control in the intent editor', async () => {
+    vi.mocked(api.listIntentDomains).mockResolvedValue([makeDomain()]);
+    vi.mocked(api.getActiveIntentDomain).mockResolvedValue(makeDomain());
+    vi.mocked(api.listIntents).mockResolvedValue([
+      makeIntent({ id: 'intent-1', name: '规划方案', fallback_intent: 'intent-2' }),
+      makeIntent({ id: 'intent-2', name: '闲聊对话', sort_order: 1 }),
+    ]);
+
+    const user = userEvent.setup();
+    render(<IntentManagerPage />);
+
+    await user.click(await screen.findByText('规划方案'));
+
+    expect(screen.queryByLabelText('兜底意图')).toBeNull();
+    expect(screen.queryByText('兜底意图')).toBeNull();
+  });
+
   it('does not render an auto_escalate control in the intent editor', async () => {
     vi.mocked(api.listIntentDomains).mockResolvedValue([makeDomain()]);
     vi.mocked(api.getActiveIntentDomain).mockResolvedValue(makeDomain());

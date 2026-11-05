@@ -1,0 +1,262 @@
+[
+  {
+    "message": "先别写代码，帮我把这个功能拆成几步",
+    "expected_intent": "builtin.software_dev.plan",
+    "category": "clear"
+  },
+  {
+    "message": "给我一个落地计划，暂时不要动代码",
+    "expected_intent": "builtin.software_dev.plan",
+    "category": "clear"
+  },
+  {
+    "message": "把这个需求整理成一份可存档的规格文档",
+    "expected_intent": "builtin.software_dev.spec",
+    "category": "clear"
+  },
+  {
+    "message": "写一份登录模块的技术方案存到 docs 下",
+    "expected_intent": "builtin.software_dev.spec",
+    "category": "clear"
+  },
+  {
+    "message": "给设置页加一个深色模式开关",
+    "expected_intent": "builtin.software_dev.implement",
+    "category": "clear"
+  },
+  {
+    "message": "实现一个按标签筛选会话的接口",
+    "expected_intent": "builtin.software_dev.implement",
+    "category": "clear"
+  },
+  {
+    "message": "这个接口一调用就 500，先查原因",
+    "expected_intent": "builtin.software_dev.debug",
+    "category": "clear"
+  },
+  {
+    "message": "登录后页面白屏了，帮我定位一下",
+    "expected_intent": "builtin.software_dev.debug",
+    "category": "clear"
+  },
+  {
+    "message": "给这个函数补几个边界用例",
+    "expected_intent": "builtin.software_dev.test",
+    "category": "clear"
+  },
+  {
+    "message": "跑一下单测，看看哪里挂了",
+    "expected_intent": "builtin.software_dev.test",
+    "category": "clear"
+  },
+  {
+    "message": "帮我看看这次改动有没有风险",
+    "expected_intent": "builtin.software_dev.review",
+    "category": "clear"
+  },
+  {
+    "message": "这个 PR 可以合吗",
+    "expected_intent": "builtin.software_dev.review",
+    "category": "clear"
+  },
+  {
+    "message": "把这段重复逻辑抽出来，行为不要变",
+    "expected_intent": "builtin.software_dev.refactor",
+    "category": "clear"
+  },
+  {
+    "message": "这个模块太长了，整理一下结构",
+    "expected_intent": "builtin.software_dev.refactor",
+    "category": "clear"
+  },
+  {
+    "message": "解释一下这里为什么要加锁",
+    "expected_intent": "builtin.software_dev.explain",
+    "category": "clear"
+  },
+  {
+    "message": "这段代码的设计思路是什么",
+    "expected_intent": "builtin.software_dev.explain",
+    "category": "clear"
+  },
+  {
+    "message": "项目里跑测试的命令写在哪",
+    "expected_intent": "builtin.software_dev.lookup",
+    "category": "clear"
+  },
+  {
+    "message": "登录相关的代码在哪个目录",
+    "expected_intent": "builtin.software_dev.lookup",
+    "category": "clear"
+  },
+  {
+    "message": "跑一下 cargo build",
+    "expected_intent": "builtin.software_dev.execute",
+    "category": "clear"
+  },
+  {
+    "message": "启动开发服务器",
+    "expected_intent": "builtin.software_dev.execute",
+    "category": "clear"
+  },
+  {
+    "message": "先别急着改，问我几个问题把需求问清楚",
+    "expected_intent": "builtin.software_dev.clarify",
+    "category": "clear"
+  },
+  {
+    "message": "我现在信息不够，你先确认一下再动手",
+    "expected_intent": "builtin.software_dev.clarify",
+    "category": "clear"
+  },
+  {
+    "message": "今天天气不错，随便聊聊",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "clear"
+  },
+  {
+    "message": "谢谢你，辛苦了",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "clear"
+  },
+  {
+    "message": "先看看日志",
+    "expected_intent": "builtin.software_dev.debug",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "登录接口报 500 了" },
+      { "role": "assistant", "content": "我先看一下错误栈和最近的改动。" }
+    ]
+  },
+  {
+    "message": "就按这个思路改，行为别变",
+    "expected_intent": "builtin.software_dev.refactor",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "这段重复逻辑能不能抽个公共函数" },
+      { "role": "assistant", "content": "可以，把两处调用收敛到一个 helper，外部行为不变。" }
+    ]
+  },
+  {
+    "message": "把缺的补上",
+    "expected_intent": "builtin.software_dev.test",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "这个模块现在只有正常路径的用例" },
+      { "role": "assistant", "content": "边界和失败路径还缺测试。" }
+    ]
+  },
+  {
+    "message": "那这个能合吗",
+    "expected_intent": "builtin.software_dev.review",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "我刚推了一个改动" },
+      { "role": "assistant", "content": "我看了 diff，主要改了会话恢复逻辑。" }
+    ]
+  },
+  {
+    "message": "顺便加个开关",
+    "expected_intent": "builtin.software_dev.implement",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "设置页现在只有主题选项" },
+      { "role": "assistant", "content": "可以继续加新的设置项。" }
+    ]
+  },
+  {
+    "message": "就按这个计划做",
+    "expected_intent": "builtin.software_dev.implement",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "给我一个三步的实施计划" },
+      { "role": "assistant", "content": "1. 加表 2. 改路由 3. 补前端。" }
+    ]
+  },
+  {
+    "message": "那个文件里还有别的实现吗",
+    "expected_intent": "builtin.software_dev.lookup",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "登录逻辑在 auth.rs 里" },
+      { "role": "assistant", "content": "对，主要的校验都在那个文件。" }
+    ]
+  },
+  {
+    "message": "为什么会这样",
+    "expected_intent": "builtin.software_dev.explain",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "这里每次请求都会重建连接池" },
+      { "role": "assistant", "content": "这和连接池的初始化时机有关。" }
+    ]
+  },
+  {
+    "message": "落盘吧",
+    "expected_intent": "builtin.software_dev.spec",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "刚才讨论的登录方案整理成文档" },
+      { "role": "assistant", "content": "我已经列了背景、接口和风险三节。" }
+    ]
+  },
+  {
+    "message": "修好了吗",
+    "expected_intent": "builtin.software_dev.debug",
+    "category": "context",
+    "recent": [
+      { "role": "user", "content": "空指针那个问题还在" },
+      { "role": "assistant", "content": "我加了空值判断，正在跑回归。" }
+    ]
+  },
+  {
+    "message": "帮我写一首关于秋天的诗",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "out_of_domain"
+  },
+  {
+    "message": "明天适合穿什么",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "out_of_domain"
+  },
+  {
+    "message": "推荐一部电影",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "out_of_domain"
+  },
+  {
+    "message": "讲个笑话",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "out_of_domain"
+  },
+  {
+    "message": "你最喜欢什么颜色",
+    "expected_intent": "builtin.software_dev.chat",
+    "category": "out_of_domain"
+  },
+  {
+    "message": "改一下这个",
+    "expected_intent": null,
+    "category": "ambiguous"
+  },
+  {
+    "message": "看看这个",
+    "expected_intent": null,
+    "category": "ambiguous"
+  },
+  {
+    "message": "帮我处理一下",
+    "expected_intent": null,
+    "category": "ambiguous"
+  },
+  {
+    "message": "那个东西不太对",
+    "expected_intent": null,
+    "category": "ambiguous"
+  },
+  {
+    "message": "按刚才说的来",
+    "expected_intent": null,
+    "category": "ambiguous"
+  }
+]
