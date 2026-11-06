@@ -1,4 +1,4 @@
-use chrono::Utc;
+﻿use chrono::Utc;
 
 use crate::core::db::models::{IntentDomainRecord, IntentRecord};
 use crate::core::db::repository::Database;
@@ -6,17 +6,15 @@ use crate::core::error::Result;
 
 const DOMAIN_ID: &str = "builtin.software_dev";
 
-/// `settings` key recording that the built-in domain has been seeded.
-/// Seeding happens at most once per database, so a domain the user deleted
-/// is never resurrected.
+/// `settings` 表中记录内置领域已初始化的键。
+/// 每个数据库最多初始化一次，因此用户删掉的领域不会被重新创建。
 const SEEDED_SETTING: &str = "intent.seeded";
 
-/// The built-in 「程序开发」 domain and its 12 intents, transcribed verbatim
-/// from `docs/design/2026-11-04-intent-management-design.md` §6.3.
+/// 内置「程序开发」领域及其 12 条意图，逐字取自
+/// `docs/design/2026-11-04-intent-management-design.md` §6.3。
 ///
-/// The descriptions are written as "how it differs from its neighbour" on
-/// purpose: the classifier prompt is generated from them, so they must not be
-/// softened into marketing copy.
+/// 描述刻意写成「与相邻意图的区别」：分类器提示词由这些描述生成，
+/// 因此不能改写成营销式文案。
 pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
     let now = Utc::now().to_rfc3339();
 
@@ -31,9 +29,8 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
         updated_at: now.clone(),
     };
 
-    // Fields shared by every seed intent (§6.3: scope is always global,
-    // every intent ships enabled at version 1, and the optional tuning knobs
-    // are left untouched).
+    // 每条种子意图共享的字段（§6.3：scope 恒为 global，所有意图初始
+    // 版本为 1 且启用，可选调参项保持未设置）。
     let base = IntentRecord {
         id: String::new(),
         domain_id: DOMAIN_ID.to_string(),
@@ -71,7 +68,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "先把思路理一下再动手".to_string(),
             ],
             workflow: "planning".to_string(),
-            allowed_tools: vec!["file_system".to_string()],
+            allowed_tools: vec!["read".to_string(), "search".to_string(), "list".to_string()],
             default_agent: "thinker".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -92,7 +89,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "把刚才讨论的写成 spec".to_string(),
             ],
             workflow: "spec_generation".to_string(),
-            allowed_tools: vec!["file_system".to_string()],
+            allowed_tools: vec!["read".to_string(), "search".to_string(), "list".to_string()],
             default_agent: "thinker".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -113,7 +110,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "按这个设计写代码".to_string(),
             ],
             workflow: "code_change".to_string(),
-            allowed_tools: vec!["file_system".to_string(), "code_executor".to_string()],
+            allowed_tools: vec!["read".to_string(), "write".to_string(), "edit".to_string(), "search".to_string(), "list".to_string(), "delete".to_string(), "move".to_string(), "shell".to_string()],
             default_agent: "code_editor".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -134,7 +131,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "同样的输入两次结果不一样".to_string(),
             ],
             workflow: "bug_fix".to_string(),
-            allowed_tools: vec!["file_system".to_string(), "code_executor".to_string()],
+            allowed_tools: vec!["read".to_string(), "write".to_string(), "edit".to_string(), "search".to_string(), "list".to_string(), "delete".to_string(), "move".to_string(), "shell".to_string()],
             default_agent: "code_explorer".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -155,7 +152,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "覆盖率现在多少".to_string(),
             ],
             workflow: "testing".to_string(),
-            allowed_tools: vec!["file_system".to_string(), "code_executor".to_string()],
+            allowed_tools: vec!["read".to_string(), "write".to_string(), "edit".to_string(), "search".to_string(), "list".to_string(), "delete".to_string(), "move".to_string(), "shell".to_string()],
             default_agent: "code_editor".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -176,7 +173,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "这么写符合项目规范吗".to_string(),
             ],
             workflow: "review".to_string(),
-            allowed_tools: vec!["file_system".to_string()],
+            allowed_tools: vec!["read".to_string(), "search".to_string(), "list".to_string()],
             default_agent: "code_explorer".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -197,7 +194,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "换个更清楚的组织方式".to_string(),
             ],
             workflow: "refactor".to_string(),
-            allowed_tools: vec!["file_system".to_string(), "code_executor".to_string()],
+            allowed_tools: vec!["read".to_string(), "write".to_string(), "edit".to_string(), "search".to_string(), "list".to_string(), "delete".to_string(), "move".to_string(), "shell".to_string()],
             default_agent: "code_editor".to_string(),
             path: "deep".to_string(),
             auto_escalate: true,
@@ -218,7 +215,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "这个设计为什么这么做".to_string(),
             ],
             workflow: "explain".to_string(),
-            allowed_tools: vec!["file_system".to_string()],
+            allowed_tools: vec!["read".to_string(), "search".to_string(), "list".to_string()],
             default_agent: "thinker".to_string(),
             path: "fast".to_string(),
             auto_escalate: false,
@@ -239,7 +236,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "这个配置项在哪定义".to_string(),
             ],
             workflow: "knowledge_query".to_string(),
-            allowed_tools: vec!["file_system".to_string(), "web_search".to_string()],
+            allowed_tools: vec!["read".to_string(), "search".to_string(), "list".to_string()],
             default_agent: "code_explorer".to_string(),
             path: "fast".to_string(),
             auto_escalate: false,
@@ -260,7 +257,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
                 "跑一下 lint".to_string(),
             ],
             workflow: "tool_execute".to_string(),
-            allowed_tools: vec!["code_executor".to_string(), "file_system".to_string()],
+            allowed_tools: vec!["read".to_string(), "write".to_string(), "edit".to_string(), "search".to_string(), "list".to_string(), "delete".to_string(), "move".to_string(), "shell".to_string()],
             default_agent: "shell".to_string(),
             path: "fast".to_string(),
             auto_escalate: false,
@@ -286,7 +283,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
             path: "fast".to_string(),
             auto_escalate: false,
             confidence_threshold: 0.6,
-            // Empty fallback: terminal, so it cannot loop back to itself.
+            // 空 fallback：终止意图，不会绕回自身。
             fallback_intent: String::new(),
             sort_order: 100,
             ..base.clone()
@@ -308,7 +305,7 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
             path: "fast".to_string(),
             auto_escalate: false,
             confidence_threshold: 0.6,
-            // Empty fallback: terminal, so it cannot loop back to itself.
+            // 空 fallback：终止意图，不会绕回自身。
             fallback_intent: String::new(),
             sort_order: 110,
             ..base.clone()
@@ -318,24 +315,22 @@ pub fn builtin_software_dev() -> (IntentDomainRecord, Vec<IntentRecord>) {
     (domain, intents)
 }
 
-/// Seeds the built-in domain at most once per database.
+/// 每个数据库最多初始化一次内置领域。
 ///
-/// The "already seeded" marker is the `intent.seeded` row in the `settings`
-/// table, not the domain's existence: users may delete a built-in domain
-/// (§7), and that must stay deleted across restarts.
+/// 「已初始化」标记是 `settings` 表中的 `intent.seeded` 行，而不是领域是否
+/// 存在：用户可能删除内置领域（§7），删除状态必须跨重启保持。
 ///
-/// The domain, its 12 intents, the activation and the marker all land in one
-/// transaction ([`Database::seed_intent_domain_atomic`]), so an interrupted or
-/// failed seed leaves nothing behind and the next launch simply retries.
+/// 领域、12 条意图、激活状态与标记在同一个事务里写入
+/// （[`Database::seed_intent_domain_atomic`]），因此中断或失败不会留下
+/// 半成品，下次启动会重新尝试。
 pub fn seed_builtin_intents(db: &Database) -> Result<()> {
     if db.get_setting(SEEDED_SETTING)?.is_some() {
         return Ok(());
     }
 
-    // A hand-edited database, or one upgraded from a build that predates the
-    // marker, may already hold the built-in domain. Re-seeding would hit a
-    // primary-key conflict and abort startup with no UI to repair it, so adopt
-    // what is there instead: write the marker and leave the rows untouched.
+    // 手工编辑过的数据库，或从没有该标记的旧版本升级而来，可能已存在
+    // 内置领域。重新初始化会撞主键并让启动失败，且没有 UI 可修复，所以
+    // 直接接管：写入标记，不动已有数据。
     if db.get_intent_domain(DOMAIN_ID)?.is_some() {
         db.set_setting(SEEDED_SETTING, "1")?;
         log::info!("Adopted existing built-in intent domain {DOMAIN_ID}");
@@ -372,12 +367,15 @@ mod tests {
         "builtin.software_dev.chat",
     ];
 
-    const KNOWN_TOOLS: [&str; 5] = [
-        "file_system",
-        "code_executor",
-        "web_search",
-        "calculator",
-        "run_workflow",
+    const KNOWN_TOOLS: [&str; 8] = [
+        "read",
+        "write",
+        "edit",
+        "search",
+        "list",
+        "shell",
+        "delete",
+        "move",
     ];
 
     const KNOWN_AGENTS: [&str; 8] = [
@@ -436,8 +434,8 @@ mod tests {
         "chat",
     ];
 
-    /// (id suffix, path, auto_escalate, confidence_threshold, fallback suffix)
-    /// straight from design §6.3.
+    /// (id 后缀, path, auto_escalate, confidence_threshold, fallback 后缀)
+    /// 直接来自设计文档 §6.3。
     const EXPECTED_ROUTING: [(&str, &str, bool, f64, &str); 12] = [
         ("plan", "deep", true, 0.75, "spec"),
         ("spec", "deep", true, 0.75, "plan"),
@@ -453,7 +451,7 @@ mod tests {
         ("chat", "fast", false, 0.6, ""),
     ];
 
-    /// Minimal enabled intent record with a caller-chosen id/domain.
+    /// 构造一条最小的启用意图，id 与领域由调用方指定。
     fn mk_intent(id: &str, domain_id: &str) -> IntentRecord {
         let ts = Utc::now().to_rfc3339();
         IntentRecord {
@@ -481,8 +479,8 @@ mod tests {
         }
     }
 
-    /// Creates and activates a minimal user domain, so the built-in one can be
-    /// deleted (deleting the active domain is rejected by the repo guard).
+    /// 创建并激活一个最小用户领域，使内置领域可以被删除
+    /// （仓储层禁止删除当前激活的领域）。
     fn create_user_domain(db: &Database) {
         let ts = Utc::now().to_rfc3339();
         db.insert_intent_domain(&IntentDomainRecord {
@@ -510,9 +508,8 @@ mod tests {
         assert_eq!(db.count_intents(DOMAIN), 12);
     }
 
-    /// A database upgraded from a build without the marker, or hand-edited,
-    /// may already hold the built-in domain. Startup must adopt it instead of
-    /// failing on a primary-key conflict — otherwise the app never starts.
+    /// 从没有该标记的旧版本升级而来、或手工编辑过的数据库，可能已存在
+    /// 内置领域。启动时必须接管，而不是撞主键失败——否则应用永远起不来。
     #[test]
     fn existing_builtin_domain_is_adopted_without_reseeding() {
         let db = Database::new_test().unwrap();
@@ -542,23 +539,20 @@ mod tests {
         assert_eq!(db.count_intents(DOMAIN), 0, "认领不得重新播种意图");
         assert_eq!(db.list_intent_domains().unwrap().len(), 1);
 
-        // The marker now governs: a later call is a plain no-op.
+        // 标记生效后：后续调用是纯粹的空操作。
         seed_builtin_intents(&db).unwrap();
         assert_eq!(db.count_intents(DOMAIN), 0);
     }
 
-    /// The atomic seed must roll back writes that already landed, not merely
-    /// return `Err`. Here the first intent insert hits a primary-key conflict
-    /// from an intent parked in another domain, i.e. the failure happens after
-    /// the built-in domain row was inserted — exactly the round-1 shape where
-    /// a partially seeded domain used to survive.
+    /// 原子播种必须回滚已经写入的数据，而不只是返回 `Err`。这里第一条
+    /// 意图插入就撞上另一领域占用的主键，即失败发生在内置领域行写入之后
+    /// ——正是旧版本会留下半个领域的场景。
     #[test]
     fn atomic_seed_rolls_back_a_partially_applied_attempt() {
         let db = Database::new_test().unwrap();
         create_user_domain(&db);
-        // Foreign keys are OFF, so this intent may live in the user domain
-        // while squatting on an id the built-in seed needs. Primary keys are
-        // global, so the seed's first intent insert must conflict.
+        // 外键未开启，因此这条意图可以挂在用户领域下、却占用内置播种需要
+        // 的 id。主键是全局的，播种的第一条意图插入必然冲突。
         db.insert_intent(&mk_intent("builtin.software_dev.plan", "user-domain"))
             .unwrap();
 
@@ -583,14 +577,13 @@ mod tests {
         );
     }
 
-    /// A failed seed must not write the marker, otherwise a legitimate retry
-    /// would be suppressed forever. (This failure happens on the first write,
-    /// so it does not exercise rollback — see the test above for that.)
+    /// 失败的播种不得写入标记，否则合法的重试会被永久抑制。
+    /// （这里失败发生在第一次写入，因此不覆盖回滚路径——回滚由上一个测试
+    /// 验证。）
     #[test]
     fn failed_atomic_seed_leaves_no_marker() {
         let db = Database::new_test().unwrap();
-        // A pre-existing row with the same id makes the insert conflict, which
-        // is the same shape as a leftover from an interrupted seed.
+        // 已存在同 id 的行会让插入冲突，与中断播种留下的残留形态一致。
         db.insert_intent_domain(&IntentDomainRecord {
             id: DOMAIN.to_string(),
             name: "程序开发".to_string(),
@@ -618,15 +611,14 @@ mod tests {
             "失败的事务不得激活领域"
         );
 
-        // With the conflicting row gone, the retry is not blocked.
+        // 冲突行移除后，重试不再被阻塞。
         db.delete_intent_domain(DOMAIN).unwrap();
         seed_builtin_intents(&db).unwrap();
         assert_eq!(db.count_intents(DOMAIN), 12);
     }
 
-    /// Deletes are permanent: once the marker is set, a deleted built-in
-    /// domain must not come back on the next launch, and it must not steal
-    /// activation back from the user's own domain.
+    /// 删除是永久的：标记写入后，被删除的内置领域不得在下次启动时复活，
+    /// 也不得从用户自己的领域手里抢回激活状态。
     #[test]
     fn deleted_builtin_domain_is_not_resurrected() {
         let db = Database::new_test().unwrap();
@@ -752,13 +744,13 @@ mod tests {
             );
         }
 
-        // Seed order must be materialized as sort_order = index * 10.
+        // 播种顺序必须落实为 sort_order = index * 10。
         assert_eq!(
             intents.iter().map(|i| i.sort_order).collect::<Vec<_>>(),
             (0..12).map(|i| i * 10).collect::<Vec<_>>()
         );
 
-        // Routing fields must match §6.3 exactly.
+        // 路由字段必须与 §6.3 完全一致。
         for (intent, (slug, path, auto_escalate, threshold, fallback)) in
             intents.iter().zip(EXPECTED_ROUTING.iter())
         {
@@ -782,3 +774,5 @@ mod tests {
         }
     }
 }
+
+

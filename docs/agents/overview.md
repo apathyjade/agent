@@ -37,7 +37,7 @@ agent/
 │   │   │   └── intent/              # 意图路由（classifier + router）
 │   │   ├── agent/                   # 第 4 层：Agent 运行时
 │   │   │   ├── fast_loop.rs         # Agent 执行循环
-│   │   │   ├── tools/               # 工具系统（base + registry + calculator 等）
+│   │   │   ├── tools/               # 工具系统（rig-tools + registry + approval）
 │   │   │   ├── workers/
 │   │   │   ├── critic/
 │   │   │   └── orchestrator/
@@ -91,7 +91,6 @@ agent/
 | 文件 | 引用 | 理由 |
 |---|---|---|
 | `agent/orchestrator/pipeline_adapter.rs` | `features::workflow` | 把 workflow 定义转换成执行计划，是 orchestrator 的适配器 |
-| `agent/tools/run_workflow.rs` | `features::workflow` | 工具直接驱动工作流引擎 |
 | `agent/workers/code_explorer.rs` | `features::workspace::search` | 代码探索 Worker 使用工作区索引 |
 
 > 这三处要清零，做法是把对应实现移入 `features/`、由 `app/state.rs` 注入——那属于行为重构，不在结构重组范围内。
@@ -102,6 +101,24 @@ agent/
 - `core/db/` 下不得出现 `crate::agent|features`（DB 记录类型已下沉到 `core/db/models.rs`）。`agent/` 内仅允许 `agent/workers/memory.rs` 的 rustdoc 链接提及 `crate::features::…`，那不是依赖边。
 - `app/` 之外不得出现 `crate::app`（含 `crate::app::config`、`crate::app::commands`、`crate::app::state`）；唯一例外是 crate 根 `lib.rs` 作为组合根的那行导入。
 - `llm/` 下不得出现 `crate::app`。
+
+## 代码注释约定
+
+Rust 后端（`src-tauri/`）的注释统一使用**简体中文**：
+
+| 注释类型 | 语言 | 说明 |
+|---|---|---|
+| `//` 行注释 | 中文 | 解释「为什么」，不逐行复述代码 |
+| `///` 文档注释 | 中文 | 说明意图、约束与边界条件；不复述签名 |
+| `//!` 模块文档 | 中文 | 说明模块职责 |
+
+保持英文不变的部分：标识符与变量名、字符串字面量、`log::` 消息文本、`AppError` 的 Display 文本、IPC 事件名、`serde` 属性值。
+
+- **同一文件内不中英混排**——混排本身就是可读性缺陷。
+- 关键领域术语在中文句子里保留英文原文（`embedding`、`checkpoint`、`rerank`、`LTS` 等），这些术语本身就是英文，翻译反而增加检索成本。
+- rustdoc 内部链接（`[`Foo`]`）属于代码，不翻译。
+
+> 此前项目约定为「代码注释使用英文」，2026-11-05 起改为中文，理由与迁移范围见 `openspec/changes/src-tauri-readability/`。
 
 ## 意图管理
 
@@ -171,7 +188,8 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 | 能力 | Rust API | 实现位置 |
 |------|----------|----------|
 | **LLM 对话** | `ProviderBox::prompt()` / `chat()` → `rig::agent::Agent` | `llm/rig.rs` — `RigProvider` |
-| **工具调用** | `AgentBuilder::dynamic_tools()` + `rig::tool::DynamicTool`，agent 内部驱动工具循环 | `llm/rig.rs` / `agent/tools/registry.rs` — `to_rig_tools()` |
+| **工具调用** | `AgentBuilder::dynamic_tools()` + `rig::tool::DynamicTool`，agent 内部驱动工具循环 | `llm/rig.rs` / `agent/tools/registry.rs` — `tool_runtime()` |
+| **人工确认** | `AgentHook::on_dispatch` + `ToolPolicyHook`；拒绝时 `DispatchAction::skip(reason)` | `agent/tools/policy.rs` / `agent/tools/approval.rs` |
 | **流式传输** | `ProviderBox::stream_prompt()` → `BoxStream<Result<String>>`（内部把 `MultiTurnStreamItem` 归一为文本 delta）；`ProviderBox::stream_with_tools()` → `StreamingResult`，调用方直接匹配 `rig::streaming::StreamEvent::Text` / `FinalResponse` / ToolCall / ToolResult | `llm/rig.rs` — `stream_prompt()` / `stream_with_tools()` |
 | **语义搜索** | `provider.embedding(id, None)` → `DynModel<Embedding>` + `InMemoryVectorIndex` | `features/memory/mod.rs` — `retrieve_relevant()` |
 | **结构化提取** | `rig::extractor::ExtractorBuilder::<T>::new(model)` — 编译期类型安全 | `llm/rig.rs` — `extract_structured::<T>()` |
@@ -182,7 +200,8 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 - **类型擦除一次**：`create_rig_provider()` 在配置加载时把各 provider 的 `Model<W>` 擦除为 `DynModel<Completion>`，因此所有后端共享同一个 `RigProvider`，可以直接放进 `Arc<dyn ProviderBox>`
 - **适配器而非替换**：`ProviderBox` trait 隔离内部模块与 Rig 类型；Rig 的 `Message`、`DynamicTool` 仅在适配层和工具层出现
 - **agent 按请求构建**：`AgentBuilder::new(model.clone()).preamble(..).build()` 每次调用构建，preamble 由调用方传入
-- **工具契约自有**：Rig 0.45 起不再有 object-safe 的 `ToolDyn`，项目保留 `AgentTool`（`agent/tools/base.rs`），在构建工具集时转成 `DynamicTool`
+- **工具用官方 rig-tools**：`read` / `write` / `edit` / `search` / `list` / `shell` / `delete` / `move` 直接来自 `rig-tools` crate，自带 annotations 与 footprint；项目不再维护本地文件/执行工具，只保留注册表、审批与 MCP 包装
+- **策略在注册表，执行在 Rig**：`ToolRegistry` 只维护启用状态、别名、来源与审批通道；参数校验、错误语义、工具循环全部由 Rig 负责
 - **降级策略**：embedding 不可用时 → LIKE 搜索；extraction 失败时 → 回退到 chat JSON 解析
 
 ### 进程启动
@@ -201,20 +220,30 @@ schemars = "1.2"    # JSON Schema derive（匹配 Rig 内部版本）
 
 ## Agent 循环（`agent/fast_loop.rs`）
 
-- 重试 ×3，指数退避，仅重试可恢复错误（网络超时等）
-- 上下文窗口优化：保留 system 消息，从后往前裁剪
-- 每轮最多 10 次工具迭代
-- 流式事件：`Content` / `ToolCall` / `ToolResult` / `Done`
+- 每轮最多 10 次模型调用（`max_turns`），参数畸形允许重试 2 次，连续 3 次畸形终止
+- 工具并发上限 4；同一轮里 footprint 冲突的调用会被跳过并回灌原因
+- 流式事件：`Content` / `ToolCall` / `ToolResult` / `Error` / `Done`（`Done` 恰好一次）
 - 记忆注入：system prompt 后自动插入 `<remembered_context>`
 
 ## 工具系统
 
 | 工具 | 默认启用 | 说明 |
 |------|----------|------|
-| `calculator` | ✅ | 算术计算 |
-| `file_system` | ❌ | 文件读写 |
-| `web_search` | ❌ | 网络搜索 |
-| `code_executor` | ✅ | 代码执行沙箱 |
+| `read` | ✅ | 读文本 / 图片，支持 offset/limit 分页 |
+| `write` | ✅ | 整文件写入，自动创建父目录 |
+| `edit` | ✅ | 多处精确替换，返回 diff |
+| `search` | ✅ | 正则搜索，遵循 `.gitignore` |
+| `list` | ✅ | 列目录，支持深度与 glob |
+| `shell` | ✅ | `sh -c` 执行命令（Windows 需 Git Bash/WSL） |
+| `delete` | ✅ | 删除文件（拒绝目录） |
+| `move` | ✅ | 移动/重命名文件 |
+
+> 以上全部来自官方 `rig-tools` crate，项目不再维护本地文件/执行工具。
+> 工具的实际启用状态来自 `AppConfig.enabled_tools`，`list_tools` 直接返回注册表里的状态。
+> MCP 工具以 `server__tool` 注册，启用状态由各自的服务器配置决定，不受内置列表支配。
+>
+> 审批优先级：拒绝名单 → 放行名单 → 确认名单 → 调用级 footprint（写入需确认、只读直接执行）→
+> 工具级 `destructive` 注解 → 放行。等待确认超过 120 秒按拒绝处理。
 
 > 技能（Skill）不在上表中：技能是 SKILL.md 指令包，由外部 `skills` CLI 安装到各编码代理目录，
 > 供 Claude Code / Codex / OpenCode 等外部代理读取，**不**注册为本应用的 `ToolRegistry` 工具。

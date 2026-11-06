@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-/// Project language enum
+/// 项目语言枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectLanguage {
@@ -18,14 +18,14 @@ pub enum ProjectLanguage {
     Other(String),
 }
 
-/// A single dependency with optional version string
+/// 单个依赖及其可选版本号
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dependency {
     pub name: String,
     pub version: Option<String>,
 }
 
-/// Full codebase index result produced by [`CodebaseIndexer`].
+/// [`CodebaseIndexer`] 产出的完整代码库索引结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodebaseIndex {
     pub root: PathBuf,
@@ -38,17 +38,15 @@ pub struct CodebaseIndex {
     pub file_types: HashMap<String, usize>,
 }
 
-/// Scans a project directory to detect language, framework, dependencies,
-/// and produce file-type statistics.
+/// 扫描项目目录，识别语言、框架、依赖并统计文件类型。
 pub struct CodebaseIndexer;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 impl CodebaseIndexer {
-    /// Index a codebase at the given root path.
+    /// 为给定根路径建立代码库索引。
     ///
-    /// Returns a [`CodebaseIndex`] with detected language, framework,
-    /// dependencies, and file-count statistics.
+    /// 返回包含语言、框架、依赖与文件统计的 [`CodebaseIndex`]。
     pub fn index(root: &Path) -> Result<CodebaseIndex> {
         if !root.exists() || !root.is_dir() {
             return Err(format!(
@@ -74,10 +72,9 @@ impl CodebaseIndexer {
         })
     }
 
-    // ── Project detection ──────────────────────────────────────────────────
+    // ── 项目识别 ──────────────────────────────────────────────────────────
 
-    /// Detect project language and optional framework by checking for
-    /// well-known manifest files.
+    /// 通过已知的清单文件识别项目语言与可选框架。
     fn detect_project(root: &Path) -> (Option<ProjectLanguage>, Option<String>) {
         if root.join("Cargo.toml").exists() {
             let framework = Self::detect_rust_framework(root);
@@ -95,7 +92,7 @@ impl CodebaseIndexer {
         (None, None)
     }
 
-    /// Scan a Rust `Cargo.toml` for known web/desktop framework keywords.
+    /// 扫描 Rust 的 `Cargo.toml`，查找已知的 Web/桌面框架关键字。
     fn detect_rust_framework(root: &Path) -> Option<String> {
         let content = fs::read_to_string(root.join("Cargo.toml")).ok()?;
         let frameworks = ["tauri", "actix-web", "axum", "rocket", "warp"];
@@ -110,8 +107,8 @@ impl CodebaseIndexer {
         None
     }
 
-    /// Scan a Node.js `package.json` for framework keywords and detect
-    /// TypeScript vs plain JavaScript.
+    /// 扫描 Node.js 的 `package.json`，识别框架关键字并区分 TypeScript
+    /// 与纯 JavaScript。
     fn detect_node_framework(root: &Path) -> (Option<ProjectLanguage>, Option<String>) {
         let content = match fs::read_to_string(root.join("package.json")) {
             Ok(c) => c,
@@ -158,9 +155,9 @@ impl CodebaseIndexer {
         (language, framework)
     }
 
-    // ── Dependency parsing ─────────────────────────────────────────────────
+    // ── 依赖解析 ──────────────────────────────────────────────────────────
 
-    /// Route to the appropriate dependency parser based on language.
+    /// 按语言路由到对应的依赖解析器。
     fn detect_dependencies(root: &Path, language: &Option<ProjectLanguage>) -> Vec<Dependency> {
         match language {
             Some(ProjectLanguage::Rust) => Self::parse_cargo_deps(root),
@@ -173,10 +170,10 @@ impl CodebaseIndexer {
         }
     }
 
-    /// Parse `[dependencies]` from a Cargo.toml.
+    /// 解析 Cargo.toml 的 `[dependencies]`。
     ///
-    /// Handles both simple (`name = "version"`) and inline-table
-    /// (`name = { version = "...", … }`) forms.
+    /// 同时支持简单形式（`name = "version"`）与内联表形式
+    /// （`name = { version = "...", … }`）。
     fn parse_cargo_deps(root: &Path) -> Vec<Dependency> {
         let content = match fs::read_to_string(root.join("Cargo.toml")) {
             Ok(c) => c,
@@ -196,24 +193,20 @@ impl CodebaseIndexer {
                 continue;
             }
 
-            // Attempt to split at the first `=`
+            // 尝试在第一个 `=` 处切分
             if let Some(eq_pos) = trimmed.find('=') {
                 let name = trimmed[..eq_pos].trim().to_string();
                 let value = trimmed[eq_pos + 1..].trim();
 
                 let version = if value.starts_with('"') {
-                    // Simple: name = "version"
+                    // 简单形式：name = "version"
                     Some(value.trim_matches('"').to_string())
                 } else if value.starts_with('{') {
-                    // Inline table: name = { version = "...", … }
+                    // 内联表：name = { version = "...", … }
                     let marker = "version = \"";
                     if let Some(ver_start) = value.find(marker) {
                         let rest = &value[ver_start + marker.len()..];
-                        if let Some(ver_end) = rest.find('"') {
-                            Some(rest[..ver_end].to_string())
-                        } else {
-                            None
-                        }
+                        rest.find('"').map(|ver_end| rest[..ver_end].to_string())
                     } else {
                         None
                     }
@@ -228,7 +221,7 @@ impl CodebaseIndexer {
         deps
     }
 
-    /// Parse `dependencies` and `devDependencies` from package.json.
+    /// 解析 package.json 中的 `dependencies` 与 `devDependencies`。
     fn parse_npm_deps(root: &Path) -> Vec<Dependency> {
         let content = match fs::read_to_string(root.join("package.json")) {
             Ok(c) => c,
@@ -253,17 +246,16 @@ impl CodebaseIndexer {
         deps
     }
 
-    /// Parse dependencies from `pyproject.toml` (PEP 621) or `requirements.txt`.
+    /// 从 `pyproject.toml`（PEP 621）或 `requirements.txt` 解析依赖。
     fn parse_python_deps(root: &Path) -> Vec<Dependency> {
         let mut deps = Vec::new();
 
-        // ── pyproject.toml ──────────────────────────────────────────────
+        // ── pyproject.toml 依赖 ──────────────────────────────────────────
         let pyproject_path = root.join("pyproject.toml");
         if pyproject_path.exists() {
             if let Ok(content) = fs::read_to_string(&pyproject_path) {
-                // PEP 621 uses `dependencies = ["pkg>=1", ...]` inside `[project]`.
-                // We look for lines inside the dependencies array that are
-                // quoted package specifications.
+                // PEP 621 在 `[project]` 下用 `dependencies = ["pkg>=1", ...]`。
+                // 这里只找依赖数组内被引号包裹的包声明行。
                 let mut in_array = false;
                 for line in content.lines() {
                     let trimmed = line.trim();
@@ -274,7 +266,7 @@ impl CodebaseIndexer {
                     if in_array {
                         if trimmed.contains(']') {
                             in_array = false;
-                            // If the `]` is at the end of an item, parse it
+                            // `]` 位于某项末尾时，把该项也解析掉
                             let before_bracket = trimmed.split(']').next().unwrap_or("");
                             let item = before_bracket
                                 .trim()
@@ -300,7 +292,7 @@ impl CodebaseIndexer {
             }
         }
 
-        // ── requirements.txt ────────────────────────────────────────────
+        // ── requirements.txt 依赖 ────────────────────────────────────────
         let req_path = root.join("requirements.txt");
         if req_path.exists() {
             if let Ok(content) = fs::read_to_string(&req_path) {
@@ -309,7 +301,7 @@ impl CodebaseIndexer {
                     if trimmed.is_empty() || trimmed.starts_with('#') {
                         continue;
                     }
-                    // Strip optional version specifiers
+                    // 去掉可选的版本限定符
                     let op_pos = trimmed.find(|c: char| "=><~!".contains(c));
                     if let Some(pos) = op_pos {
                         let dep_name = trimmed[..pos].trim().to_string();
@@ -335,8 +327,7 @@ impl CodebaseIndexer {
         deps
     }
 
-    /// Parse a single Python dependency specifier string and push it to `deps`
-    /// if it is not already present.
+    /// 解析单条 Python 依赖声明；不存在同名项时才加入 `deps`。
     fn parse_python_dep_item(item: &str, deps: &mut Vec<Dependency>) {
         let op_pos = item.find(|c: char| "=><~!".contains(c));
         if let Some(pos) = op_pos {
@@ -356,7 +347,7 @@ impl CodebaseIndexer {
         }
     }
 
-    /// Simplified parser for `go.mod` — captures `require` directives.
+    /// `go.mod` 的简化解析器 —— 只收集 `require` 指令。
     fn parse_go_deps(root: &Path) -> Vec<Dependency> {
         let content = match fs::read_to_string(root.join("go.mod")) {
             Ok(c) => c,
@@ -383,14 +374,14 @@ impl CodebaseIndexer {
 
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
             let (name, version) = if in_block {
-                // Block form: "github.com/foo/bar v1.0.0"
+                // 块形式："github.com/foo/bar v1.0.0"
                 if parts.len() >= 2 {
                     (parts[0].to_string(), Some(parts[1].to_string()))
                 } else {
                     continue;
                 }
             } else if trimmed.starts_with("require ") && parts.len() >= 3 {
-                // Single-line form: "require github.com/foo/bar v1.0.0"
+                // 单行形式："require github.com/foo/bar v1.0.0"
                 (parts[1].to_string(), Some(parts[2].to_string()))
             } else {
                 continue;
@@ -407,10 +398,9 @@ impl CodebaseIndexer {
         deps
     }
 
-    // ── File counting ──────────────────────────────────────────────────────
+    // ── 文件统计 ──────────────────────────────────────────────────────────
 
-    /// Recursively walk `root` counting files and directories while
-    /// skipping standard ignorable directories.
+    /// 递归遍历 `root` 统计文件与目录数量，跳过标准可忽略目录。
     fn count_files(root: &Path) -> (usize, usize, HashMap<String, usize>) {
         let skip_dirs: HashSet<&str> = [
             ".git",
@@ -480,7 +470,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── 辅助函数 ────────────────────────────────────────────────────────────
 
     fn create_rust_project() -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -562,7 +552,7 @@ require (
         dir
     }
 
-    // ── Rust tests ─────────────────────────────────────────────────────────
+    // ── Rust 用例 ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_detect_rust_project() {
@@ -605,7 +595,7 @@ tokio = { version = "1", features = ["full"] }
         assert_eq!(index.framework, Some("axum".to_string()));
     }
 
-    // ── Node / TypeScript tests ────────────────────────────────────────────
+    // ── Node / TypeScript 用例 ────────────────────────────────────────────
 
     #[test]
     fn test_detect_typescript_project() {
@@ -630,7 +620,7 @@ tokio = { version = "1", features = ["full"] }
         assert!(index.dependencies.iter().any(|d| d.name == "react"));
     }
 
-    // ── Python tests ───────────────────────────────────────────────────────
+    // ── Python 用例 ───────────────────────────────────────────────────────
 
     #[test]
     fn test_detect_python_project() {
@@ -647,7 +637,7 @@ tokio = { version = "1", features = ["full"] }
         assert!(index.dependencies.iter().any(|d| d.name == "click"));
     }
 
-    // ── Go tests ───────────────────────────────────────────────────────────
+    // ── Go 用例 ───────────────────────────────────────────────────────────
 
     #[test]
     fn test_detect_go_project() {
@@ -666,7 +656,7 @@ tokio = { version = "1", features = ["full"] }
             .any(|d| d.name == "github.com/gin-gonic/gin"));
     }
 
-    // ── Edge cases ─────────────────────────────────────────────────────────
+    // ── 边界情况 ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_nonexistent_path() {
@@ -686,9 +676,9 @@ tokio = { version = "1", features = ["full"] }
     #[test]
     fn test_skip_directories_not_counted() {
         let dir = TempDir::new().unwrap();
-        // Valid file
+        // 有效文件
         fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
-        // Should-be-skipped directories
+        // 应被跳过的目录
         fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
         fs::write(dir.path().join("node_modules/pkg/index.js"), "").unwrap();
         fs::create_dir_all(dir.path().join("target/debug")).unwrap();
@@ -696,7 +686,7 @@ tokio = { version = "1", features = ["full"] }
 
         let index = CodebaseIndexer::index(dir.path()).unwrap();
         assert_eq!(index.file_count, 1);
-        assert_eq!(index.dir_count, 0); // only skip-dirs exist
+        assert_eq!(index.dir_count, 0); // 只存在被跳过的目录
         assert!(index.file_types.contains_key("rs"));
         assert!(!index.file_types.contains_key("js"));
         assert!(!index.file_types.contains_key("exe"));

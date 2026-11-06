@@ -1,8 +1,12 @@
+//! 通过外部版本管理器执行安装、切换与卸载。
+
 use crate::runtime::toolchain::RuntimeType;
 use std::process::Command;
 
+/// 外部管理器操作的结果类型；错误为可直接展示的字符串。
 pub type ManagerResult<T> = std::result::Result<T, String>;
 
+/// 执行命令并返回 trim 后的 stdout；失败时返回包含 stderr 的错误。
 fn run_cmd(cmd: &str, args: &[&str]) -> ManagerResult<String> {
     let output = Command::new(cmd)
         .args(args)
@@ -184,6 +188,7 @@ fn uninstall_rust(manager: &str, version: &str) -> ManagerResult<()> {
     }
 }
 
+/// 通过指定外部管理器安装某个运行时的版本。
 pub fn install_version(manager: &str, rt: &RuntimeType, version: &str) -> ManagerResult<()> {
     match rt {
         RuntimeType::Node => install_node(manager, version),
@@ -193,6 +198,7 @@ pub fn install_version(manager: &str, rt: &RuntimeType, version: &str) -> Manage
     }
 }
 
+/// 通过指定外部管理器切换运行时版本。
 pub fn switch_version(manager: &str, rt: &RuntimeType, version: &str) -> ManagerResult<()> {
     match rt {
         RuntimeType::Node => switch_node(manager, version),
@@ -202,6 +208,7 @@ pub fn switch_version(manager: &str, rt: &RuntimeType, version: &str) -> Manager
     }
 }
 
+/// 通过指定外部管理器卸载运行时版本。
 pub fn uninstall_version(manager: &str, rt: &RuntimeType, version: &str) -> ManagerResult<()> {
     match rt {
         RuntimeType::Node => uninstall_node(manager, version),

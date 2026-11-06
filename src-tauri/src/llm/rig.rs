@@ -1,10 +1,10 @@
-//! Rig AI framework — unified LLM provider.
+﻿//! Rig AI 框架 —— 统一的 LLM 供应商接入。
 //!
-//! Provides the [`RigProvider`] wrapper that adapts any Rig completion model
-//! (a [`DynModel<Completion>`]) to the project's [`ProviderBox`] trait, plus
-//! the [`create_rig_provider`] factory function.
+//! 提供 [`RigProvider`] 包装器，把任意 Rig completion model
+//! （[`DynModel<Completion>`]）适配到本项目的 [`ProviderBox`] trait；同时提供
+//! [`create_rig_provider`] 工厂函数。
 //!
-//! # Provider mapping
+//! # 供应商映射
 //!
 //! | Config provider    | Rig client                       | Notes                    |
 //! |--------------------|----------------------------------|--------------------------|
@@ -20,15 +20,17 @@
 //! | LMStudio\*         | OpenAI-compatible                | custom base URL, no key  |
 //! | Custom\*           | OpenAI-compatible                | custom base URL          |
 //!
-//! \* Providers marked with \* use Rig's OpenAI client with a custom
-//!   `base_url`.  These are listed as "OpenAI-compatible" in the code.
+//! \* 带 \* 的供应商使用 Rig 的 OpenAI client 配自定义 `base_url`；代码里把它们
+//!   标记为 "OpenAI-compatible"。
 //!
-//! # Rig 0.45 shape
+//! # Rig 0.45 的形态
 //!
-//! Provider clients no longer hand out agents directly. A client builds a
-//! *model* (`client.chat(id)`, `client.completion(id)`, …), which is erased to
-//! a [`DynModel<Completion>`] and stored; agents are then built per request
-//! with [`rig::agent::AgentBuilder`].
+//! 供应商 client 不再直接产出 agent。client 先构建一个 *model*
+//! （`client.chat(id)`、`client.completion(id)`……），它被擦除成
+//! [`DynModel<Completion>`] 后保存；agent 则在每次请求时用
+//! [`rig::agent::AgentBuilder`] 构建。
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -40,31 +42,44 @@ use rig::completion::Message;
 use rig::driver::DynModel;
 use rig::operation::Completion;
 use rig::streaming::{Item, StreamEvent};
-use rig::tool::DynamicTool;
 
+use crate::agent::tools::policy::{shared_state, InvalidCallHook, SharedPolicyState, ToolPolicyHook};
 use crate::core::error::{AppError, Result};
 use crate::llm::model::{ModelConfig, ModelProvider};
-use crate::llm::provider::ProviderBox;
+use crate::llm::provider::{ApprovalGate, ProviderBox, ToolRuntime, TurnOutcome};
 
 // ---------------------------------------------------------------------------
-// RigProvider — wrapper around a Rig completion model
+// RigProvider —— 对 Rig completion model 的包装
 // ---------------------------------------------------------------------------
 
-/// An LLM provider backed by a Rig [`DynModel<Completion>`].
+/// 由 Rig [`DynModel<Completion>`] 驱动的 LLM 供应商。
 ///
-/// The model is type-erased once, when the config is loaded, so providers of
-/// different backends (OpenAI, Anthropic, …) share one repr and can be stored
-/// in the [`ProviderRegistry`](crate::llm::provider::ProviderRegistry).
+/// 模型在配置加载时只做一次类型擦除，因此不同后端（OpenAI、Anthropic……）的
+/// 供应商共享同一种表示，可以一起放进
+/// [`ProviderRegistry`](crate::llm::provider::ProviderRegistry)。
 pub struct RigProvider {
     model: DynModel<Completion>,
     model_id: String,
+    /// 人工确认通道；每个 agent 构造时挂进 `ToolPolicyHook`。
+    approval: Option<Arc<dyn ApprovalGate>>,
 }
 
 impl RigProvider {
+    /// 用已擦除的模型与模型 id 构造包装器。
     pub fn new(model: impl Into<DynModel<Completion>>, model_id: String) -> Self {
+        Self::new_with_approval(model, model_id, None)
+    }
+
+    /// 构造包装器并注入人工确认通道。
+    pub fn new_with_approval(
+        model: impl Into<DynModel<Completion>>,
+        model_id: String,
+        approval: Option<Arc<dyn ApprovalGate>>,
+    ) -> Self {
         Self {
             model: model.into(),
             model_id,
+            approval,
         }
     }
 
@@ -72,12 +87,21 @@ impl RigProvider {
         AgentBuilder::new(self.model.clone()).preamble(preamble)
     }
 
-    fn agent_with_tools(&self, preamble: &str, tools: Vec<DynamicTool>) -> AgentBuilder {
-        let builder = self.agent(preamble);
-        if tools.is_empty() {
+    fn agent_with_tools(&self, preamble: &str, runtime: ToolRuntime, state: SharedPolicyState) -> AgentBuilder {
+        // hook 必须挂在 builder 上：审批与终态记录都发生在 Rig 的 dispatch
+        // 边界，挂到 runner 上会漏掉流式路径之外的重试。
+        let builder = self
+            .agent(preamble)
+            .add_hook(ToolPolicyHook::new(
+                state,
+                runtime.approval.clone().or_else(|| self.approval.clone()),
+                runtime.meta.clone(),
+            ))
+            .add_hook(InvalidCallHook);
+        if runtime.tools.is_empty() {
             builder
         } else {
-            builder.dynamic_tools(tools)
+            builder.dynamic_tools(runtime.tools)
         }
     }
 }
@@ -117,42 +141,54 @@ impl ProviderBox for RigProvider {
         &self,
         preamble: &str,
         prompt: &str,
-        tools: Vec<DynamicTool>,
+        tools: ToolRuntime,
         max_turns: usize,
-    ) -> Result<String> {
-        let agent = self.agent_with_tools(preamble, tools).build();
+    ) -> Result<TurnOutcome> {
+        let state = shared_state();
+        let agent = self
+            .agent_with_tools(preamble, tools, state.clone())
+            .build();
 
-        // Rig's agent drives the tool loop internally: every requested tool
-        // call is dispatched through the tool set and answered until the model
-        // stops.
+        // Rig 的 agent 内部驱动工具循环：每个被请求的工具调用都会经工具集分发
+        // 并回填，直到模型停止。
         let response = agent
             .prompt(Message::user(prompt))
             .max_turns(max_turns)
+            .tool_concurrency(TOOL_CONCURRENCY)
+            .max_invalid_tool_call_retries(INVALID_CALL_RETRIES)
+            .max_consecutive_malformed_tool_calls(MALFORMED_CALL_LIMIT)
             .run()
             .await
             .map_err(|e| AppError::Provider(format!("Rig agent error: {}", e)))?;
 
-        Ok(response.output())
+        Ok(turn_outcome(response, &state))
     }
 
     async fn chat_with_tools(
         &self,
         preamble: &str,
         prompt: &str,
-        history: &mut Vec<Message>,
-        tools: Vec<DynamicTool>,
+        history: &[Message],
+        tools: ToolRuntime,
         max_turns: usize,
-    ) -> Result<String> {
-        let agent = self.agent_with_tools(preamble, tools).build();
-        let mut runner = agent.prompt(Message::user(prompt)).max_turns(max_turns);
-        runner = runner.history(history.clone());
+    ) -> Result<TurnOutcome> {
+        let state = shared_state();
+        let agent = self
+            .agent_with_tools(preamble, tools, state.clone())
+            .build();
 
-        let response = runner
+        let response = agent
+            .prompt(Message::user(prompt))
+            .max_turns(max_turns)
+            .tool_concurrency(TOOL_CONCURRENCY)
+            .max_invalid_tool_call_retries(INVALID_CALL_RETRIES)
+            .max_consecutive_malformed_tool_calls(MALFORMED_CALL_LIMIT)
+            .history(history.to_vec())
             .run()
             .await
             .map_err(|e| AppError::Provider(format!("Rig agent error: {}", e)))?;
 
-        Ok(response.output())
+        Ok(turn_outcome(response, &state))
     }
 
     async fn stream_prompt(
@@ -168,24 +204,51 @@ impl ProviderBox for RigProvider {
         &self,
         preamble: &str,
         prompt: &str,
-        history: &mut Vec<Message>,
-        tools: Vec<DynamicTool>,
+        history: &[Message],
+        tools: ToolRuntime,
         max_turns: usize,
     ) -> Result<StreamingResult> {
-        let agent = self.agent_with_tools(preamble, tools).build();
+        let state = shared_state();
+        let agent = self.agent_with_tools(preamble, tools, state).build();
         let runner = agent
             .prompt(Message::user(prompt))
             .max_turns(max_turns)
-            .history(history.clone());
+            .tool_concurrency(TOOL_CONCURRENCY)
+            .max_invalid_tool_call_retries(INVALID_CALL_RETRIES)
+            .max_consecutive_malformed_tool_calls(MALFORMED_CALL_LIMIT)
+            .history(history.to_vec());
         Ok(runner.stream())
     }
 }
 
-/// Map a Rig agent stream to the project's plain-text stream.
+/// 同时执行的工具调用上限。
+const TOOL_CONCURRENCY: usize = 4;
+/// 参数畸形时允许模型重试的次数。
+const INVALID_CALL_RETRIES: usize = 2;
+/// 连续多少轮参数畸形后放弃。
+const MALFORMED_CALL_LIMIT: Option<usize> = Some(3);
+
+/// 把 Rig 的响应与本轮策略状态合成 [`TurnOutcome`]。
+pub(crate) fn turn_outcome(
+    response: rig::run::PromptResponse,
+    state: &SharedPolicyState,
+) -> TurnOutcome {
+    let decisions = state
+        .lock()
+        .map(|guard| guard.decisions())
+        .unwrap_or_default();
+
+    TurnOutcome {
+        output: response.output(),
+        messages: response.messages,
+        decisions,
+    }
+}
+
+/// 把 Rig 的 agent 流映射成项目里的纯文本流。
 ///
-/// Only answer-text deltas and the final response are surfaced; tool-call,
-/// reasoning and lifecycle items render as empty chunks so callers keep the
-/// original "text only" contract.
+/// 只透出回答文本增量与最终响应；工具调用、推理与生命周期元素都渲染为空块，
+/// 从而保持调用方原有的「只要文本」约定。
 fn box_stream(stream: rig::agent::StreamingResult) -> BoxStream<'static, Result<String>> {
     Box::pin(stream.map(|item| match item {
         Ok(MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
@@ -198,11 +261,11 @@ fn box_stream(stream: rig::agent::StreamingResult) -> BoxStream<'static, Result<
 }
 
 // ---------------------------------------------------------------------------
-// Helper: strip known API path suffixes from a base URL so Rig can append
-// its own path (e.g. "/chat/completions") without duplication.
+// 辅助：从 base URL 剥掉已知 API 路径后缀，避免 Rig 自己再拼一次
+// （例如 "/chat/completions"）造成重复。
 // ---------------------------------------------------------------------------
 
-/// Known API paths that config URLs may end with, which Rig appends itself.
+/// 配置里的 URL 可能以这些已知 API 路径结尾，而 Rig 会自己拼上它们。
 const KNOWN_API_PATHS: &[&str] = &["/chat/completions"];
 
 fn strip_api_suffix(url: &str) -> &str {
@@ -215,62 +278,75 @@ fn strip_api_suffix(url: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// Factory: create the appropriate RigProvider from a ModelConfig
+// 工厂：按 ModelConfig 创建对应的 RigProvider
 // ---------------------------------------------------------------------------
 
-/// Create a [`RigProvider`] trait-object for the given model configuration.
+/// 为给定模型配置创建 [`RigProvider`] trait object。
 ///
-/// This is the single entry-point used by [`ProviderRegistry`].
+/// 这是 [`ProviderRegistry`] 使用的唯一入口。
 ///
 /// [`ProviderRegistry`]: crate::llm::provider::ProviderRegistry
+/// 为给定模型配置创建 [`RigProvider`] trait object（不启用人工确认）。
 pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn ProviderBox>> {
+    create_rig_provider_with_approval(model, None)
+}
+
+/// 为给定模型配置创建 [`RigProvider`] trait object，并注入人工确认通道。
+pub fn create_rig_provider_with_approval(
+    model: &ModelConfig,
+    approval: Option<Arc<dyn ApprovalGate>>,
+) -> Result<Box<dyn ProviderBox>> {
     let model_id = model.name.clone();
 
     match model.provider {
         ModelProvider::OpenAI => {
             let client = rig::providers::openai::OpenAI::new(model.api_key.clone());
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.chat(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
         ModelProvider::Anthropic => {
             let client = rig::providers::anthropic::Anthropic::new(model.api_key.clone());
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.completion(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
         ModelProvider::Google => {
             let client = rig::providers::gemini::Gemini::new(model.api_key.clone());
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.completion(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
         ModelProvider::Groq => {
             let client = rig::providers::groq::new(model.api_key.clone());
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.chat(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
         ModelProvider::DeepSeek => {
             let client = rig::providers::deepseek::new(model.api_key.clone());
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.chat(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
         ModelProvider::Ollama => {
-            // Rig's Ollama client points at the daemon root and appends the
-            // API path itself, so a configured OpenAI-style URL is reduced to
-            // its origin first.
+            // Rig 的 Ollama client 指向 daemon 根地址并自行拼 API 路径，因此先
+            // 把配置里的 OpenAI 风格 URL 削到 origin。
             let client = match model.base_url.as_deref() {
                 Some(url) => {
                     let root = strip_api_suffix(url);
@@ -281,29 +357,31 @@ pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn ProviderBox>> 
                 }
                 None => rig::providers::ollama::Ollama::new(),
             };
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.completion(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
         ModelProvider::Moonshot => {
             let client = rig::providers::moonshot::new(model.api_key.clone());
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.chat(model_id.clone()),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
 
-        // OpenAI-compatible providers: Zhipu, SiliconFlow, LMStudio, Custom
+        // OpenAI 兼容供应商：Zhipu、SiliconFlow、LMStudio、Custom
         //
-        // These use Rig's OpenAI **Chat Completions** client (endpoint
-        // `/chat/completions`) instead of the newer Responses API, because
-        // that is what these third-party providers implement.
+        // 这些用 Rig 的 OpenAI **Chat Completions** client（端点
+        // `/chat/completions`），而不是更新的 Responses API，因为第三方供应商
+        // 实现的就是前者。
         //
-        // When the user has set a custom `base_url` in their config, it often
-        // includes the full path (e.g. ".../v1/chat/completions").  Since Rig
-        // appends the path itself, we strip the known suffix first.
+        // 用户配置的自定义 `base_url` 往往已包含完整路径（例如
+        // ".../v1/chat/completions"）。由于 Rig 会自己再拼一次路径，这里先剥掉
+        // 已知后缀。
         ModelProvider::Zhipu
         | ModelProvider::SiliconFlow
         | ModelProvider::LMStudio
@@ -325,25 +403,25 @@ pub fn create_rig_provider(model: &ModelConfig) -> Result<Box<dyn ProviderBox>> 
             }
 
             let client = config.client();
-            Ok(Box::new(RigProvider::new(
+            Ok(Box::new(RigProvider::new_with_approval(
                 client.chat(model_id),
                 model.name.clone(),
+                approval.clone(),
             )))
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Structured extraction
+// 结构化抽取
 // ---------------------------------------------------------------------------
 
-/// Extract structured data from text using Rig's [`Extractor`].
+/// 用 Rig 的 [`Extractor`] 从文本中抽取结构化数据。
 ///
-/// The generic parameter `T` is the target struct.  It must derive
-/// [`Serialize`], [`Deserialize`], and [`schemars::JsonSchema`].
+/// 泛型参数 `T` 是目标结构体，必须派生 [`Serialize`]、[`Deserialize`] 与
+/// [`schemars::JsonSchema`]。
 ///
-/// This is used by the intent classifier and execution planner to
-/// replace brittle manual JSON parsing.
+/// 意图分类器与执行规划器用它替代易碎的手写 JSON 解析。
 ///
 /// [`Extractor`]: rig::extractor::Extractor
 pub async fn extract_structured<T>(
@@ -357,8 +435,7 @@ where
 {
     let client = rig::providers::openai::OpenAI::new(api_key);
 
-    // Combine system prompt and user input, since the extractor
-    // doesn't have a separate preamble method.
+    // extractor 没有独立的 preamble 方法，因此把系统提示与用户输入拼在一起。
     let combined = format!("{}\n\n{}", system_prompt, user_input);
 
     let extractor = rig::extractor::ExtractorBuilder::<T>::new(client.chat(model)).build();
@@ -370,3 +447,52 @@ where
 
     Ok(response.output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::tools::policy::shared_state;
+    use crate::llm::provider::ToolCallStatus;
+    use rig::completion::Message;
+    use rig::run::PromptResponse;
+
+    #[test]
+    fn turn_outcome_keeps_transcript_and_decisions() {
+        let state = shared_state();
+        {
+            let mut guard = state.lock().expect("策略状态不应中毒");
+            guard.set("call_1", ToolCallStatus::Completed);
+            guard.set("call_2", ToolCallStatus::Failed);
+        }
+
+        let response = PromptResponse::new("done", Default::default()).with_messages(vec![
+            Message::assistant("calling calculator"),
+            Message::user("tool output"),
+            Message::assistant("done"),
+        ]);
+
+        let outcome = turn_outcome(response, &state);
+
+        assert_eq!(outcome.output, "done");
+        assert_eq!(outcome.messages.len(), 3, "transcript 应原样保留");
+        assert_eq!(
+            outcome.decisions.get("call_1"),
+            Some(&ToolCallStatus::Completed)
+        );
+        assert_eq!(outcome.decisions.get("call_2"), Some(&ToolCallStatus::Failed));
+    }
+
+    #[test]
+    fn turn_outcome_without_tools_has_no_decisions() {
+        let state = shared_state();
+        let response = PromptResponse::new("plain answer", Default::default());
+
+        let outcome = turn_outcome(response, &state);
+
+        assert_eq!(outcome.output, "plain answer");
+        assert!(outcome.messages.is_empty());
+        assert!(outcome.decisions.is_empty());
+    }
+}
+
+

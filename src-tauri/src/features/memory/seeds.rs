@@ -3,14 +3,14 @@ use uuid::Uuid;
 
 use crate::core::db::models::MemoryRecord;
 
-/// A curated set of default memories seeded on first launch.
-/// These represent universal best practices and user-facing defaults
-/// that help the agent provide more relevant assistance from day one.
+/// 首次启动时写入的一组精选默认记忆。
+/// 这些内容代表通用的最佳实践与用户偏好，让 agent 从第一天起就能提供
+/// 更贴合的协助。记忆正文属于用户可见数据，保持原有语言不变。
 pub fn default_seed_memories() -> Vec<MemoryRecord> {
     let now = Utc::now().to_rfc3339();
 
     vec![
-        // ── User Info ──
+        // ── 用户信息 ──
         MemoryRecord {
             id: Uuid::new_v4().to_string(),
             content: "用户使用中文作为交流语言，Agent 回复时应优先使用中文。代码注释、变量命名、git commit 使用英文。".to_string(),
@@ -38,7 +38,7 @@ pub fn default_seed_memories() -> Vec<MemoryRecord> {
             access_count: 0,
         },
 
-        // ── Preferences ──
+        // ── 偏好 ──
         MemoryRecord {
             id: Uuid::new_v4().to_string(),
             content: "代码质量优先于开发速度。优先考虑可维护性、可读性和正确性。避免使用 'as any'、'@ts-ignore' 等类型逃逸手段。".to_string(),
@@ -118,7 +118,7 @@ pub fn default_seed_memories() -> Vec<MemoryRecord> {
             access_count: 0,
         },
 
-        // ── Facts (通用开发知识) ──
+        // ── 事实（通用开发知识） ──
         MemoryRecord {
             id: Uuid::new_v4().to_string(),
             content: "Rust 项目使用 cargo check 快速验证编译，比 cargo build 更快。cargo test 运行测试。rustfmt 用于格式化代码。".to_string(),
@@ -198,7 +198,7 @@ pub fn default_seed_memories() -> Vec<MemoryRecord> {
             access_count: 0,
         },
 
-        // ── Project Context ──
+        // ── 项目上下文 ──
         MemoryRecord {
             id: Uuid::new_v4().to_string(),
             content: "当前项目 Agent 是一个 Tauri 桌面 AI 客户端，支持多 LLM 后端（OpenAI、Anthropic 等 11 个 provider），具备 Agent 循环、MCP 服务器管理、技能系统、工作流引擎、运行时环境管理等功能。".to_string(),
@@ -214,7 +214,7 @@ pub fn default_seed_memories() -> Vec<MemoryRecord> {
         },
         MemoryRecord {
             id: Uuid::new_v4().to_string(),
-            content: "Agent 项目的工具系统支持：calculator（计算器）、file_system（文件操作）、web_search（网络搜索）、code_executor（代码执行）。新工具通过实现 AgentTool trait 并注册到 ToolRegistry 添加。".to_string(),
+            content: "Agent 项目的工具系统由官方 rig-tools 提供：read / write / edit / search / list / shell / delete / move，统一注册到 ToolRegistry，并由审批闸门保护写入类调用。".to_string(),
             memory_type: "project_context".to_string(),
             scope: "project:agent".to_string(),
             source: "builtin".to_string(),

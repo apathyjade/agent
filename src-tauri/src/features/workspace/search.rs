@@ -3,7 +3,7 @@ use std::process::Command;
 
 use crate::core::error::{AppError, Result};
 
-/// A single match from full-text search (ripgrep).
+/// 全文搜索（ripgrep）返回的一条命中。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GrepMatch {
     pub file: String,
@@ -11,7 +11,7 @@ pub struct GrepMatch {
     pub content: String,
 }
 
-/// A single entry in a file tree listing.
+/// 文件树列表中的一项。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TreeEntry {
     pub path: PathBuf,
@@ -19,7 +19,7 @@ pub struct TreeEntry {
     pub depth: usize,
 }
 
-/// Directories to skip during recursive walks.
+/// 递归遍历时需要跳过的目录。
 const EXCLUDED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -30,27 +30,27 @@ const EXCLUDED_DIRS: &[&str] = &[
     ".cache",
 ];
 
-/// SearchEngine provides file search capabilities over the workspace:
+/// 提供工作区文件搜索能力：
 ///
-/// - **grep**: full-text search via ripgrep (`rg`)
-/// - **glob**: pattern-based file name matching
-/// - **tree**: recursive directory listing with depth control
-/// - **is_rg_available**: check whether ripgrep is installed
+/// - **grep**：通过 ripgrep（`rg`）做全文搜索
+/// - **glob**：按模式匹配文件名
+/// - **tree**：带深度控制的递归目录列表
+/// - **is_rg_available**：检查是否安装了 ripgrep
 pub struct SearchEngine;
 
 impl SearchEngine {
-    /// Full-text search using ripgrep. Returns matching lines with file paths.
+    /// 使用 ripgrep 做全文搜索，返回命中的行与文件路径。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `pattern` — the text pattern to search for (case-insensitive)
-    /// * `root` — the root directory to search in
-    /// * `file_pattern` — optional glob filter (e.g. `"*.rs"`), passed via `-g`
+    /// * `pattern` — 要搜索的文本（忽略大小写）
+    /// * `root` — 搜索根目录
+    /// * `file_pattern` — 可选的 glob 过滤（如 `"*.rs"`），通过 `-g` 传入
     ///
-    /// # Errors
+    /// # 错误
     ///
-    /// Returns `AppError::Workspace` if ripgrep is not installed or fails unexpectedly.
-    /// If ripgrep finds no results, an empty `Vec` is returned (not an error).
+    /// ripgrep 未安装或异常失败时返回 `AppError::Workspace`。
+    /// 没有命中时返回空 `Vec`，不算错误。
     pub fn grep(pattern: &str, root: &Path, file_pattern: Option<&str>) -> Result<Vec<GrepMatch>> {
         let mut cmd = Command::new("rg");
         cmd.arg("--line-number")
@@ -76,7 +76,7 @@ impl SearchEngine {
             }
         })?;
 
-        // rg exits with 1 when no matches are found — treat as empty results, not an error.
+        // rg 无命中时退出码为 1 —— 视为空结果而非错误。
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.trim().is_empty()
@@ -94,8 +94,8 @@ impl SearchEngine {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut matches = Vec::new();
 
-        // Parse output lines: path:line:content
-        // We use rfind(':') twice from the right to handle colons in path or content.
+        // 解析输出行：path:line:content
+        // 用正则从左侧锚定，路径或内容里的冒号不会干扰分组。
         let re = regex::Regex::new(r"^(.+?):(\d+):(.*)$")
             .map_err(|e| AppError::Workspace(format!("Regex compilation error: {}", e)))?;
 
@@ -118,15 +118,15 @@ impl SearchEngine {
         Ok(matches)
     }
 
-    /// Glob file search. Finds files matching a glob pattern via recursive directory walk.
+    /// glob 文件搜索：递归遍历目录，找出匹配模式的文件。
     ///
-    /// Skips common artifact directories (`.git`, `node_modules`, `target`, etc.).
-    /// Returns sorted paths.
+    /// 跳过常见产物目录（`.git`、`node_modules`、`target` 等），返回排序后
+    /// 的路径。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `pattern` — glob pattern (e.g. `"*.txt"`, `"**/*.rs"`, `"src/**/*.ts"`)
-    /// * `root` — the root directory to search from
+    /// * `pattern` — glob 模式（如 `"*.txt"`、`"**/*.rs"`、`"src/**/*.ts"`）
+    /// * `root` — 搜索根目录
     pub fn glob(pattern: &str, root: &Path) -> Result<Vec<PathBuf>> {
         let glob_pattern = glob::Pattern::new(pattern).map_err(|e| {
             AppError::InvalidInput(format!("Invalid glob pattern '{}': {}", pattern, e))
@@ -138,23 +138,21 @@ impl SearchEngine {
         Ok(results)
     }
 
-    /// Fast file tree listing with depth control.
+    /// 带深度控制的快速文件树列表。
     ///
-    /// Entries are sorted: directories first, then files, alphabetically within each group.
-    /// Skips common artifact directories.
+    /// 排序规则：目录在前、文件在后，组内按字母序；跳过常见产物目录。
     ///
-    /// # Arguments
+    /// # 参数
     ///
-    /// * `root` — the root directory to list
-    /// * `max_depth` — maximum recursion depth (0 = immediate children only)
+    /// * `root` — 要列出的根目录
+    /// * `max_depth` — 最大递归深度（0 表示只列直接子项）
     pub fn tree(root: &Path, max_depth: usize) -> Result<Vec<TreeEntry>> {
         let mut entries = Vec::new();
         Self::walk_tree(root, root, 0, max_depth, &mut entries)?;
-        // Sort: directories first, then files; alphabetical within each group
+        // 排序：目录在前、文件在后，组内按字母序
         entries.sort_by(|a, b| {
             if a.is_dir != b.is_dir {
-                // Sort by is_dir descending so directories (true > false? No...)
-                // We want directories first, so dirs (is_dir=true) come before files
+                // 目录（is_dir=true）排在文件之前
                 if a.is_dir {
                     std::cmp::Ordering::Less
                 } else {
@@ -167,7 +165,7 @@ impl SearchEngine {
         Ok(entries)
     }
 
-    /// Check if ripgrep is available on the system.
+    /// 检查系统上是否可用 ripgrep。
     pub fn is_rg_available() -> bool {
         Command::new("rg")
             .arg("--version")
@@ -177,11 +175,10 @@ impl SearchEngine {
     }
 
     // ---------------------------------------------------------------------------
-    // Internal helpers
+    // 内部辅助函数
     // ---------------------------------------------------------------------------
 
-    /// Recursively walk `dir`, collecting paths whose filename or relative path
-    /// matches `pattern`.
+    /// 递归遍历 `dir`，收集文件名或相对路径匹配 `pattern` 的路径。
     fn walk_glob(
         root: &Path,
         dir: &Path,
@@ -194,7 +191,7 @@ impl SearchEngine {
 
         let read_dir = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
-            Err(_) => return Ok(()), // skip permission-denied directories
+            Err(_) => return Ok(()), // 跳过无权限的目录
         };
 
         for entry in read_dir {
@@ -214,7 +211,7 @@ impl SearchEngine {
                 }
                 Self::walk_glob(root, &path, pattern, results)?;
             } else if path.is_file() {
-                // Check both the full relative path and just the filename
+                // 同时检查完整相对路径与纯文件名
                 if let Ok(relative) = path.strip_prefix(root) {
                     if pattern.matches_path(relative) {
                         results.push(path);
@@ -230,7 +227,7 @@ impl SearchEngine {
         Ok(())
     }
 
-    /// Recursively walk `dir` with a maximum depth, collecting `TreeEntry` values.
+    /// 带最大深度递归遍历 `dir`，收集 [`TreeEntry`]。
     fn walk_tree(
         root: &Path,
         dir: &Path,
@@ -244,10 +241,10 @@ impl SearchEngine {
 
         let read_dir = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
-            Err(_) => return Ok(()), // skip permission-denied directories
+            Err(_) => return Ok(()), // 跳过无权限的目录
         };
 
-        // Collect raw entries first so we can sort within this directory
+        // 先收集原始条目，便于在当前目录内排序
         let mut local_entries: Vec<(PathBuf, bool)> = Vec::new();
 
         for entry in read_dir {
@@ -271,7 +268,7 @@ impl SearchEngine {
             local_entries.push((path, is_dir));
         }
 
-        // Sort: directories first, then files; alphabetical within each group
+        // 排序：目录在前、文件在后，组内按字母序
         local_entries.sort_by(|(path_a, is_dir_a), (path_b, is_dir_b)| {
             if is_dir_a != is_dir_b {
                 if *is_dir_a {
@@ -346,6 +343,6 @@ mod tests {
             assert!(!results.is_empty());
             assert!(results.iter().any(|m| m.content.contains("hello")));
         }
-        // If rg not available, test passes by skipping
+        // 未安装 rg 时跳过该用例
     }
 }

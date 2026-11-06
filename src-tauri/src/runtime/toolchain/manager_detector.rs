@@ -1,21 +1,34 @@
+//! 外部版本管理器探测：列出可用的管理器及其安装状态。
+
 use crate::runtime::toolchain::RuntimeType;
 use serde::{Deserialize, Serialize};
 
+/// 一个外部版本管理器的描述信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionManager {
+    /// 管理器标识（如 "fnm"、"built-in"）。
     pub id: String,
+    /// 展示名称。
     pub display_name: String,
+    /// 所属运行时。
     pub runtime_type: RuntimeType,
+    /// 是否已安装。
     pub installed: bool,
+    /// 安装路径（已安装时）。
     pub install_path: Option<String>,
+    /// 管理器版本号。
     pub version: Option<String>,
+    /// 是否支持通过该管理器安装版本。
     pub can_install: bool,
+    /// 安装指引（URL 或说明）。
     pub install_guide: Option<String>,
+    /// 是否为推荐管理器。
     pub recommended: bool,
     #[serde(default)]
     pub install_url: Option<String>,
 }
 
+/// 检查命令是否存在，并返回 `(路径, 版本号)`。
 fn check_command(cmd: &str, args: &[&str]) -> Option<(String, String)> {
     let which = if cfg!(target_os = "windows") {
         "where"
@@ -90,7 +103,7 @@ fn detect_node_managers() -> Vec<VersionManager> {
         });
     }
 
-    // nvm (macOS/Linux) / nvm-windows
+    // nvm（macOS/Linux）或 nvm-windows
     let nvm_cmd = "nvm";
     if let Some((path, version)) = check_command(nvm_cmd, &["--version"]) {
         managers.push(VersionManager {
@@ -302,6 +315,7 @@ fn detect_go_managers() -> Vec<VersionManager> {
     managers
 }
 
+/// 构造内置管理器的描述项。
 fn builtin_manager(rt: RuntimeType) -> VersionManager {
     VersionManager {
         id: "built-in".to_string(),
@@ -317,6 +331,10 @@ fn builtin_manager(rt: RuntimeType) -> VersionManager {
     }
 }
 
+/// 检测某个运行时可用的外部管理器，并附带内置管理器。
+///
+/// 只做本地命令探测，不访问网络；未安装的管理器也会返回（`installed = false`），
+/// 供 UI 展示安装指引。
 pub fn detect_managers(rt: &RuntimeType) -> Vec<VersionManager> {
     let mut managers = match rt {
         RuntimeType::Node => detect_node_managers(),
@@ -329,6 +347,7 @@ pub fn detect_managers(rt: &RuntimeType) -> Vec<VersionManager> {
     managers
 }
 
+/// 检测所有运行时的外部管理器。
 pub fn detect_all_managers() -> Vec<VersionManager> {
     let mut all = Vec::new();
     for rt in RuntimeType::all() {

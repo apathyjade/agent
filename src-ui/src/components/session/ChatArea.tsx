@@ -14,6 +14,7 @@ import { ExecutionStatusBar } from '../management/ExecutionStatusBar';
 import { PlanTimeline } from './PlanTimeline';
 import { SessionIntentSelector } from './SessionIntentSelector';
 import { IntentResolvedBadge, IntentUncertaintyNotice } from './IntentResolvedBadge';
+import { ToolApprovalDialog } from './ToolApprovalDialog';
 import type { Message } from '../../types';
 
 const StreamingMessage = memo(function StreamingMessage({
@@ -266,6 +267,7 @@ export function ChatArea() {
                 {currentPhase === 'building_context' && '正在构建上下文...'}
                 {currentPhase === 'thinking' && '正在思考...'}
                 {currentPhase === 'executing_tool' && '正在执行工具...'}
+                {currentPhase === 'waiting_confirmation' && '等待确认工具调用...'}
                 {currentPhase === 'processing_result' && '正在处理结果...'}
                 {currentPhase === 'completed' && '完成'}
                 {!['classifying','building_context','thinking','executing_tool','processing_result','completed'].includes(currentPhase) && currentPhase}
@@ -382,6 +384,9 @@ export function ChatArea() {
 
       {/* Plan timeline */}
       <PlanTimeline />
+
+      {/* Tool approval gate */}
+      <ToolApprovalDialog />
 
       {/* Input area */}
       <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 flex-shrink-0 transition-colors">

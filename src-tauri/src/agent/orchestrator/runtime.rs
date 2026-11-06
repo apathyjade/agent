@@ -1,3 +1,12 @@
+﻿//! 计划执行运行时：按顺序驱动 `ExecutionPlan` 的步骤，并同步落库与上报进度。
+//!
+//! 职责边界：
+//! - 只负责「执行 + 状态持久化 + 事件上报」，不负责生成计划（见 `planner`）；
+//! - 单个步骤的调度细节在 `executor` 子模块；
+//! - 持久化失败只记日志、不改变控制流，避免因为历史记录写失败而中断正在跑的步骤。
+//!
+//! 约束：进度事件字段与写入 DB 的状态取值是前端与断点续跑的依据，不可随意改动。
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -7,6 +16,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::agent::fast_loop::ToolLoop;
+use crate::core::util::truncate_chars;
 use crate::llm::provider::ProviderRegistry;
 use rig::completion::Message;
 use crate::core::db::repository::Database;
@@ -17,22 +27,36 @@ use tauri::Emitter;
 
 mod executor;
 
+/// 写入 `sessions.mode` 的自主执行标记。
+const SESSION_MODE_AUTONOMOUS: &str = "autonomous";
+/// 结果摘要最多保留的字符数（按字符而非字节，避免切断中文）。
+const RESULT_SUMMARY_CHARS: usize = 100;
+/// 计划来源描述中目标文本最多保留的字符数。
+const GOAL_DESC_CHARS: usize = 50;
+
+/// 执行计划的运行时。
+///
+/// 持有 LLM provider、工具注册表与数据库连接；每次 [`Self::run`] 会按顺序
+/// 执行计划中的步骤，并在每个关键节点写 checkpoint、向前端推送进度事件。
 pub struct ExecutionRuntime {
     providers: Arc<Mutex<ProviderRegistry>>,
     tools: Arc<Mutex<ToolRegistry>>,
     db: Arc<Mutex<Database>>,
     app_handle: Option<tauri::AppHandle>,
-    /// Run-level tool whitelist. `None` means unrestricted.
+    /// 运行级工具白名单；`None` 表示不限制。
     allowed_tools: Option<Vec<String>>,
-    /// Run-level master switch for tool execution.
+    /// 运行级工具总开关。
     tools_enabled: bool,
-    /// Optional system prompt for agent tasks (falls back to the built-in text).
+    /// agent 任务的可选系统提示词（缺省时回落到内置文案）。
     system_prompt: Option<String>,
-    /// Optional default iteration cap applied to agent tasks without their own.
+    /// agent 任务未单独指定时的默认迭代上限。
     max_iterations: Option<usize>,
 }
 
 impl ExecutionRuntime {
+    /// 用共享的 provider、工具注册表与数据库构造运行时。
+    ///
+    /// 默认不限制工具、不覆盖系统提示词；需要收紧策略时用 `with_*` 方法。
     pub fn new(
         providers: Arc<Mutex<ProviderRegistry>>,
         tools: Arc<Mutex<ToolRegistry>>,
@@ -50,16 +74,17 @@ impl ExecutionRuntime {
         }
     }
 
+    /// 绑定 Tauri `AppHandle`，使执行日志可以推送到前端。
     pub fn with_app_handle(mut self, handle: tauri::AppHandle) -> Self {
         self.app_handle = Some(handle);
         self
     }
 
-    /// Apply the run-level tool policy.
+    /// 设置运行级工具策略。
     ///
-    /// `allowed_tools = None` means no whitelist; `Some(vec![])` means no tool
-    /// is allowed. When `tools_enabled` is `false`, any `ToolCall` step and any
-    /// `AgentTask` that requests tools are rejected before execution.
+    /// `allowed_tools = None` 表示不设白名单；`Some(vec![])` 表示一个工具都不允许。
+    /// 当 `tools_enabled` 为 `false` 时，任何 `ToolCall` 步骤以及任何请求工具的
+    /// `AgentTask` 都会在执行前被拒绝。
     pub fn with_tool_policy(
         mut self,
         allowed_tools: Option<Vec<String>>,
@@ -70,21 +95,21 @@ impl ExecutionRuntime {
         self
     }
 
-    /// Override the system prompt used by `AgentTask` steps.
+    /// 覆盖 `AgentTask` 步骤使用的系统提示词。
     ///
-    /// When absent (or empty), the built-in agent-task prompt is used.
+    /// 缺省或为空时使用内置的 agent 任务提示词。
     pub fn with_system_prompt(mut self, system_prompt: Option<String>) -> Self {
         self.system_prompt = system_prompt;
         self
     }
 
-    /// Default iteration cap for `AgentTask` steps that do not set one.
+    /// 为未单独指定迭代上限的 `AgentTask` 步骤提供默认值。
     pub fn with_max_iterations(mut self, max_iterations: Option<usize>) -> Self {
         self.max_iterations = max_iterations;
         self
     }
 
-    /// Emit execution log event to frontend (if app_handle is set)
+    /// 向前端推送执行日志（仅在绑定了 `app_handle` 时生效）。
     fn emit_log(&self, level: &str, step: &str, message: String) {
         if let Some(ref handle) = self.app_handle {
             let entry = ExecutionLogEntry::new(level, step, message);
@@ -92,11 +117,10 @@ impl ExecutionRuntime {
         }
     }
 
-    /// 执行一个 Plan，通过 event_tx 发射进度事件
+    /// 执行一个 Plan，通过 event_tx 发射进度事件。
     ///
-    /// Legacy entry point: runs in [`PlanRunMode::Autonomous`] and only reports
-    /// success or an [`ExecutionError`]. New callers that need partial results
-    /// after an in-flight failure should use [`Self::run`].
+    /// 旧版入口：以 [`PlanRunMode::Autonomous`] 运行，只报告成功或
+    /// [`ExecutionError`]。需要在失败时拿到部分结果的调用方应改用 [`Self::run`]。
     pub async fn execute(
         &self,
         plan: ExecutionPlan,
@@ -104,42 +128,17 @@ impl ExecutionRuntime {
         cancel_flag: Arc<AtomicBool>,
         pause_flag: Arc<AtomicBool>,
     ) -> Result<(), ExecutionError> {
-        self.execute_with_mode(
-            plan,
-            event_tx,
-            cancel_flag,
-            pause_flag,
-            PlanRunMode::Autonomous,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    /// Execute a plan under the given run mode.
-    ///
-    /// Failures are mapped back to [`ExecutionError`] so existing callers keep
-    /// compiling; use [`Self::run`] to receive completed step results alongside
-    /// the failure.
-    pub async fn execute_with_mode(
-        &self,
-        plan: ExecutionPlan,
-        event_tx: mpsc::Sender<PlanProgressEvent>,
-        cancel_flag: Arc<AtomicBool>,
-        pause_flag: Arc<AtomicBool>,
-        mode: PlanRunMode,
-    ) -> Result<PlanOutcome, ExecutionError> {
-        self.run(plan, event_tx, cancel_flag, pause_flag, mode)
+        self.run(plan, event_tx, cancel_flag, pause_flag, PlanRunMode::Autonomous)
             .await
+            .map(|_| ())
             .map_err(|failure| failure.to_execution_error())
     }
 
-    /// Execute a plan and preserve partial progress on failure.
+    /// 执行一个 Plan，并在失败时保留已经完成的部分进度。
     ///
-    /// This is the preferred entry point for callers that need to surface the
-    /// results of steps that completed before a later step failed. Cancellation
-    /// still reports through [`PlanFailure`] with the legacy "cancelled"
-    /// message, which [`Self::execute_with_mode`] maps back to
-    /// [`ExecutionError::Cancelled`].
+    /// 需要展示「失败前已完成的步骤」的调用方应使用本方法。取消同样通过
+    /// [`PlanFailure`] 返回，`message` 为旧版的 cancelled 文案，便于
+    /// [`Self::execute`] 映射回 [`ExecutionError::Cancelled`]。
     pub async fn run(
         &self,
         plan: ExecutionPlan,
@@ -153,45 +152,13 @@ impl ExecutionRuntime {
         let total_steps = plan.steps.len();
         let writes_session_state = mode == PlanRunMode::Autonomous;
 
-        let source_desc = match &plan.source {
-            PlanSource::Dynamic { goal, .. } => format!("dynamic: {}", goal.chars().take(50).collect::<String>()),
-            PlanSource::Static { workflow_name } => format!("static: {}", workflow_name),
-        };
-        self.emit_log("info", "execution", format!("执行计划开始: {} 步, {}", total_steps, source_desc));
+        self.log_run_start(&plan, total_steps);
+        // 两种模式都持久化计划记录，作为历史留存。
+        self.persist_plan(&plan).await;
 
-        // 持久化 Plan 记录（两种模式都保留，作为历史）
-        {
-            let db = self.db.lock().await;
-            let record = ExecutionPlanRecord {
-                id: plan.id.clone(),
-                session_id: plan.session_id.clone(),
-                source: serde_json::to_string(&plan.source).unwrap_or_default(),
-                goal: match &plan.source {
-                    PlanSource::Dynamic { goal, .. } => Some(goal.clone()),
-                    _ => None,
-                },
-                plan_json: serde_json::to_string(&plan).unwrap_or_default(),
-                status: "running".to_string(),
-                created_at: plan.created_at.clone(),
-                finished_at: None,
-            };
-            let _ = db.insert_execution_plan(&record);
-        }
-
-        // 更新 session 状态（仅自主模式；聊天轮次不得改动会话状态）
+        // 仅自主模式更新会话状态；聊天轮次不得改动会话状态。
         if writes_session_state {
-            let db = self.db.lock().await;
-            let status_json = serde_json::to_string(&ExecStatus::Running {
-                step_index: 0,
-                started_at: Utc::now().to_rfc3339(),
-            })
-            .unwrap_or_default();
-            let _ = db.update_session_execution(
-                &session_id,
-                "autonomous",
-                &status_json,
-                Some(&plan_id),
-            );
+            self.mark_session_running(&session_id, &plan_id).await;
         }
 
         let mut completed: Vec<CompletedStep> = Vec::new();
@@ -199,29 +166,23 @@ impl ExecutionRuntime {
         for (i, step) in plan.steps.iter().enumerate() {
             let completed_steps = completed.len();
 
-            // 检查是否被取消
             if cancel_flag.load(Ordering::Relaxed) {
-                self.set_plan_status(&plan_id, "cancelled", None).await;
-                if writes_session_state {
-                    self.set_session_status(&session_id, ExecStatus::Cancelled).await;
-                }
-                let _ = event_tx
-                    .send(PlanProgressEvent {
-                        plan_id: plan_id.clone(),
-                        session_id: session_id.clone(),
-                        event_type: "cancelled".to_string(),
-                        step_index: Some(i),
-                        step_label: None,
-                        result_summary: None,
-                        error: None,
+                return Err(
+                    self.abort_cancelled(
+                        &plan_id,
+                        &session_id,
+                        i,
+                        &step.label,
                         total_steps,
-                        completed_steps,
-                    })
-                    .await;
-                return Err(cancelled_failure(&completed, &step.label));
+                        &completed,
+                        writes_session_state,
+                        &event_tx,
+                    )
+                    .await,
+                );
             }
 
-            // 检查是否暂停
+            // 暂停期间自旋等待，每 200ms 检查一次取消标记。
             while pause_flag.load(Ordering::Relaxed) {
                 if writes_session_state {
                     self.set_session_status(
@@ -235,56 +196,63 @@ impl ExecutionRuntime {
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                 if cancel_flag.load(Ordering::Relaxed) {
-                    self.set_plan_status(&plan_id, "cancelled", None).await;
-                    if writes_session_state {
-                        self.set_session_status(&session_id, ExecStatus::Cancelled).await;
-                    }
-                    return Err(cancelled_failure(&completed, &step.label));
+                    return Err(
+                        self.abort_cancelled(
+                            &plan_id,
+                            &session_id,
+                            i,
+                            &step.label,
+                            total_steps,
+                            &completed,
+                            writes_session_state,
+                            &event_tx,
+                        )
+                        .await,
+                    );
                 }
             }
 
-            // 发射 step_started 事件
-            let _ = event_tx
-                .send(PlanProgressEvent {
-                    plan_id: plan_id.clone(),
-                    session_id: session_id.clone(),
-                    event_type: "step_started".to_string(),
-                    step_index: Some(i),
-                    step_label: Some(step.label.clone()),
-                    result_summary: None,
-                    error: None,
+            Self::send_progress(
+                &event_tx,
+                PlanProgressEvent::new(
+                    plan_id.as_str(),
+                    session_id.as_str(),
+                    "step_started",
                     total_steps,
                     completed_steps,
-                })
-                .await;
+                )
+                .with_step_index(i)
+                .with_step_label(step.label.clone()),
+            )
+            .await;
 
-            self.emit_log("info", "execution", format!("步骤 {}/{} 开始: {}", i + 1, total_steps, step.label));
+            self.emit_log(
+                "info",
+                "execution",
+                format!("步骤 {}/{} 开始: {}", i + 1, total_steps, step.label),
+            );
 
-            // 执行步骤
             let step_start = Instant::now();
-            let result = self.execute_step(&step.execution, &step.id, cancel_flag.clone(), event_tx.clone()).await;
+            let result = self
+                .execute_step(&step.execution, &step.id, cancel_flag.clone(), event_tx.clone())
+                .await;
 
             match result {
                 Ok(val) => {
                     let duration = step_start.elapsed().as_millis() as u64;
-                    self.emit_log("info", "execution", format!("步骤 {}/{} 完成 ({}ms): {}", i + 1, total_steps, duration, step.label));
-                    // 保存 checkpoint
-                    {
-                        let db = self.db.lock().await;
-                        let record = PlanStepRecord {
-                            id: step.id.clone(),
-                            plan_id: plan_id.clone(),
-                            step_index: i as i32,
-                            label: step.label.clone(),
-                            step_type: exec_step_type_name(&step.execution).to_string(),
-                            status: "completed".to_string(),
-                            result_json: Some(val.to_string()),
-                            error: None,
-                            started_at: Some(Utc::now().to_rfc3339()),
-                            duration_ms: Some(duration as i64),
-                        };
-                        let _ = db.upsert_plan_step(&record);
-                    }
+                    self.emit_log(
+                        "info",
+                        "execution",
+                        format!(
+                            "步骤 {}/{} 完成 ({}ms): {}",
+                            i + 1,
+                            total_steps,
+                            duration,
+                            step.label
+                        ),
+                    );
+                    self.checkpoint_step_completed(&plan_id, step, i, duration, &val)
+                        .await;
 
                     completed.push(CompletedStep {
                         index: i,
@@ -292,62 +260,55 @@ impl ExecutionRuntime {
                         label: step.label.clone(),
                         result: val.clone(),
                     });
-                    let completed_steps = completed.len();
 
-                    let _ = event_tx
-                        .send(PlanProgressEvent {
-                            plan_id: plan_id.clone(),
-                            session_id: session_id.clone(),
-                            event_type: "step_completed".to_string(),
-                            step_index: Some(i),
-                            step_label: Some(step.label.clone()),
-                            result_summary: val
-                                .as_str()
-                                .map(|s| s[..s.len().min(100)].to_string()),
-                            error: None,
-                            total_steps,
-                            completed_steps,
-                        })
-                        .await;
+                    let mut event = PlanProgressEvent::new(
+                        plan_id.as_str(),
+                        session_id.as_str(),
+                        "step_completed",
+                        total_steps,
+                        completed.len(),
+                    )
+                    .with_step_index(i)
+                    .with_step_label(step.label.clone());
+                    if let Some(summary) = result_summary(&val) {
+                        event = event.with_result_summary(summary);
+                    }
+                    Self::send_progress(&event_tx, event).await;
                 }
                 Err(e) => {
                     let duration = step_start.elapsed().as_millis() as u64;
-                    self.emit_log("error", "execution", format!("步骤 {}/{} 失败: {} — {}", i + 1, total_steps, step.label, e));
-                    // 保存失败 checkpoint
-                    {
-                        let db = self.db.lock().await;
-                        let record = PlanStepRecord {
-                            id: step.id.clone(),
-                            plan_id: plan_id.clone(),
-                            step_index: i as i32,
-                            label: step.label.clone(),
-                            step_type: exec_step_type_name(&step.execution).to_string(),
-                            status: "failed".to_string(),
-                            result_json: None,
-                            error: Some(e.to_string()),
-                            started_at: Some(Utc::now().to_rfc3339()),
-                            duration_ms: Some(duration as i64),
-                        };
-                        let _ = db.upsert_plan_step(&record);
-                    }
+                    self.emit_log(
+                        "error",
+                        "execution",
+                        format!(
+                            "步骤 {}/{} 失败: {} — {}",
+                            i + 1,
+                            total_steps,
+                            step.label,
+                            e
+                        ),
+                    );
+                    self.checkpoint_step_failed(&plan_id, step, i, duration, &e)
+                        .await;
 
                     let completed_steps = completed.len();
 
-                    let _ = event_tx
-                        .send(PlanProgressEvent {
-                            plan_id: plan_id.clone(),
-                            session_id: session_id.clone(),
-                            event_type: "step_failed".to_string(),
-                            step_index: Some(i),
-                            step_label: Some(step.label.clone()),
-                            result_summary: None,
-                            error: Some(e.to_string()),
+                    Self::send_progress(
+                        &event_tx,
+                        PlanProgressEvent::new(
+                            plan_id.as_str(),
+                            session_id.as_str(),
+                            "step_failed",
                             total_steps,
                             completed_steps,
-                        })
-                        .await;
+                        )
+                        .with_step_index(i)
+                        .with_step_label(step.label.clone())
+                        .with_error(e.to_string()),
+                    )
+                    .await;
 
-                    self.set_plan_status(&plan_id, "failed", Some(&Utc::now().to_rfc3339()))
+                    self.set_plan_status(&plan_id, PlanStatus::Failed, Some(&Utc::now().to_rfc3339()))
                         .await;
                     if writes_session_state {
                         self.set_session_status(
@@ -360,19 +321,19 @@ impl ExecutionRuntime {
                         .await;
                     }
 
-                    let _ = event_tx
-                        .send(PlanProgressEvent {
-                            plan_id: plan_id.clone(),
-                            session_id: session_id.clone(),
-                            event_type: "plan_failed".to_string(),
-                            step_index: Some(i),
-                            step_label: None,
-                            result_summary: None,
-                            error: Some(e.to_string()),
+                    Self::send_progress(
+                        &event_tx,
+                        PlanProgressEvent::new(
+                            plan_id.as_str(),
+                            session_id.as_str(),
+                            "plan_failed",
                             total_steps,
                             completed_steps,
-                        })
-                        .await;
+                        )
+                        .with_step_index(i)
+                        .with_error(e.to_string()),
+                    )
+                    .await;
 
                     return Err(PlanFailure {
                         completed,
@@ -385,10 +346,13 @@ impl ExecutionRuntime {
 
         let completed_steps = completed.len();
 
-        // Plan 完成
-        self.emit_log("info", "execution", format!("执行计划完成: {}/{} 步成功", completed_steps, total_steps));
+        self.emit_log(
+            "info",
+            "execution",
+            format!("执行计划完成: {}/{} 步成功", completed_steps, total_steps),
+        );
         let finished_at = Utc::now().to_rfc3339();
-        self.set_plan_status(&plan_id, "completed", Some(&finished_at))
+        self.set_plan_status(&plan_id, PlanStatus::Completed, Some(&finished_at))
             .await;
         if writes_session_state {
             self.set_session_status(
@@ -400,19 +364,17 @@ impl ExecutionRuntime {
             .await;
         }
 
-        let _ = event_tx
-            .send(PlanProgressEvent {
-                plan_id: plan_id.clone(),
-                session_id: session_id.clone(),
-                event_type: "plan_completed".to_string(),
-                step_index: None,
-                step_label: None,
-                result_summary: None,
-                error: None,
+        Self::send_progress(
+            &event_tx,
+            PlanProgressEvent::new(
+                plan_id.as_str(),
+                session_id.as_str(),
+                "plan_completed",
                 total_steps,
                 completed_steps,
-            })
-            .await;
+            ),
+        )
+        .await;
 
         Ok(PlanOutcome {
             plan_id,
@@ -421,7 +383,204 @@ impl ExecutionRuntime {
         })
     }
 
-    /// Reject a `ToolCall` step that the current run policy does not permit.
+    /// 记录运行开始日志，来源描述中的目标文本按字符截断。
+    fn log_run_start(&self, plan: &ExecutionPlan, total_steps: usize) {
+        let source_desc = match &plan.source {
+            PlanSource::Dynamic { goal, .. } => {
+                format!("dynamic: {}", truncate_chars(goal, GOAL_DESC_CHARS))
+            }
+            PlanSource::Static { workflow_name } => format!("static: {}", workflow_name),
+        };
+        self.emit_log(
+            "info",
+            "execution",
+            format!("执行计划开始: {} 步, {}", total_steps, source_desc),
+        );
+    }
+
+    /// 落库计划记录；失败只记日志，历史丢失不应阻断本次执行。
+    async fn persist_plan(&self, plan: &ExecutionPlan) {
+        let source = match serde_json::to_string(&plan.source) {
+            Ok(json) => json,
+            Err(e) => {
+                log::error!(
+                    "序列化计划来源失败，将以空字符串落库: plan_id={}, error={}",
+                    plan.id,
+                    e
+                );
+                String::new()
+            }
+        };
+        let plan_json = match serde_json::to_string(plan) {
+            Ok(json) => json,
+            Err(e) => {
+                log::error!(
+                    "序列化计划失败，将以空字符串落库: plan_id={}, error={}",
+                    plan.id,
+                    e
+                );
+                String::new()
+            }
+        };
+
+        let record = ExecutionPlanRecord {
+            id: plan.id.clone(),
+            session_id: plan.session_id.clone(),
+            source,
+            goal: match &plan.source {
+                PlanSource::Dynamic { goal, .. } => Some(goal.clone()),
+                _ => None,
+            },
+            plan_json,
+            status: PlanStatus::Running.as_str().to_string(),
+            created_at: plan.created_at.clone(),
+            finished_at: None,
+        };
+
+        let db = self.db.lock().await;
+        if let Err(e) = db.insert_execution_plan(&record) {
+            log::error!(
+                "持久化执行计划失败，计划历史将丢失: plan_id={}, error={}",
+                plan.id,
+                e
+            );
+        }
+    }
+
+    /// 把会话标记为「自主执行中」，仅自主模式调用。
+    async fn mark_session_running(&self, session_id: &str, plan_id: &str) {
+        let status_json = serialize_session_status(&ExecStatus::Running {
+            step_index: 0,
+            started_at: Utc::now().to_rfc3339(),
+        });
+
+        let db = self.db.lock().await;
+        if let Err(e) = db.update_session_execution(
+            session_id,
+            SESSION_MODE_AUTONOMOUS,
+            &status_json,
+            Some(plan_id),
+        ) {
+            log::error!(
+                "更新会话执行状态失败，会话状态可能与实际执行不同步: session_id={}, plan_id={}, error={}",
+                session_id,
+                plan_id,
+                e
+            );
+        }
+    }
+
+    /// 处理取消：写状态、上报事件，并返回携带已完成步骤的失败结果。
+    #[allow(clippy::too_many_arguments)]
+    async fn abort_cancelled(
+        &self,
+        plan_id: &str,
+        session_id: &str,
+        step_index: usize,
+        step_label: &str,
+        total_steps: usize,
+        completed: &[CompletedStep],
+        writes_session_state: bool,
+        event_tx: &mpsc::Sender<PlanProgressEvent>,
+    ) -> PlanFailure {
+        self.set_plan_status(plan_id, PlanStatus::Cancelled, None)
+            .await;
+        if writes_session_state {
+            self.set_session_status(session_id, ExecStatus::Cancelled)
+                .await;
+        }
+
+        Self::send_progress(
+            event_tx,
+            PlanProgressEvent::new(
+                plan_id,
+                session_id,
+                "cancelled",
+                total_steps,
+                completed.len(),
+            )
+            .with_step_index(step_index),
+        )
+        .await;
+
+        cancelled_failure(completed, step_label)
+    }
+
+    /// 写入成功步骤的 checkpoint；失败只记日志，避免影响执行结果。
+    async fn checkpoint_step_completed(
+        &self,
+        plan_id: &str,
+        step: &PlanStep,
+        step_index: usize,
+        duration_ms: u64,
+        value: &Value,
+    ) {
+        let record = PlanStepRecord {
+            id: step.id.clone(),
+            plan_id: plan_id.to_string(),
+            step_index: step_index as i32,
+            label: step.label.clone(),
+            step_type: exec_step_type_name(&step.execution).to_string(),
+            status: StepStatus::Completed.as_str().to_string(),
+            result_json: Some(value.to_string()),
+            error: None,
+            started_at: Some(Utc::now().to_rfc3339()),
+            duration_ms: Some(duration_ms as i64),
+        };
+
+        let db = self.db.lock().await;
+        if let Err(e) = db.upsert_plan_step(&record) {
+            log::error!(
+                "写入步骤 checkpoint 失败，断点续跑将丢失该步骤: plan_id={}, step_id={}, error={}",
+                plan_id,
+                step.id,
+                e
+            );
+        }
+    }
+
+    /// 写入失败步骤的 checkpoint；失败只记日志，避免掩盖真正的执行错误。
+    async fn checkpoint_step_failed(
+        &self,
+        plan_id: &str,
+        step: &PlanStep,
+        step_index: usize,
+        duration_ms: u64,
+        error: &ExecutionError,
+    ) {
+        let record = PlanStepRecord {
+            id: step.id.clone(),
+            plan_id: plan_id.to_string(),
+            step_index: step_index as i32,
+            label: step.label.clone(),
+            step_type: exec_step_type_name(&step.execution).to_string(),
+            status: StepStatus::Failed.as_str().to_string(),
+            result_json: None,
+            error: Some(error.to_string()),
+            started_at: Some(Utc::now().to_rfc3339()),
+            duration_ms: Some(duration_ms as i64),
+        };
+
+        let db = self.db.lock().await;
+        if let Err(e) = db.upsert_plan_step(&record) {
+            log::error!(
+                "写入失败步骤 checkpoint 失败，断点续跑将丢失该步骤: plan_id={}, step_id={}, error={}",
+                plan_id,
+                step.id,
+                e
+            );
+        }
+    }
+
+    /// 发送进度事件；接收端已关闭时静默忽略。
+    async fn send_progress(
+        event_tx: &mpsc::Sender<PlanProgressEvent>,
+        event: PlanProgressEvent,
+    ) {
+        let _ = event_tx.send(event).await;
+    }
+
+    /// 拒绝当前运行策略不允许的 `ToolCall` 步骤。
     pub(super) fn validate_tool_call(&self, tool: &str) -> Result<(), ExecutionError> {
         if !self.tools_enabled {
             return Err(ExecutionError::StepFailed {
@@ -448,7 +607,7 @@ impl ExecutionRuntime {
         Ok(())
     }
 
-    /// Reject an `AgentTask` that would enable tools while tools are disabled.
+    /// 当工具被全局禁用时，拒绝请求工具的 `AgentTask`。
     pub(super) fn validate_agent_task(
         &self,
         allowed_tools: &Option<Vec<String>>,
@@ -473,7 +632,7 @@ impl ExecutionRuntime {
         Ok(())
     }
 
-    /// Resolve the effective tool whitelist for an agent task.
+    /// 计算 agent 任务实际生效的工具白名单：步骤级配置优先于运行级默认值。
     pub(super) fn effective_allowed_tools(
         &self,
         step_allowed: &Option<Vec<String>>,
@@ -481,23 +640,57 @@ impl ExecutionRuntime {
         step_allowed.clone().or_else(|| self.allowed_tools.clone())
     }
 
-    /// Resolve the effective iteration cap for an agent task.
+    /// 计算 agent 任务实际生效的迭代上限：步骤级配置优先于运行级默认值。
     pub(super) fn effective_max_iterations(&self, step_max: Option<usize>) -> Option<usize> {
         step_max.or(self.max_iterations)
     }
 
-    async fn set_plan_status(&self, plan_id: &str, status: &str, finished_at: Option<&str>) {
+    /// 更新计划状态；失败只记日志。
+    async fn set_plan_status(&self, plan_id: &str, status: PlanStatus, finished_at: Option<&str>) {
         let db = self.db.lock().await;
-        let _ = db.update_execution_plan_status(plan_id, status, finished_at);
+        if let Err(e) = db.update_execution_plan_status(plan_id, status.as_str(), finished_at) {
+            log::error!(
+                "更新计划状态失败，计划状态可能与实际执行不同步: plan_id={}, status={}, error={}",
+                plan_id,
+                status.as_str(),
+                e
+            );
+        }
     }
 
+    /// 更新会话执行状态；失败只记日志。
     async fn set_session_status(&self, session_id: &str, status: ExecStatus) {
+        let status_json = serialize_session_status(&status);
         let db = self.db.lock().await;
-        let status_json = serde_json::to_string(&status).unwrap_or_default();
-        let _ = db.update_session_execution_status(&session_id, &status_json);
+        if let Err(e) = db.update_session_execution_status(session_id, &status_json) {
+            log::error!(
+                "更新会话执行状态失败，会话状态可能与实际执行不同步: session_id={}, error={}",
+                session_id,
+                e
+            );
+        }
     }
 }
 
+/// 序列化会话执行状态；失败时返回空字符串并记录日志（保持原有落库行为）。
+fn serialize_session_status(status: &ExecStatus) -> String {
+    match serde_json::to_string(status) {
+        Ok(json) => json,
+        Err(e) => {
+            log::error!("序列化会话执行状态失败，将以空字符串落库: error={}", e);
+            String::new()
+        }
+    }
+}
+
+/// 从步骤结果中提取给前端展示的摘要，按字符截断以免切断中文。
+fn result_summary(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(|s| truncate_chars(s, RESULT_SUMMARY_CHARS).to_string())
+}
+
+/// 构造「已取消」的失败结果，`message` 沿用旧版 cancelled 文案。
 fn cancelled_failure(completed: &[CompletedStep], failed_step: &str) -> PlanFailure {
     PlanFailure {
         completed: completed.to_vec(),
@@ -620,7 +813,7 @@ mod tests {
             assert_eq!(session.mode, "chat");
             assert_eq!(session.execution_status, "");
             assert_eq!(session.active_plan_id, None);
-            // Plan rows are still persisted in interactive mode.
+            // 交互模式下计划记录仍会被持久化。
             assert!(db
                 .get_execution_plan(&interactive_plan_id)
                 .unwrap()
@@ -732,7 +925,7 @@ mod tests {
             Some(vec!["calculator".to_string()])
         );
         assert_eq!(runtime.effective_max_iterations(None), Some(3));
-        // Step-level values win over run-level defaults.
+        // 步骤级配置优先于运行级默认值。
         assert_eq!(
             runtime.effective_allowed_tools(&Some(vec!["web_search".to_string()])),
             Some(vec!["web_search".to_string()])
@@ -772,7 +965,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_with_mode_maps_failure_to_execution_error() {
+    async fn execute_maps_failure_to_execution_error() {
         let (runtime, db) = test_runtime();
         insert_session(&db, "s1").await;
 
@@ -780,11 +973,133 @@ mod tests {
         let (tx, _rx) = mpsc::channel(32);
         let (cf, pf) = flags();
         let error = runtime
-            .execute_with_mode(plan, tx, cf, pf, PlanRunMode::Interactive)
+            .execute(plan, tx, cf, pf)
             .await
             .expect_err("step should fail");
 
         assert!(matches!(error, ExecutionError::StepFailed { .. }));
+    }
+
+    #[test]
+    fn status_as_str_matches_serde_values() {
+        // 落库字符串必须与序列化取值一致，否则历史数据无法反序列化。
+        for status in [
+            PlanStatus::Pending,
+            PlanStatus::Running,
+            PlanStatus::Completed,
+            PlanStatus::Failed,
+            PlanStatus::Cancelled,
+        ] {
+            let serialized = serde_json::to_string(&status).expect("serialize plan status");
+            assert_eq!(serialized, format!("\"{}\"", status.as_str()));
+        }
+
+        for status in [
+            StepStatus::Pending,
+            StepStatus::Running,
+            StepStatus::Completed,
+            StepStatus::Failed,
+            StepStatus::Skipped,
+        ] {
+            let serialized = serde_json::to_string(&status).expect("serialize step status");
+            assert_eq!(serialized, format!("\"{}\"", status.as_str()));
+        }
+    }
+    // ── task 4：deep 路径的工具执行 ─────────────────────────────────────
+
+    /// 一个会睡很久的工具，用来验证步骤级超时。
+    #[derive(Debug, Clone)]
+    struct SlowTool;
+
+    #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+    struct SlowArgs {}
+
+    impl rig::tool::Tool for SlowTool {
+        const NAME: &'static str = "slow";
+        type Args = SlowArgs;
+        type Output = String;
+        type Error = rig::tool::ToolExecutionError;
+
+        fn description(&self) -> String {
+            "Sleeps forever".to_string()
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            rig::__core::tool::args_schema::<SlowArgs>()
+        }
+
+        async fn call(
+            &self,
+            _context: &mut rig::tool::ToolContext,
+            _args: Self::Args,
+        ) -> Result<Self::Output, Self::Error> {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            Ok("done".to_string())
+        }
+    }
+
+    fn runtime_with_slow_tool() -> ExecutionRuntime {
+        let providers = Arc::new(Mutex::new(ProviderRegistry::new(&[])));
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            "slow",
+            crate::agent::tools::convert::into_dynamic(SlowTool),
+            true,
+        );
+        let tools = Arc::new(Mutex::new(registry));
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        ExecutionRuntime::new(providers, tools, db)
+    }
+
+    #[tokio::test]
+    async fn execute_tool_uses_registry_and_returns_output() {
+        let (runtime, _db) = test_runtime();
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("probe.txt");
+        std::fs::write(&path, "hello from rig-tools").expect("写探针文件");
+
+        let params = HashMap::from([(
+            "path".to_string(),
+            serde_json::json!(path.to_string_lossy()),
+        )]);
+        let (cf, _pf) = flags();
+
+        let value = runtime
+            .execute_tool("read", &params, &None, None, cf)
+            .await
+            .expect("read 应经注册表执行成功");
+
+        assert!(
+            value.as_str().unwrap_or_default().contains("hello from rig-tools"),
+            "read 应返回文件内容: {:?}",
+            value
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_fails_when_timeout_expires() {
+        let runtime = runtime_with_slow_tool();
+        let (cf, _pf) = flags();
+
+        let error = runtime
+            .execute_tool("slow", &HashMap::new(), &None, Some(1), cf)
+            .await
+            .expect_err("超时应让步骤失败");
+
+        assert!(
+            error.to_string().contains("timed out"),
+            "错误应说明超时: {}",
+            error
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_task_without_whitelist_still_gets_tools() {
+        let (runtime, _db) = test_runtime();
+
+        // None 是「不限制」，运行级开关才是唯一的总闸。
+        assert!(runtime.tools_enabled);
+        assert_eq!(runtime.effective_allowed_tools(&None), None);
     }
 }
 

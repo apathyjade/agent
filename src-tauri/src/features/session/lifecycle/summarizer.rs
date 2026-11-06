@@ -5,8 +5,10 @@ use crate::core::db::models::SessionSummary;
 use crate::core::error::Result;
 use crate::features::session::lifecycle::LifecycleManager;
 
-/// Generate a summary chunk for new messages since last summarized point.
-/// Called asynchronously after send_message_stream completes.
+/// 为上次摘要之后的新消息生成一段摘要。
+///
+/// 在 `send_message_stream` 结束后异步调用；消息不足一个 chunk 且会话
+/// 尚未变长时直接跳过。
 pub async fn maybe_generate_summary(
     lifecycle: &LifecycleManager,
     session_id: &str,
@@ -22,11 +24,11 @@ pub async fn maybe_generate_summary(
 
     let db = lifecycle.db.lock().await;
 
-    // Find last summarized message
+    // 找到上一次摘要结束的位置
     let last_summarized = db.get_latest_summary_end_id(session_id)?;
     let messages = db.get_messages(session_id)?;
 
-    // Count unsummarized user+assistant messages
+    // 统计尚未摘要的 user + assistant 消息
     let start_idx = last_summarized.as_ref().and_then(|end_id| {
         messages.iter().position(|m| m.id == *end_id).map(|i| i + 1)
     }).unwrap_or(0);
@@ -37,13 +39,13 @@ pub async fn maybe_generate_summary(
         .collect();
 
     if unsummarized.len() < chunk_size && messages.len() < 50 {
-        // Not enough new messages to summarize and session isn't huge yet
+        // 新消息不够一个 chunk，且会话本身还不长
         return Ok(());
     }
 
-    // Take up to chunk_size unsummarized messages
+    // 最多取 chunk_size 条未摘要消息
     let to_summarize = if unsummarized.len() <= chunk_size {
-        // If total session is large enough, always summarize
+        // 会话足够长时总是生成摘要
         if messages.len() >= 50 { &unsummarized[..] } else { return Ok(()); }
     } else {
         &unsummarized[..chunk_size]
@@ -56,7 +58,7 @@ pub async fn maybe_generate_summary(
     let first_id = to_summarize.first().unwrap().id.clone();
     let last_id = to_summarize.last().unwrap().id.clone();
 
-    // Build conversation text for summarization
+    // 拼接待摘要的对话文本
     let conversation_text: String = to_summarize.iter()
         .map(|m| format!("{}: {}", if m.role == "user" { "User" } else { "Assistant" }, m.content))
         .collect::<Vec<_>>()

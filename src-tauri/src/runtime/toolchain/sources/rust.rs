@@ -1,8 +1,7 @@
-// ── Rust Version Source ──
-//
-// Rust versions are managed via rustup. Provides a curated list of stable
-// and nightly toolchains. Optionally fetches the latest channel metadata
-// from the official Rust static archive.
+//! Rust 版本源。
+//!
+//! Rust 版本由 rustup 管理，因此这里提供一份稳定版 / nightly 工具链列表，
+//! 并在可用时从官方静态归档读取最新的 channel 元数据。
 
 use async_trait::async_trait;
 
@@ -11,6 +10,7 @@ use crate::runtime::toolchain::http_client::get_http_client;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::runtime::toolchain::RuntimeType;
 
+/// Rust 版本源：返回 rustup 可安装的工具链列表。
 pub struct RustupVersionSource;
 
 #[async_trait]
@@ -20,12 +20,12 @@ impl VersionSource for RustupVersionSource {
     }
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
-        // Try fetching the latest stable version from the Rust channel manifest
+        // 尝试从 Rust channel manifest 获取最新稳定版本
         let channel_versions = self.fetch_channel_versions().await;
 
         let mut versions: Vec<RuntimeVersion> = Vec::new();
 
-        // Add channel entries (stable and nightly) first
+        // 先加入 channel 条目（stable 与 nightly）
         versions.push(RuntimeVersion {
             runtime_type: RuntimeType::Rust,
             version: "stable".to_string(),
@@ -48,11 +48,11 @@ impl VersionSource for RustupVersionSource {
             file_size: None,
         });
 
-        // Add specific versions if we fetched them, otherwise use fallback list
+        // 若成功获取到具体版本就使用它们，否则使用回退列表
         let numbered = if let Ok(fetched) = channel_versions {
             fetched
         } else {
-            // Fallback: known recent stable versions
+            // 回退：已知的近期稳定版本
             vec![
                 "1.85.0".to_string(),
                 "1.84.1".to_string(),
@@ -80,7 +80,7 @@ impl VersionSource for RustupVersionSource {
 }
 
 impl RustupVersionSource {
-    /// Attempt to parse the latest stable rust version from the official channel manifest.
+    /// 尝试从官方 channel manifest 解析最新的稳定 Rust 版本。
     async fn fetch_channel_versions(&self) -> Result<Vec<String>> {
         let url = "https://static.rust-lang.org/dist/channel-rust-stable.toml";
         let client = get_http_client();
@@ -95,8 +95,8 @@ impl RustupVersionSource {
             .await
             .map_err(crate::core::error::AppError::Http)?;
 
-        // Parse the TOML to find "pkg.rust.version"
-        // The format looks like:
+        // 解析 TOML 中的 "pkg.rust.version"
+        // 格式形如：
         // [pkg.rust]
         // version = "1.85.0"
         let mut versions = Vec::new();
@@ -106,7 +106,7 @@ impl RustupVersionSource {
                     let ver = ver.trim().trim_matches('"').trim();
                     if !ver.is_empty() {
                         versions.push(ver.to_string());
-                        // Only need the first version match
+                        // 只需要第一个版本号
                         break;
                     }
                 }

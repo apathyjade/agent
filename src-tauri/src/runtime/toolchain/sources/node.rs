@@ -1,15 +1,14 @@
-// ── Node.js Version Source ──
-//
-// Fetches available Node.js versions from the official nodejs.org dist index.
-// Supports three discovery strategies:
-//   1. Standalone: direct download from nodejs.org (original behavior)
-//   2. WrapExisting: delegate to fnm/volta/nvm
-//   3. Hybrid: combine external + standalone with dedup
-//
-// Also supports:
-//   - Mirrored download sources (e.g., npmmirror.com for China)
-//   - SHASUMS256.txt signature verification
-//   - Windows junction-based activation fallback
+//! Node.js 版本源。
+//!
+//! 从官方 nodejs.org dist 索引获取可用 Node.js 版本，支持三种发现策略：
+//!   1. Standalone：直接从 nodejs.org 下载（原始行为）
+//!   2. WrapExisting：委托给 fnm / volta / nvm
+//!   3. Hybrid：外部管理器与内置下载合并去重
+//!
+//! 另外支持：
+//!   - 镜像下载源（例如国内使用的 npmmirror.com）
+//!   - SHASUMS256.txt 校验和验证
+//!   - Windows 上基于 junction 的激活回退方案
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -19,20 +18,22 @@ use crate::runtime::toolchain::http_client::get_http_client;
 use crate::runtime::toolchain::node_integration::{
     ExternalManager, ExternalNodeManager, NodeIntegrationStrategy,
 };
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::runtime::toolchain::version::sort_versions_desc;
 use crate::runtime::toolchain::RuntimeType;
 
-// ── Download Mirror ──
+// ── 下载镜像 ──
 
-/// Node.js download mirror source.
+/// Node.js 下载镜像源。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum NodeMirror {
-    /// Official nodejs.org (default)
+    /// 官方 nodejs.org（默认）
     #[default]
     Official,
-    /// NPMMirror (Chinese mirror, formerly taobao)
+    /// NPMMirror（国内镜像，原淘宝源）
     NpmMirror,
-    /// Custom mirror
+    /// 自定义镜像
     Custom {
         index_url: String,
         download_base: String,
@@ -40,6 +41,7 @@ pub enum NodeMirror {
 }
 
 impl NodeMirror {
+    /// 版本索引 URL。
     pub fn index_url(&self) -> &str {
         match self {
             NodeMirror::Official => "https://nodejs.org/dist/index.json",
@@ -48,6 +50,7 @@ impl NodeMirror {
         }
     }
 
+    /// 按镜像地址拼接某个版本的下载 URL。
     pub fn download_url(&self, version: &str, platform: &str, ext: &str) -> String {
         let base = match self {
             NodeMirror::Official => "https://nodejs.org/dist",
@@ -57,6 +60,7 @@ impl NodeMirror {
         format!("{base}/v{version}/node-v{version}-{platform}.{ext}")
     }
 
+    /// 按镜像地址拼接 SHASUMS256.txt 的 URL。
     pub fn shasums_url(&self, version: &str) -> String {
         let base = match self {
             NodeMirror::Official => "https://nodejs.org/dist",
@@ -67,45 +71,47 @@ impl NodeMirror {
     }
 }
 
-// ── Windows Activation Strategy ──
+// ── Windows 激活策略 ──
 
-/// Strategy for making a Node.js version active on Windows.
+/// 在 Windows 上让某个 Node.js 版本生效的策略。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum WindowsActivationStrategy {
-    /// Symbolic link (requires admin or Developer Mode)
+    /// 符号链接（需要管理员权限或开发者模式）
     Symlink,
-    /// Directory junction + PATH injection (recommended, no admin needed)
+    /// 目录 junction + PATH 注入（推荐，无需管理员权限）
     PathJunction,
-    /// Temporary PATH modification (fallback, process-scoped)
+    /// 临时修改 PATH（回退方案，仅进程内有效）
     ProcessPath,
 }
 
-// ── Raw API Types ──
+// ── 原始 API 类型 ──
 
-/// Raw response entry from https://nodejs.org/dist/index.json
+/// https://nodejs.org/dist/index.json 的原始响应条目
 #[derive(Debug, Deserialize)]
 struct NodeDistEntry {
     version: String,        // "v20.18.3"
-    lts: serde_json::Value, // false or a string like "Jod"
+    lts: serde_json::Value, // false 或类似 "Jod" 的字符串
     date: String,           // "2025-01-15"
     files: Vec<String>,     // ["win-x64.zip", "linux-x64.tar.gz", ...]
 }
 
-// ── NodeVersionSource ──
+// ── NodeVersionSource（Node.js 版本来源） ──
 
+/// Node.js 版本源，按配置的集成策略、镜像与校验选项工作。
 pub struct NodeVersionSource {
-    /// Integration strategy: standalone / wrap-existing / hybrid
+    /// 集成策略：standalone / wrap-existing / hybrid
     pub strategy: NodeIntegrationStrategy,
-    /// Download mirror (for geo-optimized downloads)
+    /// 下载镜像（用于按地区优化下载）
     pub mirror: NodeMirror,
-    /// Whether to verify SHASUMS256.txt signatures
+    /// 是否校验 SHASUMS256.txt
     pub verify_checksum: bool,
-    /// Windows activation strategy
+    /// Windows 激活策略
     #[cfg(target_os = "windows")]
     pub windows_activation: WindowsActivationStrategy,
 }
 
 impl NodeVersionSource {
+    /// 使用默认配置创建版本源：Hybrid 策略、官方镜像、开启校验。
     pub fn new() -> Self {
         Self {
             strategy: NodeIntegrationStrategy::default(),
@@ -116,40 +122,10 @@ impl NodeVersionSource {
         }
     }
 
-    fn platform_file_pattern(&self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            "win-x64"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "linux-x64"
-        }
-        #[cfg(target_os = "macos")]
-        {
-            "darwin-arm64"
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        {
-            "linux-x64"
-        }
-    }
-
-    fn archive_ext(&self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            "zip"
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            "tar.gz"
-        }
-    }
-
-    /// Fetch versions from the official Node.js dist index.
+    /// 从官方 Node.js dist 索引获取版本。
     async fn fetch_from_nodejs_org(&self) -> Result<Vec<RuntimeVersion>> {
-        let platform = self.platform_file_pattern();
-        let ext = self.archive_ext();
+        let platform_label = platform::node_dist_platform();
+        let ext = platform::archive_ext(&RuntimeType::Node);
 
         let client = get_http_client();
         let response = client
@@ -166,7 +142,7 @@ impl NodeVersionSource {
         let mut versions: Vec<RuntimeVersion> = entries
             .into_iter()
             .filter(|e| {
-                let has_platform_file = e.files.iter().any(|f| f.contains(platform));
+                let has_platform_file = e.files.iter().any(|f| f.contains(platform_label));
                 let is_stable = !matches!(&e.lts, serde_json::Value::Bool(false));
                 has_platform_file && is_stable
             })
@@ -177,7 +153,7 @@ impl NodeVersionSource {
                     .unwrap_or(&e.version)
                     .to_string();
                 let lts = e.lts.as_str().map(|s| s.to_string());
-                let url = self.mirror.download_url(&version, platform, ext);
+                let url = self.mirror.download_url(&version, platform_label, ext);
 
                 RuntimeVersion {
                     runtime_type: RuntimeType::Node,
@@ -196,30 +172,13 @@ impl NodeVersionSource {
             })
             .collect();
 
-        // Sort: newest version first (semver comparison)
-        versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let b_parts: Vec<u64> = b
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
-                if av != bv {
-                    return bv.cmp(av);
-                }
-            }
-            b_parts.len().cmp(&a_parts.len())
-        });
+        // 排序：新版本在前（逐段数值比较）
+        sort_versions_desc(&mut versions);
 
         Ok(versions)
     }
 
-    /// Fetch versions from the best available external manager.
+    /// 从可用的外部版本管理器中获取版本。
     async fn fetch_from_external_manager(&self) -> Result<Vec<RuntimeVersion>> {
         let managers = ExternalNodeManager::detect_all().await;
         let available: Vec<ExternalManager> = managers
@@ -241,8 +200,8 @@ impl NodeVersionSource {
             for ver in versions {
                 let url = self.mirror.download_url(
                     &ver,
-                    self.platform_file_pattern(),
-                    self.archive_ext(),
+                    platform::node_dist_platform(),
+                    platform::archive_ext(&RuntimeType::Node),
                 );
                 combined.push(RuntimeVersion {
                     runtime_type: RuntimeType::Node,
@@ -257,7 +216,7 @@ impl NodeVersionSource {
             }
         }
 
-        // Deduplicate by version (keep first occurrence = external manager priority)
+        // 按版本号去重（保留首次出现，即外部管理器优先级更高）
         combined.sort_by(|a, b| a.version.cmp(&b.version));
         combined.dedup_by(|a, b| a.version == b.version);
 
@@ -270,16 +229,16 @@ impl NodeVersionSource {
         Ok(combined)
     }
 
-    /// Verify a downloaded binary against the official SHASUMS256.txt.
+    /// 用官方 SHASUMS256.txt 校验下载的二进制。
     pub async fn verify_download(&self, version: &str, binary: &[u8]) -> Result<bool> {
         if !self.verify_checksum {
             return Ok(true);
         }
 
-        let platform = self.platform_file_pattern();
-        let ext = self.archive_ext();
+        let platform_label = platform::node_dist_platform();
+        let ext = platform::archive_ext(&RuntimeType::Node);
         let shasums_url = self.mirror.shasums_url(version);
-        let filename = format!("node-v{}-{}.{}", version, platform, ext);
+        let filename = format!("node-v{}-{}.{}", version, platform_label, ext);
 
         let client = get_http_client();
         let response = client
@@ -298,7 +257,7 @@ impl NodeVersionSource {
             .await
             .map_err(crate::core::error::AppError::Http)?;
 
-        // Find expected hash for our file
+        // 找到本文件对应的期望哈希
         let expected_hash = text
             .lines()
             .find(|line| line.contains(&filename))
@@ -310,7 +269,7 @@ impl NodeVersionSource {
                 ))
             })?;
 
-        // Compute actual SHA256
+        // 计算实际的 SHA256
         let actual_hash = {
             use sha2::Digest;
             let mut hasher = sha2::Sha256::new();
@@ -330,7 +289,7 @@ impl NodeVersionSource {
         Ok(true)
     }
 
-    /// Check if symlinks are supported on Windows (admin or Developer Mode).
+    /// 检查 Windows 上是否支持创建符号链接（管理员权限或开发者模式）。
     #[cfg(target_os = "windows")]
     pub fn can_create_symlink() -> bool {
         let tmp_dir = std::env::temp_dir();
@@ -361,12 +320,12 @@ impl VersionSource for NodeVersionSource {
             NodeIntegrationStrategy::Standalone => self.fetch_from_nodejs_org().await,
             NodeIntegrationStrategy::WrapExisting => self.fetch_from_external_manager().await,
             NodeIntegrationStrategy::Hybrid => {
-                // Try external managers first, fall back to self-managed
+                // 优先使用外部管理器，失败时回退到内置下载
                 let external_result = self.fetch_from_external_manager().await;
 
                 match external_result {
                     Ok(mut ext_versions) => {
-                        // Supplement with standalone versions (dedup)
+                        // 用内置版本补充（去重）
                         if let Ok(standalone) = self.fetch_from_nodejs_org().await {
                             let existing: std::collections::HashSet<String> =
                                 ext_versions.iter().map(|v| v.version.clone()).collect();
@@ -376,29 +335,12 @@ impl VersionSource for NodeVersionSource {
                                 }
                             }
                         }
-                        // Resorted
-                        ext_versions.sort_by(|a, b| {
-                            let a_p: Vec<u64> = a
-                                .version
-                                .split('.')
-                                .filter_map(|s| s.parse().ok())
-                                .collect();
-                            let b_p: Vec<u64> = b
-                                .version
-                                .split('.')
-                                .filter_map(|s| s.parse().ok())
-                                .collect();
-                            for (av, bv) in a_p.iter().zip(b_p.iter()) {
-                                if av != bv {
-                                    return bv.cmp(av);
-                                }
-                            }
-                            b_p.len().cmp(&a_p.len())
-                        });
+                        // 重新排序
+                        sort_versions_desc(&mut ext_versions);
                         Ok(ext_versions)
                     }
                     Err(_) => {
-                        // No external manager available, use standalone
+                        // 没有可用的外部管理器，使用内置下载
                         self.fetch_from_nodejs_org().await
                     }
                 }

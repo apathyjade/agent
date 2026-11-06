@@ -1,8 +1,7 @@
-//! Shared text-embedding service.
+//! 共享的文本 embedding 服务。
 //!
-//! Owned by `AppState` and injected into both `MemoryManager` and the intent
-//! router so the OpenAI client is initialised once. Every failure path returns
-//! `None`; callers degrade instead of failing the request.
+//! 由 `AppState` 持有，并注入 `MemoryManager` 与意图路由器，使 OpenAI client 只
+//! 初始化一次。所有失败路径都返回 `None`；调用方降级处理，而不是让请求失败。
 
 use std::sync::Arc;
 
@@ -12,7 +11,7 @@ use rig::operation::Embedding;
 
 const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 
-/// Minimal embedding boundary, so tests can inject a deterministic fake.
+/// 最小化的 embedding 边界，便于测试注入确定性的替身。
 #[async_trait]
 pub trait TextEmbedder: Send + Sync {
     async fn embed(&self, text: &str) -> Option<Vec<f32>>;
@@ -35,14 +34,14 @@ impl TextEmbedder for RigEmbedder {
     }
 }
 
-/// Shared embedding boundary used by memory retrieval and intent recall.
+/// 记忆检索与意图召回共用的 embedding 边界。
 pub struct EmbeddingService {
     embedder: Option<Arc<dyn TextEmbedder>>,
 }
 
 impl EmbeddingService {
-    /// Build the production service. `None` or an empty key means the service
-    /// stays unavailable and every `embed` returns `None`.
+    /// 构造生产环境实例。`None` 或空 key 表示服务保持不可用，此时每次
+    /// `embed` 都返回 `None`。
     pub fn new(openai_api_key: Option<String>, model_id: Option<&str>) -> Self {
         let key = match openai_api_key.filter(|key| !key.is_empty()) {
             Some(key) => key,
@@ -76,11 +75,12 @@ impl EmbeddingService {
         }
     }
 
+    /// 服务是否可用；不可用时 `embed` 恒为 `None`，调用方无需反复重试。
     pub fn available(&self) -> bool {
         self.embedder.is_some()
     }
 
-    /// Embed one text, returning `None` on any failure.
+    /// 对一段文本做 embedding，任何失败都返回 `None`。空白文本直接跳过。
     pub async fn embed(&self, text: &str) -> Option<Vec<f32>> {
         let embedder = self.embedder.as_ref()?;
         if text.trim().is_empty() {

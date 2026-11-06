@@ -1,8 +1,7 @@
-// ── Node.js External Version Manager Integration ──
-//
-// Detects and wraps existing Node.js version managers (fnm, volta, nvm, nvm-windows).
-// Allows the Agent to piggyback on the user's existing toolchain instead of
-// managing Node versions independently.
+//! Node.js 外部版本管理器集成。
+//!
+//! 检测并包装用户已有的 Node.js 版本管理器（fnm、volta、nvm、nvm-windows），
+//! 让应用可以复用现有工具链，而不是另起一套 Node 版本管理。
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -11,20 +10,21 @@ use tokio::process::Command;
 
 use crate::core::error::Result;
 
-/// External Node.js version managers that Agent can integrate with.
+/// 应用可集成的外部 Node.js 版本管理器。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalManager {
-    /// Fast Node Manager (Rust) — https://fnm.vercel.app
+    /// Fast Node Manager（Rust 实现）—— https://fnm.vercel.app
     Fnm,
-    /// Volta JS Toolchain Manager (Rust) — https://volta.sh
+    /// Volta JS 工具链管理器（Rust 实现）—— https://volta.sh
     Volta,
-    /// nvm (Shell) — https://github.com/nvm-sh/nvm
+    /// nvm（Shell 实现）—— https://github.com/nvm-sh/nvm
     Nvm,
-    /// nvm-windows (Go) — https://github.com/coreybutler/nvm-windows
+    /// nvm-windows（Go 实现）—— https://github.com/coreybutler/nvm-windows
     NvmWindows,
 }
 
 impl ExternalManager {
+    /// 管理器的短名称（用于日志与配置）。
     pub fn name(&self) -> &'static str {
         match self {
             ExternalManager::Fnm => "fnm",
@@ -35,19 +35,27 @@ impl ExternalManager {
     }
 }
 
-/// Strategy for how Agent resolves Node.js versions.
+/// 应用解析 Node.js 版本的集成策略。
+///
+/// 三种策略的取舍：
+/// - [`NodeIntegrationStrategy::Standalone`]：完全使用应用内置下载，适合干净
+///   环境，行为可预测但会重复占用磁盘。
+/// - [`NodeIntegrationStrategy::WrapExisting`]：只使用外部管理器；检测不到时
+///   直接报错，适合用户已明确用 fnm/volta/nvm 管理版本的项目。
+/// - [`NodeIntegrationStrategy::Hybrid`]（默认）：优先外部管理器，失败时回退
+///   到内置下载，兼顾复用与可用性。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum NodeIntegrationStrategy {
-    /// Only use Agent's built-in Node downloads (no external wrap).
+    /// 只使用应用内置的 Node 下载（不包装外部管理器）。
     Standalone,
-    /// Only use external managers; fail if none found.
+    /// 只使用外部管理器；一个都没检测到时失败。
     WrapExisting,
-    /// Prefer external managers, fall back to self-managed.
+    /// 优先使用外部管理器，失败时回退到应用自管理。
     #[default]
     Hybrid,
 }
 
-/// Result of external manager detection.
+/// 外部管理器检测结果。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExternalManagerStatus {
     pub available: Vec<ExternalManager>,
@@ -56,44 +64,48 @@ pub struct ExternalManagerStatus {
     pub managed_versions: Vec<String>,
 }
 
-/// Detects and wraps external Node.js version managers.
+/// 检测并包装外部 Node.js 版本管理器。
 pub struct ExternalNodeManager {
     pub strategy: NodeIntegrationStrategy,
 }
 
 impl ExternalNodeManager {
+    /// 用指定策略创建管理器。
     pub fn new(strategy: NodeIntegrationStrategy) -> Self {
         Self { strategy }
     }
 
-    /// Detect which external managers are available on the system.
+    /// 检测系统上有哪些外部管理器可用。
+    ///
+    /// 会依次执行各管理器的版本命令；`nvm` 是 Shell 函数，改用环境变量与
+    /// 常见安装路径判断。该函数只做本地探测，不访问网络。
     pub async fn detect_all() -> Vec<(ExternalManager, bool)> {
         let mut results = Vec::new();
 
-        // fnm: check `fnm --version`
+        // fnm：检查 `fnm --version`
         let fnm_ok = Self::check_command("fnm", &["--version"]).await;
         results.push((ExternalManager::Fnm, fnm_ok));
 
-        // volta: check `volta --version`
+        // volta：检查 `volta --version`
         let volta_ok = Self::check_command("volta", &["--version"]).await;
         results.push((ExternalManager::Volta, volta_ok));
 
-        // nvm: check $NVM_DIR/nvm.sh or `nvm --version` (nvm is a shell function)
+        // nvm：检查 $NVM_DIR/nvm.sh 或 `nvm --version`（nvm 是 Shell 函数）
         let nvm_ok = Self::detect_nvm().await;
         results.push((ExternalManager::Nvm, nvm_ok));
 
-        // nvm-windows: check `nvm version`
+        // nvm-windows：检查 `nvm version`
         let nvmw_ok = Self::check_command("nvm", &["version"]).await;
         if nvmw_ok && !fnm_ok {
-            // Only consider nvm-windows if fnm isn't also present
-            // (nvm-windows and fnm both respond to `nvm --version` ambiguity)
+            // 只有 fnm 不存在时才认为这是 nvm-windows
+            // （两者都会响应 `nvm --version`，存在歧义）
             results.push((ExternalManager::NvmWindows, nvmw_ok));
         }
 
         results
     }
 
-    /// Quick check: does a command exist and respond?
+    /// 快速检查：命令是否存在且能正常响应。
     async fn check_command(cmd: &str, args: &[&str]) -> bool {
         Command::new(cmd)
             .args(args)
@@ -105,14 +117,14 @@ impl ExternalNodeManager {
             .unwrap_or(false)
     }
 
-    /// nvm detection: check env var and shell function.
+    /// nvm 检测：检查环境变量与 Shell 函数。
     async fn detect_nvm() -> bool {
-        // Check NVM_DIR environment variable
+        // 检查 NVM_DIR 环境变量
         if std::env::var("NVM_DIR").is_ok() {
             return true;
         }
-        // Try sourcing nvm.sh and running nvm --version
-        // This is inherently fragile, so we also check a common path
+        // 尝试 source nvm.sh 并运行 nvm --version
+        // 这种做法本身不稳定，因此同时检查常见安装路径
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_default();
@@ -127,7 +139,7 @@ impl ExternalNodeManager {
         candidate_paths.iter().any(|p| p.exists())
     }
 
-    /// Get the version of Node managed by a specific external manager.
+    /// 获取某个外部管理器当前使用的 Node 版本。
     pub async fn get_manager_node_version(manager: &ExternalManager) -> Option<String> {
         match manager {
             ExternalManager::Fnm => {
@@ -159,7 +171,7 @@ impl ExternalNodeManager {
                     .ok()?;
                 if out.status.success() {
                     let output = String::from_utf8_lossy(&out.stdout);
-                    // Parse: "Node.js v20.18.3 (default)"
+                    // 解析："Node.js v20.18.3 (default)"
                     output.lines().next().and_then(|line| {
                         line.split_whitespace()
                             .nth(1)
@@ -170,7 +182,7 @@ impl ExternalNodeManager {
                 }
             }
             ExternalManager::Nvm => {
-                // nvm is a shell function; invoke via bash -c
+                // nvm 是 Shell 函数，需通过 bash -c 调用
                 let out = Command::new("bash")
                     .args(["-lc", "nvm current 2>/dev/null"])
                     .stdout(Stdio::piped())
@@ -199,7 +211,7 @@ impl ExternalNodeManager {
                     .ok()?;
                 if out.status.success() {
                     let output = String::from_utf8_lossy(&out.stdout);
-                    // Find line with "*" marking current
+                    // 找到带 "*" 标记的当前版本行
                     output.lines().find(|l| l.contains('*')).and_then(|l| {
                         l.split_whitespace()
                             .find(|w| w.contains('.'))
@@ -212,7 +224,7 @@ impl ExternalNodeManager {
         }
     }
 
-    /// List all Node versions managed by a specific external manager.
+    /// 列出某个外部管理器管理的所有 Node 版本。
     pub async fn list_manager_versions(manager: &ExternalManager) -> Vec<String> {
         let result = match manager {
             ExternalManager::Fnm => {
@@ -287,7 +299,7 @@ impl ExternalNodeManager {
         result.unwrap_or_default()
     }
 
-    /// Helper: run a command, parse stdout lines with a closure.
+    /// 辅助函数：执行命令并用闭包解析 stdout 的每一行。
     async fn run_cmd_parse_lines<F>(cmd: &str, args: &[&str], parser: F) -> Option<Vec<String>>
     where
         F: Fn(&str) -> Option<String>,
@@ -307,7 +319,7 @@ impl ExternalNodeManager {
         }
     }
 
-    /// Install a Node version using the preferred external manager.
+    /// 使用首选的外部管理器安装 Node 版本。
     pub async fn install_via_manager(manager: &ExternalManager, version: &str) -> Result<()> {
         match manager {
             ExternalManager::Fnm => {
@@ -379,7 +391,7 @@ impl ExternalNodeManager {
         Ok(())
     }
 
-    /// Switch active Node version via the preferred manager.
+    /// 通过首选管理器切换当前 Node 版本。
     pub async fn switch_via_manager(manager: &ExternalManager, version: &str) -> Result<()> {
         match manager {
             ExternalManager::Fnm => {
@@ -400,8 +412,8 @@ impl ExternalNodeManager {
                 }
             }
             ExternalManager::Volta => {
-                // Volta uses shims — no explicit "use" needed.
-                // But we can pin the default via `volta pin node@<ver>`
+                // Volta 使用 shim —— 无需显式 "use"。
+                // 但可以通过 `volta pin node@<ver>` 固定默认版本
                 let pin_arg = format!("node@{}", version);
                 let _ = Command::new("volta")
                     .args(["pin", &pin_arg])

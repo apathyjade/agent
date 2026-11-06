@@ -1,3 +1,8 @@
+//! 思考 worker：只做纯 LLM 推理，不接触任何外部工具。
+//!
+//! 适合需要结构化分析的子任务；系统提示词强制按「问题分析 → 上下文 →
+//! 方案比较 → 选定方案 → 执行计划」的步骤输出。
+
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -25,11 +30,13 @@ Step-by-step plan with clear checkpoints. Note parallelization opportunities.
 
 Then provide your final, detailed analysis."#;
 
+/// 深度推理 worker。
 pub struct ThinkerWorker {
     providers: Arc<Mutex<ProviderRegistry>>,
 }
 
 impl ThinkerWorker {
+    /// 用共享的 provider 注册表构造 worker。
     pub fn new(providers: Arc<Mutex<ProviderRegistry>>) -> Self {
         Self { providers }
     }

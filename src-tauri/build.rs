@@ -6,7 +6,7 @@ fn main() {
     #[cfg(windows)]
     {
         let manifest = std::path::Path::new(
-            &std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"),
+            &std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string()),
         )
         .join("tests.manifest");
         println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");

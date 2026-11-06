@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Select, Switch } from 'antd';
 import { Sparkles, Wrench, Server, FolderOpen, X, Puzzle } from 'lucide-react';
 import { useStore } from '../../store';
+import type { ToolInfo } from '../../types';
 
 interface SessionConfigPanelProps {
   onStart: (config: { modelId: string; personaId: string | null; enabledTools: string[]; workspacePath?: string | null }) => void;
@@ -26,6 +27,7 @@ export function SessionConfigPanel({ onStart, onCancel }: SessionConfigPanelProp
   ));
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
+  const [expandedTool, setExpandedTool] = useState<string | null>(null);
   const workspaceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -114,18 +116,45 @@ export function SessionConfigPanel({ onStart, onCancel }: SessionConfigPanelProp
             {expandedSection === 'tools' && (
               <div className="px-3 pb-2 space-y-1 border-t border-gray-100 dark:border-gray-700 pt-2">
                 {tools.map(tool => (
-                  <div key={tool.name} className="flex items-center justify-between py-1">
-                    <span className="text-xs text-gray-700 dark:text-gray-300 capitalize">{tool.name.replace(/_/g, ' ')}</span>
-                    <Switch
-                      size="small"
-                      checked={enabledTools.has(tool.name)}
-                      onChange={() => toggleTool(tool.name)}
-                    />
+                  <div key={tool.name} className="py-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedTool(expandedTool === tool.name ? null : tool.name)
+                        }
+                        className="flex flex-wrap items-center gap-1 text-left"
+                      >
+                        <span className="text-xs text-gray-700 dark:text-gray-300 capitalize">
+                          {tool.name.replace(/_/g, ' ')}
+                        </span>
+                        <ToolRiskBadges tool={tool} />
+                      </button>
+                      <Switch
+                        size="small"
+                        checked={enabledTools.has(tool.name)}
+                        onChange={() => toggleTool(tool.name)}
+                      />
+                    </div>
+                    {expandedTool === tool.name && (
+                      <div className="mt-1.5 space-y-1.5 pl-1">
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                          {tool.description}
+                        </p>
+                        <ToolParameters tool={tool} />
+                        <p className="text-[10px] text-gray-400">
+                          来源：{tool.source === 'builtin' ? '内置' : tool.source}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ))}
                 {tools.length === 0 && (
                   <p className="text-xs text-gray-400 py-2">暂无工具</p>
                 )}
+                <p className="text-[10px] text-gray-400 pt-1 border-t border-gray-100 dark:border-gray-700">
+                  未启用可能来自全局开关；MCP 工具由服务器配置决定；意图白名单在每轮路由时生效，无法在此固定。
+                </p>
               </div>
             )}
           </div>
@@ -246,6 +275,77 @@ export function SessionConfigPanel({ onStart, onCancel }: SessionConfigPanelProp
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** 工具风险徽标：只读 / 可写 / 外部。 */
+function ToolRiskBadges({ tool }: { tool: ToolInfo }) {
+  const badges: Array<{ label: string; className: string }> = [];
+  if (tool.read_only) {
+    badges.push({
+      label: '只读',
+      className: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+    });
+  }
+  if (tool.destructive) {
+    badges.push({
+      label: '可写',
+      className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+    });
+  }
+  if (tool.open_world) {
+    badges.push({
+      label: '外部',
+      className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+    });
+  }
+
+  return (
+    <>
+      {badges.map((badge) => (
+        <span key={badge.label} className={`text-[10px] px-1 py-0.5 rounded ${badge.className}`}>
+          {badge.label}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** 参数表：名称 / 类型 / 是否必填。 */
+function ToolParameters({ tool }: { tool: ToolInfo }) {
+  const schema = tool.parameters as {
+    properties?: Record<string, { type?: string; description?: string }>;
+    required?: string[];
+  };
+  const properties = schema.properties ?? {};
+  const required = new Set(schema.required ?? []);
+  const entries = Object.entries(properties);
+
+  if (entries.length === 0) {
+    return <p className="text-[10px] text-gray-400">无参数</p>;
+  }
+
+  return (
+    <div className="rounded border border-gray-100 dark:border-gray-700 overflow-hidden">
+      <table className="w-full text-[10px]">
+        <thead className="bg-gray-50 dark:bg-gray-800 text-gray-400">
+          <tr>
+            <th className="text-left px-2 py-1 font-medium">参数</th>
+            <th className="text-left px-2 py-1 font-medium">类型</th>
+            <th className="text-left px-2 py-1 font-medium">必填</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([name, property]) => (
+            <tr key={name} className="border-t border-gray-100 dark:border-gray-700">
+              <td className="px-2 py-1 font-mono text-gray-700 dark:text-gray-300">{name}</td>
+              <td className="px-2 py-1 text-gray-500">{property.type ?? 'any'}</td>
+              <td className="px-2 py-1 text-gray-500">{required.has(name) ? '是' : '否'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

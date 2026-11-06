@@ -1,7 +1,8 @@
-// ── Toolchain Module: Local Runtime Detection, Version Management & Installation ──
-//
-// Standalone toolchain manager for language runtimes (Node, Python, ...).
-// It must not depend on the desktop app, its database or its UI state.
+//! 工具链模块：本地运行时检测、版本管理与安装。
+//!
+//! 这是一个独立的运行时工具链管理器（Node、Python 等），不依赖桌面应用本身，
+//! 也不依赖其数据库或 UI 状态。上层（app / CLI）通过 [`services::RuntimeServices`]
+//! 组合这些能力，避免两个入口的安装、切换语义出现分歧。
 
 pub mod alias;
 mod detector;
@@ -14,11 +15,13 @@ pub mod manager_executor;
 mod manifest;
 pub mod node_integration;
 pub mod node_toolchain;
+pub mod platform;
 pub mod registry;
 pub mod resolver;
 pub mod services;
 pub mod sources;
 mod upgrade;
+pub mod version;
 
 pub use alias::AliasManager;
 pub use detector::RuntimeDetector;
@@ -31,9 +34,11 @@ pub use resolver::VersionResolver;
 pub use services::{external_manager, RuntimeOptions, RuntimeServices};
 pub use upgrade::{check_updates, VersionUpdate};
 
-// ── Runtime Types ──
+// ── 运行时类型 ──
 
-/// Supported runtime environments.
+/// 受支持的运行时环境。
+///
+/// 序列化时统一使用 `snake_case`，与前端 / 数据库中的运行时标识保持一致。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeType {
@@ -92,6 +97,10 @@ impl std::str::FromStr for RuntimeType {
 }
 
 impl RuntimeType {
+    /// 面向用户展示的运行时名称。
+    ///
+    /// 仅用于 UI 文案，不参与路径或命令解析；持久化请使用 [`RuntimeType::dir_name`]
+    /// 或 `Display` 实现。
     pub fn display_name(&self) -> &'static str {
         match self {
             RuntimeType::Node => "Node.js",
@@ -107,7 +116,10 @@ impl RuntimeType {
         }
     }
 
-    /// CLI commands for this runtime (used for PATH detection).
+    /// 该运行时对应的 CLI 命令列表，按探测优先级排列（用于 PATH 检测）。
+    ///
+    /// 例如 Python 优先探测 `python3`，其次 `python`；列表第一项即
+    /// [`RuntimeType::primary_command`] 的返回值。
     pub fn commands(&self) -> &[&'static str] {
         match self {
             RuntimeType::Node => &["node", "npx"],
@@ -123,12 +135,20 @@ impl RuntimeType {
         }
     }
 
-    /// Primary command name.
+    /// 主命令名，即 [`RuntimeType::commands`] 的第一项。
+    ///
+    /// 用于在内置版本目录中查找可执行文件。
     pub fn primary_command(&self) -> &'static str {
         self.commands()[0]
     }
 
-    /// Version check arguments (e.g. ["--version"] or ["version"] for Go).
+    /// 查询版本号时传给命令的参数。
+    ///
+    /// 大多数运行时使用 `--version`，但 **Go 与 Java 不同**：
+    /// - Go 使用子命令 `version`（`go version`）；
+    /// - Java 使用单短横线 `-version`（`java -version`，输出到 stderr）。
+    ///
+    /// 探测代码必须使用该函数，不能硬编码 `--version`。
     pub fn version_args(&self) -> &'static [&'static str] {
         match self {
             RuntimeType::Go => &["version"],
@@ -137,7 +157,10 @@ impl RuntimeType {
         }
     }
 
-    /// Infer runtime type from an executable command (ignores arguments).
+    /// 从可执行命令推断运行时类型，忽略命令后面的参数。
+    ///
+    /// 例如 `"npx -y foo"` 会按可执行文件名 `npx` 推断出 Node。无法识别时返回
+    /// `None`，不会报错。
     pub fn infer_from_command(cmd: &str) -> Option<Self> {
         let executable = cmd.split_whitespace().next()?;
         let base = std::path::Path::new(executable)
@@ -147,7 +170,7 @@ impl RuntimeType {
         base.parse().ok()
     }
 
-    /// All variants as a slice.
+    /// 全部运行时变体，顺序固定，供遍历检测与 UI 展示使用。
     pub fn all() -> &'static [RuntimeType] {
         &[
             RuntimeType::Node,
@@ -163,7 +186,10 @@ impl RuntimeType {
         ]
     }
 
-    /// Directory name used for storing versions on disk.
+    /// 磁盘上存放该运行时各版本的目录名。
+    ///
+    /// 与 `Display` 输出不同，该值用于拼接安装路径，一经发布不应随意改动，
+    /// 否则会找不到已安装的版本。
     pub fn dir_name(&self) -> &'static str {
         match self {
             RuntimeType::Node => "node",
@@ -180,21 +206,24 @@ impl RuntimeType {
     }
 }
 
-// ── Installation Source ──
+// ── 安装来源 ──
 
+/// 运行时版本的来源。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeSource {
+    /// 来自系统 PATH 中已有的安装。
     System,
+    /// 由应用内置安装器下载并管理。
     BuiltIn,
-    /// No usable installation was found. Kept as `"none"` on the wire for the UI.
+    /// 没有找到可用安装；序列化时保持为 `"none"` 供 UI 判断。
     #[serde(rename = "none")]
     Unavailable,
 }
 
-// ── Installed Version ──
+// ── 已安装版本 ──
 
-/// A single installed version of a runtime.
+/// 某个运行时的单个已安装版本。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InstalledVersion {
     pub version: String,
@@ -203,27 +232,27 @@ pub struct InstalledVersion {
     pub is_active: bool,
 }
 
-// ── Runtime Info ──
+// ── 运行时信息 ──
 
-/// Detailed info about a detected runtime.
+/// 检测到的运行时详细信息。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeInfo {
     pub runtime_type: RuntimeType,
     pub display_name: String,
     pub source: RuntimeSource,
-    /// Currently active version string (if installed).
+    /// 当前生效的版本号（未安装时为 `None`）。
     pub version: Option<String>,
-    /// All locally installed versions.
+    /// 本地已安装的全部版本。
     pub installed_versions: Vec<InstalledVersion>,
-    /// Path to the active executable.
+    /// 当前生效可执行文件的路径。
     pub executable_path: Option<String>,
     pub error: Option<String>,
     pub available: bool,
 }
 
-// ── PATH Conflict Detection ──
+// ── PATH 冲突检测 ──
 
-/// A single executable found on PATH.
+/// PATH 中找到的单个可执行文件。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FoundExecutable {
     pub path: String,
@@ -232,7 +261,7 @@ pub struct FoundExecutable {
     pub is_active: bool,
 }
 
-/// PATH conflict info for a runtime type.
+/// 某个运行时的 PATH 冲突信息。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PathConflict {
     pub runtime_type: RuntimeType,
@@ -240,8 +269,9 @@ pub struct PathConflict {
     pub conflict: bool,
 }
 
-// ── Install Progress ──
+// ── 安装进度 ──
 
+/// 安装过程中的进度事件，通过回调推送给 UI。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct InstallProgress {
@@ -251,9 +281,9 @@ pub struct InstallProgress {
     pub message: String,
 }
 
-// ── Available Version (for download) ──
+// ── 可下载版本 ──
 
-/// A version available for download from the internet.
+/// 可从网络下载的版本条目。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AvailableVersion {
     pub version: String,
@@ -261,4 +291,4 @@ pub struct AvailableVersion {
     pub url: String,
 }
 
-// ── Manager extracted to manager.rs ──
+// ── Manager 已拆分到 manager.rs ──

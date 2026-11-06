@@ -1,12 +1,12 @@
-//! Parser for `SKILL.md` files with YAML frontmatter.
+//! 带 YAML frontmatter 的 `SKILL.md` 解析器。
 //!
-//! A skill markdown file may start with a `---` fenced YAML block that carries
-//! metadata such as name, description, version, author and tags. Everything
-//! after the closing fence is the markdown body.
+//! 技能 markdown 文件可以以 `---` 围起来的 YAML 块开头，携带 name、
+//! description、version、author、tags 等元数据；闭合围栏之后的内容是
+//! markdown 正文。
 
 use serde_yaml::Value;
 
-/// Parsed representation of a `SKILL.md` file.
+/// `SKILL.md` 文件的解析结果。
 #[derive(Debug, Clone, Default)]
 pub struct SkillMd {
     pub name: Option<String>,
@@ -14,33 +14,31 @@ pub struct SkillMd {
     pub version: Option<String>,
     pub author: Option<String>,
     pub tags: Option<Vec<String>>,
-    /// Markdown body, with leading blank lines stripped.
+    /// markdown 正文，已去掉开头的空行。
     pub body: String,
 }
 
-/// Parse a `SKILL.md` document.
+/// 解析一个 `SKILL.md` 文档。
 ///
-/// Never panics: when the frontmatter is absent or malformed, all metadata is
-/// `None` and `body` falls back to the original content.
+/// 永不 panic：frontmatter 缺失或格式错误时所有元数据为 `None`，
+/// `body` 回退为原始内容。
 pub fn parse(content: &str) -> SkillMd {
-    // Strip one leading UTF-8 BOM, which some editors prepend and which would
-    // otherwise hide the opening fence. The fallback paths still return the
-    // original content unchanged.
+    // 去掉一个开头的 UTF-8 BOM，部分编辑器会写入它并遮住起始围栏。
+    // 各回退分支仍返回未经修改的原始内容。
     let source = content.strip_prefix('\u{feff}').unwrap_or(content);
 
-    // Normalize line endings so the fence detection behaves identically for
-    // LF and CRLF documents.
+    // 归一化换行符，使 LF 与 CRLF 文档的围栏识别行为一致。
     let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
 
     let after_open = match normalized.strip_prefix("---") {
-        // A document that is only the fence character sequence has no body.
+        // 只有围栏字符、没有正文的文档。
         Some("") => return fallback(content),
-        // The opening fence must be a standalone line, not e.g. `----`.
+        // 起始围栏必须是独立一行，例如不能是 `----`。
         Some(rest) if rest.starts_with('\n') => &rest[1..],
         _ => return fallback(content),
     };
 
-    // Locate the closing `---` line.
+    // 定位闭合的 `---` 行。
     let mut offset = 0usize;
     let mut yaml_end: Option<usize> = None;
     let mut body_start: Option<usize> = None;
@@ -55,7 +53,7 @@ pub fn parse(content: &str) -> SkillMd {
 
     let (yaml_end, body_start) = match (yaml_end, body_start) {
         (Some(y), Some(b)) => (y, b),
-        // Unterminated frontmatter: treat the whole document as body.
+        // frontmatter 未闭合：把整篇文档当作正文。
         _ => return fallback(content),
     };
 
@@ -69,7 +67,7 @@ pub fn parse(content: &str) -> SkillMd {
     } else {
         match serde_yaml::from_str(yaml) {
             Ok(value) => value,
-            // Malformed YAML: no metadata, keep the raw document as body.
+            // YAML 格式错误：无元数据，保留原始文档作为正文。
             Err(_) => return fallback(content),
         }
     };
@@ -82,8 +80,8 @@ pub fn parse(content: &str) -> SkillMd {
     if let Value::Mapping(map) = &parsed {
         md.name = lookup(map, "name").and_then(scalar_to_string);
         md.description = lookup(map, "description").and_then(scalar_to_string);
-        // Version must stay textual: YAML would reformat `1.10` to `1.1`
-        // when round-tripped through a number.
+        // version 必须保持文本形式：经过数字往返时 YAML 会把 `1.10`
+        // 重写成 `1.1`。
         md.version = lookup(map, "version").and_then(string_only);
         md.author = lookup(map, "author").and_then(scalar_to_string);
         md.tags = lookup(map, "tags").and_then(tags_to_vec);
@@ -103,7 +101,7 @@ fn lookup<'a>(map: &'a serde_yaml::Mapping, key: &str) -> Option<&'a Value> {
     map.get(Value::String(key.to_string()))
 }
 
-/// Convert a scalar YAML value to a string. Structured values are ignored.
+/// 把 YAML 标量转成字符串；结构化值忽略。
 fn scalar_to_string(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => trimmed_non_empty(s),
@@ -113,7 +111,7 @@ fn scalar_to_string(value: &Value) -> Option<String> {
     }
 }
 
-/// Accept only textual scalars. Used where numeric coercion would be lossy.
+/// 只接受文本标量。用于数字强制转换会丢失信息的位置。
 fn string_only(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => trimmed_non_empty(s),
@@ -130,7 +128,7 @@ fn trimmed_non_empty(value: &str) -> Option<String> {
     }
 }
 
-/// Accept either a YAML sequence of tags or a comma-separated string.
+/// 同时接受 YAML 序列与逗号分隔字符串两种 tags 写法。
 fn tags_to_vec(value: &Value) -> Option<Vec<String>> {
     match value {
         Value::Sequence(items) => {

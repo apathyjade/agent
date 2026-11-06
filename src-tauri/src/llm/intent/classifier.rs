@@ -1,9 +1,8 @@
-//! Data-driven intent scorer and LLM reranker.
+//! 数据驱动的意图打分器与 LLM reranker。
 //!
-//! The rerank prompt is built from [`IntentRecord`] rows, so candidate
-//! descriptions and examples live in the database instead of hard-coded
-//! tables. The LLM step returns `None` on every failure; the router owns the
-//! decision and fallback.
+//! rerank prompt 由 [`IntentRecord`] 行拼装而成，候选的描述与示例都存放在
+//! 数据库里，而不是硬编码的表格。LLM 这一步在任何失败下都返回 `None`；决策与
+//! fallback 始终由路由器负责。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -13,7 +12,21 @@ use tokio::sync::Mutex;
 use crate::core::db::models::{IntentRecord, Message};
 use crate::llm::provider::ProviderRegistry;
 
-/// Context-aware reranker boundary, injectable for tests.
+/// 一次 rerank 的结果。
+///
+/// 必须把「模型明确说没有候选匹配」与「没拿到可用回答」分开：前者是可信
+/// 语义结论，路由器应停止降级；后者才允许继续用 embedding / 规则兜底。
+#[derive(Debug, Clone, PartialEq)]
+pub enum RerankOutcome {
+    /// 模型在候选集内选中了一个意图。
+    Picked { intent_id: String, confidence: f32 },
+    /// 模型明确回答 `none`：候选都不匹配。
+    NoMatch,
+    /// 调用失败、超时或回复无法解析；路由器可继续降级。
+    Unavailable,
+}
+
+/// 上下文感知的 reranker 边界，可在测试中注入替身。
 #[async_trait::async_trait]
 pub trait IntentReranker: Send + Sync {
     async fn rerank(
@@ -21,11 +34,10 @@ pub trait IntentReranker: Send + Sync {
         message: &str,
         recent_messages: &[Message],
         candidates: &[IntentRecord],
-    ) -> Option<(String, f32)>;
+    ) -> RerankOutcome;
 }
 
-/// Context-aware reranker: it receives recent messages and a narrowed
-/// candidate set, and it may answer `"none"`.
+/// 上下文感知的 reranker：接收最近消息与收窄后的候选集，并允许回答 `"none"`。
 pub struct LlmReranker {
     providers: Arc<Mutex<ProviderRegistry>>,
     model_id: Option<String>,
@@ -39,29 +51,30 @@ impl LlmReranker {
         }
     }
 
-    /// Ask the LLM to pick one candidate for `message`.
+    /// 让 LLM 为 `message` 从候选中挑一个。
     ///
-    /// Returns `None` for every failure, including an explicit `"none"` answer.
-    /// Timeouts are owned by the caller.
+    /// 调用失败、超时或回复不可解析都返回 [`RerankOutcome::Unavailable`]；
+    /// 模型显式回答 `"none"` 返回 [`RerankOutcome::NoMatch`]。超时由调用方负责。
     pub async fn rerank(
         &self,
         message: &str,
         recent_messages: &[Message],
         candidates: &[IntentRecord],
-    ) -> Option<(String, f32)> {
+    ) -> RerankOutcome {
         if candidates.is_empty() {
-            return None;
+            return RerankOutcome::Unavailable;
         }
 
-        let provider = {
-            let registry = self.providers.lock().await;
-            registry.resolve(self.model_id.as_deref()).ok()?
+        let Ok(provider) = self.providers.lock().await.resolve(self.model_id.as_deref()) else {
+            return RerankOutcome::Unavailable;
         };
 
         let preamble = build_rerank_prompt(candidates);
         let prompt = build_rerank_input(message, recent_messages);
-        let reply = provider.prompt(&preamble, &prompt).await.ok()?;
-        parse_classification_reply(&reply, candidates)
+        match provider.prompt(&preamble, &prompt).await {
+            Ok(reply) => parse_rerank_reply(&reply, candidates),
+            Err(_) => RerankOutcome::Unavailable,
+        }
     }
 }
 
@@ -72,12 +85,12 @@ impl IntentReranker for LlmReranker {
         message: &str,
         recent_messages: &[Message],
         candidates: &[IntentRecord],
-    ) -> Option<(String, f32)> {
+    ) -> RerankOutcome {
         LlmReranker::rerank(self, message, recent_messages, candidates).await
     }
 }
 
-/// Render the rerank candidate list. `none` is an explicit valid answer.
+/// 渲染 rerank 的候选列表。`none` 是显式合法的回答。
 pub fn build_rerank_prompt(candidates: &[IntentRecord]) -> String {
     let mut prompt = String::from(
         "You are an intent classifier for an AI coding assistant.\n\
@@ -110,7 +123,7 @@ pub fn build_rerank_prompt(candidates: &[IntentRecord]) -> String {
     prompt
 }
 
-/// Render the current message plus a bounded recent-conversation block.
+/// 渲染当前消息，并附上一段有长度上限的最近对话。
 pub fn build_rerank_input(message: &str, recent_messages: &[Message]) -> String {
     const MAX_TOTAL_CHARS: usize = 2000;
     const MAX_MESSAGE_CHARS: usize = 500;
@@ -142,14 +155,13 @@ pub fn build_rerank_input(message: &str, recent_messages: &[Message]) -> String 
     input
 }
 
-/// Fallback scoring driven purely by the stored data.
+/// 纯靠已存数据驱动的兜底打分。
 ///
-/// 1. Any intent whose `examples` appear in `message` (case-insensitive
-///    substring) scores `0.9`; among several hits the longest example wins.
-/// 2. Otherwise score by Chinese bigram overlap between the message and
-///    `description` + `name` (intersection over union).
+/// 1. 任何意图的 `examples` 出现在 `message` 中（大小写不敏感的子串）即得
+///    `0.9`；多个命中时长 example 优先。
+/// 2. 否则按消息与 `description` + `name` 的中文 bigram 重叠度（交并比）打分。
 ///
-/// Returns the best intent, or `None` when every score is zero.
+/// 返回最佳意图；所有分数都为 0 时返回 `None`。
 pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String, f32)> {
     let lowered_message = message.to_lowercase();
 
@@ -157,8 +169,8 @@ pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String,
     for intent in intents {
         for example in &intent.examples {
             let lowered_example = example.trim().to_lowercase();
-            // A one-character example ("改") matches almost every sentence and
-            // steals the decision from a better signal.
+            // 单字 example（如「改」）几乎能匹配任何句子，会把决策从更可靠的
+            // 信号手里抢走。
             if lowered_example.chars().count() < 2
                 || !lowered_message.contains(lowered_example.as_str())
             {
@@ -175,7 +187,7 @@ pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String,
         }
     }
     if let Some((intent, _)) = best_example {
-        // Deliberately below 1.0: an example hit is a strong hint, not proof.
+        // 故意低于 1.0：example 命中只是强提示，不是证明。
         return Some((intent.id.clone(), 0.9));
     }
 
@@ -208,13 +220,12 @@ pub fn score_intents(message: &str, intents: &[IntentRecord]) -> Option<(String,
     best.map(|(intent, score)| (intent.id.clone(), score))
 }
 
-/// Parse an LLM reply into `(intent_id, confidence)`.
+/// 把 LLM 回复解析成 [`RerankOutcome`]。
 ///
-/// Tolerates markdown fences and surrounding prose: the first JSON object that
-/// carries both `intent` and `confidence` with a finite score is used. Objects
-/// naming an unknown id, or carrying a non-finite score, are skipped. Returns
-/// `None` when no usable object remains.
-pub fn parse_classification_reply(reply: &str, intents: &[IntentRecord]) -> Option<(String, f32)> {
+/// 容忍 markdown 代码围栏与前后文：使用第一个带 `intent` 的 JSON 对象。
+/// `intent: "none"` 表示语义上的无匹配（`confidence` 可缺省）；未知 id、非有限
+/// 分数或完全没有可用对象都视为 `Unavailable`。
+pub fn parse_rerank_reply(reply: &str, intents: &[IntentRecord]) -> RerankOutcome {
     for (start, _) in reply.match_indices('{') {
         let Some(end) = matching_brace_end(reply, start) else {
             continue;
@@ -225,35 +236,40 @@ pub fn parse_classification_reply(reply: &str, intents: &[IntentRecord]) -> Opti
         let Some(intent) = value.get("intent").and_then(|v| v.as_str()) else {
             continue;
         };
+        if intent == "none" {
+            return RerankOutcome::NoMatch;
+        }
         let Some(confidence) = value.get("confidence").and_then(parse_confidence) else {
             continue;
         };
 
-        // An unknown id only disqualifies this object; a model that restates
-        // the candidate list may answer with a valid object later in the reply.
+        // 未知 id 只否定这一个对象；模型复述候选列表后，可能在回复更靠后的
+        // 位置给出合法对象。
         if !intents.iter().any(|item| item.id == intent) {
             continue;
         }
-        return Some((intent.to_string(), confidence));
+        return RerankOutcome::Picked {
+            intent_id: intent.to_string(),
+            confidence,
+        };
     }
 
-    None
+    RerankOutcome::Unavailable
 }
 
 fn parse_confidence(value: &serde_json::Value) -> Option<f32> {
     let raw = value
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))?;
-    // `clamp` does not sanitise NaN, and NaN would poison every later
-    // comparison, so non-finite values make this object unusable.
+    // `clamp` 不会清洗 NaN，而 NaN 会污染后续所有比较，因此非有限值让这个
+    // 对象直接不可用。
     if !raw.is_finite() {
         return None;
     }
     Some((raw as f32).clamp(0.0, 1.0))
 }
 
-/// Find the closing brace of the object that starts at `start`, skipping
-/// braces inside JSON strings.
+/// 找到从 `start` 开始的那个对象的右花括号，跳过 JSON 字符串内部的括号。
 fn matching_brace_end(text: &str, start: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut depth = 0usize;
@@ -288,7 +304,7 @@ fn matching_brace_end(text: &str, start: usize) -> Option<usize> {
     None
 }
 
-/// Adjacent character pairs of `text`.
+/// `text` 的相邻字符二元组。
 fn bigrams(text: &str) -> HashSet<String> {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() < 2 {
@@ -414,32 +430,60 @@ mod tests {
     #[test]
     fn parse_reply_accepts_json_fence() {
         let reply = "```json\n{\"intent\": \"builtin.software_dev.implement\", \"confidence\": 0.93, \"reason\": \"asks for code\"}\n```";
-        let parsed = parse_classification_reply(reply, &fixtures());
-        let (id, score) = parsed.expect("fenced reply should parse");
-        assert_eq!(id, "builtin.software_dev.implement");
-        assert!((score - 0.93).abs() < 1e-6);
+        assert_eq!(
+            parse_rerank_reply(reply, &fixtures()),
+            RerankOutcome::Picked {
+                intent_id: "builtin.software_dev.implement".to_string(),
+                confidence: 0.93,
+            }
+        );
     }
 
     #[test]
     fn parse_reply_accepts_surrounding_prose() {
         let reply = "Sure, here you go: {\"intent\": \"builtin.software_dev.explain\", \"confidence\": 0.6} Hope that helps.";
-        let parsed = parse_classification_reply(reply, &fixtures());
-        let (id, score) = parsed.expect("prose-wrapped reply should parse");
-        assert_eq!(id, "builtin.software_dev.explain");
-        assert!((score - 0.6).abs() < 1e-6);
+        assert_eq!(
+            parse_rerank_reply(reply, &fixtures()),
+            RerankOutcome::Picked {
+                intent_id: "builtin.software_dev.explain".to_string(),
+                confidence: 0.6,
+            }
+        );
     }
 
     #[test]
     fn parse_reply_rejects_unknown_intent() {
         let reply = "{\"intent\": \"builtin.software_dev.nope\", \"confidence\": 0.99}";
-        assert_eq!(parse_classification_reply(reply, &fixtures()), None);
+        assert_eq!(
+            parse_rerank_reply(reply, &fixtures()),
+            RerankOutcome::Unavailable
+        );
+    }
+
+    #[test]
+    fn explicit_none_is_a_match_failure_not_an_error() {
+        let reply = "{\"intent\": \"none\", \"confidence\": 0.0}";
+        assert_eq!(parse_rerank_reply(reply, &fixtures()), RerankOutcome::NoMatch);
+    }
+
+    #[test]
+    fn none_without_confidence_is_still_a_match_failure() {
+        let reply = "{\"intent\": \"none\"}";
+        assert_eq!(parse_rerank_reply(reply, &fixtures()), RerankOutcome::NoMatch);
+    }
+
+    #[test]
+    fn garbage_reply_is_unavailable() {
+        assert_eq!(
+            parse_rerank_reply("I cannot help with that.", &fixtures()),
+            RerankOutcome::Unavailable
+        );
     }
 
     #[test]
     fn bigram_overlap_scores_positive_without_example_match() {
         let intents = fixtures();
-        // No example matches; the overlap comes from 重构 / 结构 in the
-        // refactor intent's description.
+        // 没有 example 命中；重叠来自 refactor 意图描述里的「重构 / 结构」。
         let scored = score_intents("重构这个结构", &intents);
         let (id, score) = scored.expect("bigram overlap should score");
         assert_eq!(id, "builtin.software_dev.refactor");
@@ -453,8 +497,8 @@ mod tests {
                 "{{\"intent\": \"builtin.software_dev.implement\", \"confidence\": \"{raw}\"}}"
             );
             assert_eq!(
-                parse_classification_reply(&reply, &fixtures()),
-                None,
+                parse_rerank_reply(&reply, &fixtures()),
+                RerankOutcome::Unavailable,
                 "confidence {raw} must be rejected"
             );
         }
@@ -468,6 +512,7 @@ mod tests {
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
             tokens: None,
             created_at: "2026-11-05T00:00:00Z".to_string(),
         }
@@ -508,14 +553,11 @@ mod tests {
     }
 
     #[test]
-    fn rerank_reply_accepts_none_as_no_match() {
-        let reply = "{\"intent\": \"none\", \"confidence\": 0.0}";
-        assert_eq!(parse_classification_reply(reply, &fixtures()), None);
-    }
-
-    #[test]
     fn rerank_reply_rejects_unknown_candidate() {
         let reply = "{\"intent\": \"builtin.software_dev.does_not_exist\", \"confidence\": 0.9}";
-        assert_eq!(parse_classification_reply(reply, &fixtures()), None);
+        assert_eq!(
+            parse_rerank_reply(reply, &fixtures()),
+            RerankOutcome::Unavailable
+        );
     }
 }

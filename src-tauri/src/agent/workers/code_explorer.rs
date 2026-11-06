@@ -1,3 +1,13 @@
+//! 代码探索 worker：用 grep / glob / 读文件 / 目录树理解代码库。
+//!
+//! 命令语法：
+//! - `@@search_code(pattern[, path])`
+//! - `@@search_files(glob)`
+//! - `@@read_file(path)`
+//! - `@@tree_view(depth)`
+//!
+//! 搜索优先使用 ripgrep；不可用时由 `SearchEngine` 自行降级。
+
 use async_trait::async_trait;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,6 +17,13 @@ use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
 use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 use crate::features::workspace::search::SearchEngine;
+
+/// 单次搜索最多展示的匹配条数。
+const SEARCH_RESULT_LIMIT: usize = 50;
+/// 读文件时展示的最大行数。
+const READ_PREVIEW_LINES: usize = 100;
+/// `@@tree_view` 未指定深度时的默认值。
+const DEFAULT_TREE_DEPTH: usize = 2;
 
 const EXPLORER_SYSTEM_PROMPT: &str = r#"You are a code exploration agent. Your job is to understand codebases.
 
@@ -18,12 +35,14 @@ Using the search results below, analyze the code and provide:
 
 Base your analysis on the actual code search results, not assumptions."#;
 
+/// 代码探索 worker。
 pub struct CodeExplorerWorker {
     providers: Arc<Mutex<ProviderRegistry>>,
     workspace_root: Arc<Mutex<Option<String>>>,
 }
 
 impl CodeExplorerWorker {
+    /// 创建 worker；工作区根目录在调用 [`Self::set_workspace_root`] 之前为空。
     pub fn new(providers: Arc<Mutex<ProviderRegistry>>) -> Self {
         Self {
             providers,
@@ -31,10 +50,12 @@ impl CodeExplorerWorker {
         }
     }
 
+    /// 设置工作区根目录，相对路径命令都以它为基准。
     pub async fn set_workspace_root(&self, root: String) {
         *self.workspace_root.lock().await = Some(root);
     }
 
+    /// 把可选的工作区根目录解析成路径，未设置时回落到当前目录。
     fn resolve_root(workspace_root: &Option<String>) -> &Path {
         workspace_root
             .as_ref()
@@ -42,7 +63,112 @@ impl CodeExplorerWorker {
             .unwrap_or_else(|| Path::new("."))
     }
 
-    /// Parse and execute tool commands embedded in the instruction using @@tool_name(args) syntax.
+    /// 处理 `@@search_code(pattern[, path])`：按内容搜索并逐条输出。
+    fn handle_search_code(root: &Path, args: &str, out: &mut String) {
+        let (pattern, search_path) = if let Some(comma) = args.find(',') {
+            (
+                args[..comma].trim().trim_matches('"'),
+                args[comma + 1..].trim().trim_matches('"'),
+            )
+        } else {
+            (args.trim().trim_matches('"'), "")
+        };
+        let search_root = if search_path.is_empty() {
+            root
+        } else {
+            Path::new(search_path)
+        };
+
+        match SearchEngine::grep(pattern, search_root, None) {
+            Ok(matches) => {
+                for m in matches.iter().take(SEARCH_RESULT_LIMIT) {
+                    out.push_str(&format!("{}:{}: {}\n", m.file, m.line, m.content));
+                }
+                if matches.is_empty() {
+                    out.push_str(&format!("(no matches for '{}')\n", pattern));
+                }
+            }
+            Err(e) => out.push_str(&format!("Search error: {}\n", e)),
+        }
+    }
+
+    /// 处理 `@@search_files(glob)`：按文件名模式匹配。
+    fn handle_search_files(root: &Path, arg: &str, out: &mut String) {
+        let pattern = arg.trim().trim_matches('"');
+        match SearchEngine::glob(pattern, root) {
+            Ok(files) => {
+                for f in &files {
+                    out.push_str(&format!("{}\n", f.display()));
+                }
+                if files.is_empty() {
+                    out.push_str(&format!("(no files matching '{}')\n", pattern));
+                }
+            }
+            Err(e) => out.push_str(&format!("Glob error: {}\n", e)),
+        }
+    }
+
+    /// 处理 `@@read_file(path)`：输出带行号的前 100 行预览。
+    fn handle_read_file(root: &Path, arg: &str, out: &mut String) {
+        let path_str = arg.trim().trim_matches('"');
+        let file_path = if Path::new(path_str).is_absolute() {
+            std::path::PathBuf::from(path_str)
+        } else {
+            root.join(path_str)
+        };
+
+        match std::fs::read_to_string(&file_path) {
+            Ok(content) => {
+                let lines: Vec<&str> = content.lines().collect();
+                let preview: String = lines
+                    .iter()
+                    .take(READ_PREVIEW_LINES)
+                    .enumerate()
+                    .map(|(i, l)| format!("{:>4}: {}", i + 1, l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if lines.len() > READ_PREVIEW_LINES {
+                    out.push_str(&format!(
+                        "--- {} ({} lines, showing first {}) ---\n{}\n",
+                        file_path.display(),
+                        lines.len(),
+                        READ_PREVIEW_LINES,
+                        preview
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "--- {} ({} lines) ---\n{}\n",
+                        file_path.display(),
+                        lines.len(),
+                        preview
+                    ));
+                }
+            }
+            Err(e) => out.push_str(&format!("Read error: {}\n", e)),
+        }
+    }
+
+    /// 处理 `@@tree_view(depth)`：按层级输出目录树。
+    fn handle_tree_view(root: &Path, arg: &str, out: &mut String) {
+        let depth: usize = arg
+            .trim()
+            .parse()
+            .unwrap_or(DEFAULT_TREE_DEPTH);
+
+        match SearchEngine::tree(root, depth) {
+            Ok(entries) => {
+                for e in &entries {
+                    let indent = "  ".repeat(e.depth);
+                    let name = e.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                    let suffix = if e.is_dir { "/" } else { "" };
+                    out.push_str(&format!("{}{}{}\n", indent, name, suffix));
+                }
+            }
+            Err(e) => out.push_str(&format!("Tree error: {}\n", e)),
+        }
+    }
+
+    /// 解析并执行指令中内嵌的 `@@command`，返回可读的搜索结果文本。
     async fn execute_tools(instruction: &str, root: &Path) -> String {
         let mut result = String::new();
 
@@ -50,84 +176,13 @@ impl CodeExplorerWorker {
             let trimmed = line.trim();
 
             if trimmed.starts_with("@@search_code(") && trimmed.ends_with(')') {
-                let args = &trimmed[14..trimmed.len() - 1];
-                let (pattern, search_path) = if let Some(comma) = args.find(',') {
-                    (args[..comma].trim().trim_matches('"'),
-                     args[comma + 1..].trim().trim_matches('"'))
-                } else {
-                    (args.trim().trim_matches('"'), "")
-                };
-                let search_root = if search_path.is_empty() { root } else { Path::new(search_path) };
-                match SearchEngine::grep(pattern, search_root, None) {
-                    Ok(matches) => {
-                        for m in matches.iter().take(50) {
-                            result.push_str(&format!("{}:{}: {}\n", m.file, m.line, m.content));
-                        }
-                        if matches.is_empty() {
-                            result.push_str(&format!("(no matches for '{}')\n", pattern));
-                        }
-                    }
-                    Err(e) => result.push_str(&format!("Search error: {}\n", e)),
-                }
+                Self::handle_search_code(root, &trimmed[14..trimmed.len() - 1], &mut result);
             } else if trimmed.starts_with("@@search_files(") && trimmed.ends_with(')') {
-                let pattern = &trimmed[15..trimmed.len() - 1].trim().trim_matches('"');
-                match SearchEngine::glob(pattern, root) {
-                    Ok(files) => {
-                        for f in &files {
-                            result.push_str(&format!("{}\n", f.display()));
-                        }
-                        if files.is_empty() {
-                            result.push_str(&format!("(no files matching '{}')\n", pattern));
-                        }
-                    }
-                    Err(e) => result.push_str(&format!("Glob error: {}\n", e)),
-                }
+                Self::handle_search_files(root, &trimmed[15..trimmed.len() - 1], &mut result);
             } else if trimmed.starts_with("@@read_file(") && trimmed.ends_with(')') {
-                let path_str = &trimmed[12..trimmed.len() - 1].trim().trim_matches('"');
-                let file_path = if Path::new(path_str).is_absolute() {
-                    std::path::PathBuf::from(path_str)
-                } else {
-                    root.join(path_str)
-                };
-                match std::fs::read_to_string(&file_path) {
-                    Ok(content) => {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let preview: String = lines.iter()
-                            .take(100)
-                            .enumerate()
-                            .map(|(i, l)| format!("{:>4}: {}", i + 1, l))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if lines.len() > 100 {
-                            result.push_str(&format!(
-                                "--- {} ({} lines, showing first 100) ---\n{}\n",
-                                file_path.display(), lines.len(), preview
-                            ));
-                        } else {
-                            result.push_str(&format!(
-                                "--- {} ({} lines) ---\n{}\n",
-                                file_path.display(), lines.len(), preview
-                            ));
-                        }
-                    }
-                    Err(e) => result.push_str(&format!("Read error: {}\n", e)),
-                }
+                Self::handle_read_file(root, &trimmed[12..trimmed.len() - 1], &mut result);
             } else if trimmed.starts_with("@@tree_view(") && trimmed.ends_with(')') {
-                let depth_str = &trimmed[12..trimmed.len() - 1].trim();
-                let depth: usize = depth_str.parse().unwrap_or(2);
-                match SearchEngine::tree(root, depth) {
-                    Ok(entries) => {
-                        for e in &entries {
-                            let indent = "  ".repeat(e.depth);
-                            let name = e.path.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("?");
-                            let suffix = if e.is_dir { "/" } else { "" };
-                            result.push_str(&format!("{}{}{}\n", indent, name, suffix));
-                        }
-                    }
-                    Err(e) => result.push_str(&format!("Tree error: {}\n", e)),
-                }
+                Self::handle_tree_view(root, &trimmed[12..trimmed.len() - 1], &mut result);
             }
         }
 
@@ -150,7 +205,7 @@ impl WorkerAgent for CodeExplorerWorker {
         let root = self.workspace_root.lock().await;
         let root_path = Self::resolve_root(&root);
 
-        // Execute any @@tool commands embedded in the instruction
+        // 先执行指令里内嵌的 @@ 命令，再把搜索结果作为上下文交给模型。
         let tool_results = Self::execute_tools(&task.instruction, root_path).await;
 
         let system_prompt = format!(

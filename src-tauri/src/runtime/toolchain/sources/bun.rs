@@ -1,17 +1,19 @@
-// ── Bun Version Source ──
-//
-// Fetches available Bun versions from the GitHub Releases API.
-// Bun does not have LTS — all stable releases are "Active".
+//! Bun 版本源。
+//!
+//! 通过 GitHub Releases API 获取可用的 Bun 版本。Bun 没有 LTS 概念，
+//! 所有稳定版本都视为 Active。
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::error::Result;
 use crate::runtime::toolchain::http_client::get_http_client;
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::runtime::toolchain::version::sort_versions_desc;
 use crate::runtime::toolchain::RuntimeType;
 
-/// A GitHub release entry.
+/// GitHub release 条目。
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -20,48 +22,9 @@ struct GitHubRelease {
     published_at: Option<String>,
 }
 
+/// Bun 版本源：从 GitHub Releases 拉取稳定版本。
 pub struct BunVersionSource;
 
-impl BunVersionSource {
-    /// Determine the platform-specific asset filename for Bun downloads.
-    fn platform_asset_name() -> &'static str {
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        {
-            "bun-windows-x64.zip"
-        }
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            "bun-linux-x64.zip"
-        }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            "bun-darwin-arm64.zip"
-        }
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        {
-            "bun-darwin-x64.zip"
-        }
-        #[cfg(not(any(
-            all(target_os = "windows", target_arch = "x86_64"),
-            all(target_os = "linux", target_arch = "x86_64"),
-            all(
-                target_os = "macos",
-                any(target_arch = "aarch64", target_arch = "x86_64")
-            ),
-        )))]
-        {
-            "bun-windows-x64.zip"
-        } // fallback
-    }
-
-    fn archive_ext() -> &'static str {
-        if Self::platform_asset_name().ends_with(".zip") {
-            "zip"
-        } else {
-            "tar.gz"
-        }
-    }
-}
 
 #[async_trait]
 impl VersionSource for BunVersionSource {
@@ -70,8 +33,8 @@ impl VersionSource for BunVersionSource {
     }
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
-        let asset_name = Self::platform_asset_name();
-        let ext = Self::archive_ext();
+        let asset_name = platform::bun_asset_name();
+        let ext = platform::archive_ext(&RuntimeType::Bun);
 
         let client = get_http_client();
         let response = client
@@ -91,7 +54,7 @@ impl VersionSource for BunVersionSource {
             .filter(|r| !r.prerelease)
             .map(|r| {
                 let tag = r.tag_name.clone();
-                // Tags are like "bun-v1.2.0" — strip "bun-v" prefix
+                // 标签形如 "bun-v1.2.0"，需要去掉 "bun-v" 前缀
                 let version = tag
                     .strip_prefix("bun-v")
                     .or_else(|| tag.strip_prefix('v'))
@@ -116,27 +79,10 @@ impl VersionSource for BunVersionSource {
             })
             .collect();
 
-        // Sort: newest version first (semver comparison)
-        versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let b_parts: Vec<u64> = b
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
-                if av != bv {
-                    return bv.cmp(av);
-                }
-            }
-            b_parts.len().cmp(&a_parts.len())
-        });
+        // 排序：新版本在前（逐段数值比较）
+        sort_versions_desc(&mut versions);
 
-        // Fallback if no versions from API
+        // API 没有返回任何版本时使用内置回退列表
         if versions.is_empty() {
             return Ok(Self::fallback_versions(ext, asset_name));
         }

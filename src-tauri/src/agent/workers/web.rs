@@ -1,12 +1,17 @@
+//! 网页 worker：执行 `@@search` 与 `@@fetch`，把网络内容整理给模型。
+//!
+//! 只做 HTTP 抓取与截断，不做解析；返回的正文会作为上下文拼进系统提示词。
+
 use async_trait::async_trait;
 
 use crate::core::error::Result;
 use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
+/// 网页搜索与抓取 worker。
 pub struct WebWorker;
 
 impl WebWorker {
-    /// Execute @@search(query) and @@fetch(url) commands embedded in the instruction.
+    /// 执行指令中内嵌的 `@@search(query)` 与 `@@fetch(url)` 命令。
     async fn execute_tools(instruction: &str) -> String {
         let mut result = String::new();
 

@@ -1,3 +1,5 @@
+//! 运行时管理器：检测、版本切换与安装的统一入口。
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,19 +14,20 @@ use super::{
 };
 use crate::core::error::Result;
 
-// ── Manager ──
+// ── 管理器 ──
 
-/// Central manager for local runtime detection, version management, and installation.
+/// 本地运行时检测、版本管理与安装的中心管理器。
 pub struct RuntimeManager {
     install_dir: Arc<Mutex<PathBuf>>,
     detector: RuntimeDetector,
     installer: Arc<Mutex<RuntimeInstaller>>,
     cache: Arc<Mutex<HashMap<RuntimeType, RuntimeInfo>>>,
-    /// Tracks currently installing runtimes to prevent concurrent installations.
+    /// 记录正在安装的运行时，避免并发安装同一个运行时。
     installing: Arc<Mutex<HashSet<RuntimeType>>>,
 }
 
 impl RuntimeManager {
+    /// 用指定的安装根目录创建管理器。
     pub fn new(install_dir: PathBuf) -> Self {
         let installer = RuntimeInstaller::new(install_dir.clone());
         Self {
@@ -36,7 +39,7 @@ impl RuntimeManager {
         }
     }
 
-    /// Update the install directory.
+    /// 更新安装目录。
     pub async fn set_install_dir(&self, new_dir: PathBuf) {
         let mut dir = self.install_dir.lock().await;
         *dir = new_dir.clone();
@@ -47,14 +50,14 @@ impl RuntimeManager {
         self.cache.lock().await.clear();
     }
 
-    /// Get the current install directory.
+    /// 获取当前安装目录。
     pub async fn get_install_dir(&self) -> PathBuf {
         self.install_dir.lock().await.clone()
     }
 
-    // ── Detection ──
+    // ── 检测 ──
 
-    /// Detect all runtimes: check system, then scan local installed versions.
+    /// 检测所有运行时：先查系统，再扫描本地已安装版本。
     pub async fn detect_all(&self) -> Vec<RuntimeInfo> {
         let mut results = Vec::new();
         for rt in RuntimeType::all() {
@@ -68,11 +71,10 @@ impl RuntimeManager {
         results
     }
 
-    /// Detect a specific runtime.
+    /// 检测某个运行时。
     ///
-    /// An explicitly activated built-in version wins over PATH, otherwise a
-    /// system installation is reported. This is what makes `switch_version`
-    /// observable: the app prefers the version the user selected.
+    /// 显式激活的内置版本优先于 PATH；否则上报系统安装。这正是
+    /// `switch_version` 能被观察到的原因：应用优先使用用户选择的版本。
     pub async fn detect(&self, rt: &RuntimeType) -> RuntimeInfo {
         let install_dir = self.install_dir.lock().await.clone();
         let installed = self.list_installed_versions(rt).await;
@@ -97,8 +99,8 @@ impl RuntimeManager {
             }
         }
 
-        // Keep reporting the selected version even if its executable is broken,
-        // so the UI can show why the runtime is unavailable.
+        // 即使生效版本的可执行文件已损坏，也继续上报该版本，
+        // 以便 UI 说明运行时为何不可用。
         if let Some(version) = active_version {
             return built_in_info(&install_dir, rt, &version, installed);
         }
@@ -115,15 +117,15 @@ impl RuntimeManager {
         }
     }
 
-    // ── Version Management ──
+    // ── 版本管理 ──
 
-    /// List all locally installed versions for a runtime.
+    /// 列出某个运行时在本地已安装的所有版本。
     pub async fn list_installed_versions(&self, rt: &RuntimeType) -> Vec<InstalledVersion> {
         let install_dir = self.install_dir.lock().await.clone();
         let rt_dir = install_dir.join(rt.dir_name());
         let manifest_path = rt_dir.join(".manifest.json");
 
-        // Read manifest if exists
+        // 存在清单时读取清单
         if let Some(manifest) = read_manifest(&manifest_path) {
             let active_version = manifest.active_version.clone();
             return manifest
@@ -141,7 +143,7 @@ impl RuntimeManager {
                 .collect();
         }
 
-        // Fallback: scan directory for version folders
+        // 回退：扫描目录中的版本文件夹
         let mut versions = Vec::new();
         if rt_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&rt_dir) {
@@ -165,13 +167,13 @@ impl RuntimeManager {
         versions
     }
 
-    /// Switch the active version for a runtime.
+    /// 切换某个运行时的生效版本。
     pub async fn switch_version(&self, rt: &RuntimeType, version: &str) -> Result<()> {
         let install_dir = self.install_dir.lock().await.clone();
         let rt_dir = install_dir.join(rt.dir_name());
         let manifest_path = rt_dir.join(".manifest.json");
 
-        // Verify the version directory exists
+        // 确认版本目录存在
         let ver_dir = rt_dir.join(version);
         if !ver_dir.exists() {
             return Err(crate::core::error::AppError::NotFound(format!(
@@ -180,7 +182,7 @@ impl RuntimeManager {
             )));
         }
 
-        // Update manifest
+        // 更新清单
         let mut manifest = read_manifest(&manifest_path).unwrap_or_else(|| RuntimeManifest {
             active_version: None,
             versions: HashMap::new(),
@@ -188,7 +190,7 @@ impl RuntimeManager {
 
         manifest.active_version = Some(version.to_string());
 
-        // Ensure version exists in manifest
+        // 确保版本已记录在清单中
         manifest
             .versions
             .entry(version.to_string())
@@ -199,14 +201,14 @@ impl RuntimeManager {
 
         write_manifest(&manifest_path, &manifest)?;
 
-        // Update cache
+        // 更新缓存
         let mut cache = self.cache.lock().await;
         cache.remove(rt);
 
         Ok(())
     }
 
-    /// Uninstall a specific version.
+    /// 卸载指定版本。
     pub async fn uninstall_version(&self, rt: &RuntimeType, version: &str) -> Result<()> {
         let install_dir = self.install_dir.lock().await.clone();
         let rt_dir = install_dir.join(rt.dir_name());
@@ -216,7 +218,7 @@ impl RuntimeManager {
             std::fs::remove_dir_all(&ver_dir)?;
         }
 
-        // Update manifest
+        // 更新清单
         let manifest_path = rt_dir.join(".manifest.json");
         if let Some(mut manifest) = read_manifest(&manifest_path) {
             manifest.versions.remove(version);
@@ -226,16 +228,16 @@ impl RuntimeManager {
             write_manifest(&manifest_path, &manifest)?;
         }
 
-        // Update cache
+        // 使该运行时的版本缓存失效，下次读取时重新检测
         let mut cache = self.cache.lock().await;
         cache.remove(rt);
 
         Ok(())
     }
 
-    // ── Installation ──
+    // ── 安装 ──
 
-    /// Install a specific version of a runtime.
+    /// 安装某个运行时的指定版本。
     pub async fn install_runtime(
         &self,
         rt: &RuntimeType,
@@ -249,7 +251,7 @@ impl RuntimeManager {
             .await
     }
 
-    /// Try to begin installing a runtime. Returns an error if already installing.
+    /// 尝试开始安装某个运行时；若已在安装中则返回错误。
     pub async fn try_begin_install(&self, rt: &RuntimeType) -> std::result::Result<(), String> {
         let mut set = self.installing.lock().await;
         if set.contains(rt) {
@@ -259,21 +261,21 @@ impl RuntimeManager {
         Ok(())
     }
 
-    /// Mark a runtime installation as finished (success or failure).
+    /// 标记某个运行时的安装已结束（无论成功或失败）。
     pub async fn end_install(&self, rt: &RuntimeType) {
         let mut set = self.installing.lock().await;
         set.remove(rt);
     }
 
-    /// Get available versions for download.
+    /// 获取可下载的版本列表（离线静态清单，不访问网络）。
     pub async fn list_available_versions(&self, rt: &RuntimeType) -> Vec<AvailableVersion> {
         super::installer::available_versions(rt)
     }
 
-    // ── Validation (used by MCP module) ──
+    // ── 校验（供 MCP 模块使用）──
 
-    /// Validate that a runtime is available.
-    /// Returns Ok(()) if available, or an error with guidance.
+    /// 校验某个运行时是否可用。
+    /// 可用时返回 `Ok(())`，否则返回带安装指引的错误字符串。
     pub async fn validate_runtime(&self, rt: &RuntimeType) -> std::result::Result<(), String> {
         let info = self.detect(rt).await;
         if info.available {
@@ -285,12 +287,14 @@ impl RuntimeManager {
         ))
     }
 
-    // ── Cache ──
+    // ── 缓存 ──
 
+    /// 获取某个运行时的缓存检测结果。
     pub async fn get_cached(&self, rt: &RuntimeType) -> Option<RuntimeInfo> {
         self.cache.lock().await.get(rt).cloned()
     }
 
+    /// 获取所有缓存的检测结果，按显示名排序。
     pub async fn get_all_cached(&self) -> Vec<RuntimeInfo> {
         let cache = self.cache.lock().await;
         let mut result: Vec<RuntimeInfo> = cache.values().cloned().collect();
@@ -302,9 +306,9 @@ impl RuntimeManager {
         result
     }
 
-    // ── Disk Usage ──
+    // ── 磁盘占用 ──
 
-    /// Get total disk usage for a specific runtime.
+    /// 获取某个运行时的总磁盘占用（字节）。
     pub async fn get_disk_usage(&self, rt: &RuntimeType) -> u64 {
         let install_dir = self.install_dir.lock().await.clone();
         let rt_dir = install_dir.join(rt.dir_name());
@@ -322,7 +326,7 @@ impl RuntimeManager {
         total
     }
 
-    /// Get disk usage for all runtimes, sorted by size descending.
+    /// 获取所有运行时的磁盘占用，按大小降序排列。
     pub async fn get_all_disk_usage(&self) -> Vec<DiskUsageItem> {
         let mut items = Vec::new();
         for rt in RuntimeType::all() {
@@ -350,6 +354,7 @@ impl RuntimeManager {
     }
 }
 
+/// 单个运行时的磁盘占用统计。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiskUsageItem {
     pub runtime_type: RuntimeType,
@@ -359,7 +364,7 @@ pub struct DiskUsageItem {
     pub active_version: Option<String>,
 }
 
-/// Recursively compute total size of a directory.
+/// 递归计算目录的总大小。
 fn dir_size(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -375,7 +380,7 @@ fn dir_size(path: &std::path::Path) -> u64 {
     total
 }
 
-/// Build a `RuntimeInfo` for an activated built-in version.
+/// 为已激活的内置版本构造 `RuntimeInfo`。
 fn built_in_info(
     install_dir: &std::path::Path,
     rt: &RuntimeType,
@@ -404,8 +409,8 @@ fn built_in_info(
     }
 }
 
-/// Find the executable path within a version directory.
-/// Checks both the root and `bin/` subdirectory (Go places binaries in `bin/`).
+/// 在版本目录中查找可执行文件路径。
+/// 同时检查根目录与 `bin/` 子目录（Go 把二进制放在 `bin/`）。
 fn find_exe_in_version(base: &std::path::Path, rt: &RuntimeType, version: &str) -> Option<String> {
     let ver_dir = base.join(rt.dir_name()).join(version);
     let exe_name = rt.primary_command();
@@ -424,7 +429,7 @@ fn find_exe_in_version(base: &std::path::Path, rt: &RuntimeType, version: &str) 
     None
 }
 
-/// Quick check that an executable responds to --version.
+/// 快速检查可执行文件是否能响应 `--version`。
 fn check_exe_works(path: &str, rt: &RuntimeType) -> bool {
     let output = std::process::Command::new(path)
         .args(rt.version_args())

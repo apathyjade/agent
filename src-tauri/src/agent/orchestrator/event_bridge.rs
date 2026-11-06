@@ -1,13 +1,17 @@
+//! 把编排事件从内部通道转发为 Tauri 事件，供前端消费。
+//!
+//! 事件名属于前端契约，改动必须同步修改 `src-ui`。
+
 use tauri::{Emitter, AppHandle};
 use tokio::sync::mpsc;
 
 use crate::agent::orchestrator::agent::{OrchestrationEvent, OrchestrationPhase};
 
-/// Spawn a task that forwards OrchestrationEvents from a channel to Tauri events.
+/// 启动一个后台任务，把通道里的编排事件转发成 Tauri 事件。
 ///
-/// Maps each OrchestrationEvent variant to a frontend-consumable Tauri event:
+/// 事件映射：
 /// - PhaseChanged → `orchestrator_phase`
-/// - Thinking { content } → `stream_chunk` (reuses existing streaming event)
+/// - Thinking { content } → `stream_chunk`（复用已有的流式事件）
 /// - TaskStarted / TaskCompleted / TaskFailed → `orchestrator_task_*`
 /// - CritiqueReceived → `orchestrator_critique`
 /// - SynthesizedOutput → `orchestrator_done`

@@ -1,17 +1,19 @@
-// ── Go Version Source ──
-//
-// Fetches available Go versions from the official go.dev DL API.
-// Filters to stable versions matching the current platform.
+//! Go 版本源。
+//!
+//! 通过官方 go.dev DL API 获取可用的 Go 版本，只保留稳定版本，并筛选出
+//! 与当前平台匹配的下载文件。
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::error::Result;
 use crate::runtime::toolchain::http_client::get_http_client;
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::runtime::toolchain::version::sort_versions_desc;
 use crate::runtime::toolchain::RuntimeType;
 
-/// Raw response entry from https://go.dev/dl/?mode=json
+/// https://go.dev/dl/?mode=json 的原始响应条目
 #[derive(Debug, Deserialize)]
 struct GoDistEntry {
     version: String, // "go1.22.4"
@@ -29,48 +31,11 @@ struct GoFile {
     size: Option<u64>,
 }
 
+/// Go 版本源：从官方 DL API 拉取稳定版本。
 pub struct GoVersionSource;
 
 impl GoVersionSource {
-    fn current_os(&self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            "windows"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "linux"
-        }
-        #[cfg(target_os = "macos")]
-        {
-            "darwin"
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        {
-            "linux"
-        }
-    }
-
-    fn current_arch(&self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            "amd64"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "amd64"
-        }
-        #[cfg(target_os = "macos")]
-        {
-            "arm64"
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        {
-            "amd64"
-        }
-    }
-
-    /// Strip "go" prefix from version string.
+    /// 去掉版本号里的 "go" 前缀。
     /// "go1.22.4" -> "1.22.4"
     fn strip_go_prefix(version: &str) -> String {
         version.strip_prefix("go").unwrap_or(version).to_string()
@@ -84,8 +49,8 @@ impl VersionSource for GoVersionSource {
     }
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
-        let current_os = self.current_os();
-        let current_arch = self.current_arch();
+        let current_os = platform::go_platform_os();
+        let current_arch = platform::go_platform_arch();
 
         let client = get_http_client();
         let response = client
@@ -105,13 +70,13 @@ impl VersionSource for GoVersionSource {
             .filter_map(|e| {
                 let version = Self::strip_go_prefix(&e.version);
 
-                // Find the file that matches current platform
+                // 找到与当前平台匹配的下载文件
                 let matching_file = e
                     .files
                     .iter()
                     .find(|f| f.os == current_os && f.arch == current_arch)?;
 
-                // Build download URL from filename
+                // 用文件名拼接下载地址
                 let url = format!("https://dl.google.com/go/{}", matching_file.filename);
 
                 Some(RuntimeVersion {
@@ -127,25 +92,8 @@ impl VersionSource for GoVersionSource {
             })
             .collect();
 
-        // Sort: newest version first
-        versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let b_parts: Vec<u64> = b
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
-                if av != bv {
-                    return bv.cmp(av);
-                }
-            }
-            b_parts.len().cmp(&a_parts.len())
-        });
+        // 排序：新版本在前（逐段数值比较）
+        sort_versions_desc(&mut versions);
 
         Ok(versions)
     }

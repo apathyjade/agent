@@ -1,3 +1,9 @@
+//! 技能管理服务。
+//!
+//! 读写两侧都委托给官方 `skills` CLI：读取侧解析 `list --json` 输出并合并
+//! `SKILL.md` frontmatter，写入侧负责安装、删除、检查更新与旧版技能导入。
+//! 磁盘状态由 CLI 拥有，本模块不做本地状态缓存（环境探测除外）。
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -15,23 +21,22 @@ pub mod list;
 pub mod market;
 pub use list::InstalledSkill;
 
-// ── Read side: CLI-backed skills service ──
+// ── 读取侧：基于 CLI 的技能服务 ──
 
-/// Lifetime of a successful environment probe.
+/// 一次成功环境探测的缓存时长。
 const ENV_CACHE_TTL: Duration = Duration::from_secs(300);
-/// Timeout for read-only CLI invocations. Generous because the first `npx`
-/// call may need to populate a cold cache.
+/// 只读 CLI 调用的超时。给得较宽，因为首次 `npx` 可能需要填充冷缓存。
 const CLI_LIST_TIMEOUT: Duration = Duration::from_secs(60);
-/// Timeout for a `add --list` preview (may warm a cold npx cache).
+/// `add --list` 预览的超时（可能预热冷 npx 缓存）。
 const CLI_PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
-/// Timeout for install and update operations.
+/// 安装与更新操作的超时。
 const CLI_MUTATION_TIMEOUT: Duration = Duration::from_secs(180);
-/// Timeout for a remove operation.
+/// 删除操作的超时。
 const CLI_REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Upper bound for a `SKILL.md` read: 256 KiB.
+/// 单次 `SKILL.md` 读取上限：256 KiB。
 const MAX_CONTENT_BYTES: u64 = 256 * 1024;
 
-/// Parameters for one `skills add` invocation.
+/// 一次 `skills add` 调用的入参。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallRequest {
     pub source: String,
@@ -42,22 +47,22 @@ pub struct InstallRequest {
     pub copy: bool,
 }
 
-/// One skill offered by a repository source.
+/// 仓库来源提供的一个技能。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoSkill {
     pub name: String,
     pub description: Option<String>,
 }
 
-/// Result of previewing a repository source before installing.
+/// 安装前预览仓库来源的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoSkillPreview {
     pub skills: Vec<RepoSkill>,
-    /// CLI output with ANSI escapes removed; used as a manual-entry fallback.
+    /// 已去除 ANSI 转义的 CLI 输出；作为手动录入的回退数据。
     pub raw: String,
 }
 
-/// Result of a `skills check` run.
+/// 一次 `skills check` 的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateCheck {
     pub has_updates: bool,
@@ -65,16 +70,17 @@ pub struct UpdateCheck {
     pub output: String,
 }
 
-/// Read-only view of installed skills, backed by the official `skills` CLI.
+/// 已安装技能的只读视图，后端是官方 `skills` CLI。
 ///
-/// The CLI owns the on-disk state; this service only parses its JSON output
-/// and merges in `SKILL.md` frontmatter.
+/// CLI 拥有磁盘状态；本服务只解析其 JSON 输出并合并 `SKILL.md`
+/// frontmatter 元数据。
 pub struct SkillsService {
     cli: cli::CliCommand,
     env_cache: Mutex<Option<(Instant, cli::CliStatus)>>,
 }
 
 impl SkillsService {
+    /// 解析 CLI 命令并创建空的环境缓存。
     pub fn new() -> Self {
         Self {
             cli: cli::resolve_command(),
@@ -82,8 +88,9 @@ impl SkillsService {
         }
     }
 
-    /// Report CLI/Node availability. Successful probes are cached for five
-    /// minutes; failures are not, so a fixed environment is noticed at once.
+    /// 报告 CLI / Node 可用性。
+    ///
+    /// 成功探测结果缓存五分钟；失败结果不缓存，使环境修复后能立刻被发现。
     pub async fn env_status(&self) -> cli::CliStatus {
         let mut cache = self.env_cache.lock().await;
         if let Some((checked_at, status)) = cache.as_ref() {
@@ -101,10 +108,10 @@ impl SkillsService {
         status
     }
 
-    /// List installed skills for one scope.
+    /// 列出某个作用域下已安装的技能。
     ///
-    /// Project scope validates `project_path` and uses it as the CLI working
-    /// directory; global scope ignores it.
+    /// 项目作用域会校验 `project_path` 并把它作为 CLI 工作目录；全局作用域
+    /// 忽略该参数。
     pub async fn list_installed(
         &self,
         scope: &str,
@@ -146,8 +153,8 @@ impl SkillsService {
 
         let entries = dedupe_entries(entries);
 
-        // Enrichment touches the filesystem for every entry, so keep it off
-        // the async runtime even though the CLI call itself is awaited.
+        // 补充元数据会为每个条目访问文件系统，因此即使 CLI 调用是 await 的，
+        // 也要放到阻塞线程池，避免占用异步运行时。
         tokio::task::spawn_blocking(move || {
             entries.into_iter().map(list::enrich).collect::<Vec<_>>()
         })
@@ -155,7 +162,7 @@ impl SkillsService {
         .map_err(|err| AppError::Skill(format!("skill enrichment task failed: {err}")))
     }
 
-    /// Read the `SKILL.md` body of one installed skill.
+    /// 读取一个已安装技能的 `SKILL.md` 正文。
     pub async fn content(
         &self,
         name: &str,
@@ -188,15 +195,13 @@ impl Default for SkillsService {
     }
 }
 
-// ── Write side: install, remove, check and update through the CLI ──
+// ── 写入侧：通过 CLI 安装、删除、检查与更新 ──
 
 impl SkillsService {
-    /// Ask the CLI which skills a repository source offers.
+    /// 询问 CLI 某个仓库来源提供哪些技能。
     ///
-    /// The listing format is human-oriented and therefore not a stable
-    /// interface: an unparseable or failed run returns an empty `skills` list
-    /// plus the raw output, and the UI falls back to installing the whole
-    /// repository.
+    /// 列表格式面向人类、不是稳定接口：无法解析或运行失败时返回空
+    /// `skills` 加原始输出，界面回退为「安装整个仓库」。
     pub async fn preview_source(&self, source: &str) -> Result<RepoSkillPreview> {
         if !cli::is_valid_source(source) {
             return Err(AppError::SkillValidation(format!(
@@ -231,7 +236,7 @@ impl SkillsService {
         })
     }
 
-    /// Install one or more skills from a source.
+    /// 从某个来源安装一个或多个技能。
     pub async fn install(&self, req: InstallRequest) -> Result<String> {
         let scope = normalize_scope(&req.scope)?;
         let args = build_add_args(&req)?;
@@ -241,7 +246,7 @@ impl SkillsService {
         accept_mutation(output)
     }
 
-    /// Remove one skill from the requested scope.
+    /// 从指定作用域删除一个技能。
     pub async fn remove(
         &self,
         name: &str,
@@ -256,11 +261,10 @@ impl SkillsService {
         accept_mutation(output)
     }
 
-    /// Check for skill updates.
+    /// 检查技能更新。
     ///
-    /// Exit code 1 is part of the CLI contract (updates available, or checks
-    /// failed), so it is not surfaced as an error; the flags are derived from
-    /// the combined output by [`interpret_check`].
+    /// 退出码 1 是 CLI 契约的一部分（有更新或检查失败），因此不当作错误；
+    /// 两个标志由 [`interpret_check`] 从合并输出中推导。
     pub async fn check_updates(
         &self,
         scope: &str,
@@ -282,7 +286,7 @@ impl SkillsService {
         })
     }
 
-    /// Update all installed skills in the requested scope.
+    /// 更新指定作用域下所有已安装技能。
     pub async fn update(&self, scope: &str, project_path: Option<&str>) -> Result<String> {
         let scope = normalize_scope(scope)?;
         let cwd = project_workdir(scope, project_path)?;
@@ -298,8 +302,8 @@ impl SkillsService {
     }
 }
 
-/// `--json` arguments for a list call. An unknown scope falls back to the
-/// project form; callers are expected to run [`normalize_scope`] first.
+/// 列表调用使用的 `--json` 参数。未知作用域回退为项目形式；调用方应先执行
+/// [`normalize_scope`]。
 pub fn build_list_args(scope: &str) -> Vec<String> {
     match scope {
         "global" => vec!["list".to_string(), "-g".to_string(), "--json".to_string()],
@@ -307,7 +311,7 @@ pub fn build_list_args(scope: &str) -> Vec<String> {
     }
 }
 
-/// Build `add` arguments in the CLI's required order.
+/// 按 CLI 要求的顺序构造 `add` 参数。
 pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
     let scope = normalize_scope(&req.scope)?;
     if !cli::is_valid_source(&req.source) {
@@ -321,8 +325,8 @@ pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
             "at least one agent is required".to_string(),
         ));
     }
-    // Skill and agent names become argv entries, so a flag-like value such as
-    // `-g` or an empty string must never reach the CLI.
+    // 技能名与 agent 名会成为 argv 项，因此 `-g` 这类类参数值或空字符串
+    // 绝不能传到 CLI。
     for skill in &req.skills {
         if skill.trim() == "*" {
             continue;
@@ -349,7 +353,7 @@ pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
         "-s".to_string(),
     ];
     if req.skills.is_empty() {
-        // The CLI expands `*` to every skill in the source.
+        // CLI 会把 `*` 展开为来源里的全部技能。
         args.push("*".to_string());
     } else {
         args.extend(req.skills.iter().map(|s| s.trim().to_string()));
@@ -367,7 +371,7 @@ pub fn build_add_args(req: &InstallRequest) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Build `remove` arguments. No `-a`: removal unlinks the skill from every agent.
+/// 构造 `remove` 参数。不带 `-a`：删除会解除技能与所有 agent 的关联。
 pub fn build_remove_args(name: &str, scope: &str) -> Result<Vec<String>> {
     let scope = normalize_scope(scope)?;
     if !is_valid_name(name) {
@@ -388,10 +392,10 @@ pub fn build_remove_args(name: &str, scope: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Build `check` arguments.
+/// 构造 `check` 参数。
 ///
-/// Project scope passes `-p` explicitly: without it the CLI auto-detects the
-/// scope and silently falls back to global skills when the project has none.
+/// 项目作用域显式传 `-p`：不传时 CLI 会自动探测作用域，并在项目没有技能
+/// 时静默回退到全局技能。
 pub fn build_check_args(scope: &str) -> Result<Vec<String>> {
     let scope = normalize_scope(scope)?;
     let mut args = vec!["check".to_string()];
@@ -402,8 +406,7 @@ pub fn build_check_args(scope: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Build `update` arguments. Project scope passes `-p` for the same reason as
-/// [`build_check_args`].
+/// 构造 `update` 参数。项目作用域传 `-p`，原因同 [`build_check_args`]。
 pub fn build_update_args(scope: &str) -> Result<Vec<String>> {
     let scope = normalize_scope(scope)?;
     let mut args = vec!["update".to_string(), "-y".to_string()];
@@ -414,18 +417,16 @@ pub fn build_update_args(scope: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Parse the skill listing printed by `skills add <source> --list`.
+/// 解析 `skills add <source> --list` 打印的技能列表。
 ///
-/// The CLI is piped in the app, so two renderings are observed:
+/// 应用内以管道方式调用 CLI，因此会观察到两种渲染：
 ///
-/// * framed multi-line rows — a name line followed by deeper-indented
-///   description lines;
-/// * single-line rows — `name   description` on one line.
+/// * 带边框的多行行：名称一行，随后是缩进更深的描述行；
+/// * 单行行：`name   description` 在同一行。
 ///
-/// Both may be preceded by a header (`Available Skills`) and noise
-/// (`Source:`, `Fetching`, `Found N skills`, ...). Parsing starts after the
-/// `Available Skills` header when present, otherwise it considers every
-/// non-noise line. Header and noise lines are never returned as skills.
+/// 两者前面都可能有标题（`Available Skills`）与噪声（`Source:`、
+/// `Fetching`、`Found N skills` 等）。存在 `Available Skills` 标题时从标题
+/// 之后开始解析，否则考虑所有非噪声行。标题与噪声行永远不会被当作技能返回。
 pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
     let clean = strip_ansi(stdout);
     let lines: Vec<&str> = clean.lines().map(str::trim_end).collect();
@@ -466,8 +467,7 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
     while i < rows.len() {
         let (depth, text) = &rows[i];
 
-        // Single-line form: the first run of 2+ spaces separates name and
-        // description.
+        // 单行形式：第一段连续 2 个以上空格分隔名称与描述。
         if let Some((name, description)) = split_inline_row(text) {
             skills.push(RepoSkill {
                 name: name.to_string(),
@@ -477,8 +477,8 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
             continue;
         }
 
-        // Multi-line form: a deeper next line marks this line as the name and
-        // every following deeper line as its (possibly wrapped) description.
+        // 多行形式：下一行缩进更深，说明本行是名称，后续更深的行是它的
+        // （可能换行的）描述。
         if rows.get(i + 1).is_some_and(|(next, _)| next > depth) {
             let mut parts: Vec<String> = Vec::new();
             let mut j = i + 1;
@@ -494,13 +494,13 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
             continue;
         }
 
-        // A bare line at the header depth is leftover chrome, not a skill.
+        // 与标题同深度的裸行是残留装饰，不是技能。
         if header_depth.is_some_and(|header| *depth <= header) {
             i += 1;
             continue;
         }
 
-        // Anything else at a skill depth is a name without a description.
+        // 技能深度上的其他行按「只有名称、没有描述」处理。
         skills.push(RepoSkill {
             name: text.clone(),
             description: None,
@@ -511,7 +511,7 @@ pub fn parse_available_skills(stdout: &str) -> Vec<RepoSkill> {
     skills
 }
 
-/// Split a single-line listing row at its first run of two or more spaces.
+/// 在第一段连续两个以上空格处切分单行列表行。
 fn split_inline_row(text: &str) -> Option<(&str, &str)> {
     let bytes = text.as_bytes();
     for i in 0..bytes.len().saturating_sub(1) {
@@ -526,13 +526,12 @@ fn split_inline_row(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// A start-of-listing header, including variants such as
-/// `Available Skills:` or `Available Skills (5)`.
+/// 列表起始标题，包括 `Available Skills:`、`Available Skills (5)` 等变体。
 fn is_available_skills_header(text: &str) -> bool {
     text.trim().to_lowercase().starts_with("available skills")
 }
 
-/// Header/progress lines that must never be mistaken for a skill.
+/// 绝不能被误认为技能的标题/进度行。
 fn is_noise_line(text: &str) -> bool {
     let lower = text.to_lowercase();
     is_available_skills_header(text)
@@ -552,24 +551,21 @@ fn is_noise_line(text: &str) -> bool {
         .any(|prefix| lower.starts_with(prefix))
 }
 
-/// A pure border/rule line: only box-drawing characters, dashes or spaces.
+/// 纯边框/分隔线：只含制表符、破折号或空格。
 fn is_rule_line(text: &str) -> bool {
     text.chars()
         .all(|c| c.is_whitespace() || c == '-' || ('\u{2500}'..='\u{257F}').contains(&c))
 }
 
-/// Frame glyphs the CLI puts before every content line. `ℹ` prefixes the
-/// single-line rendering.
+/// CLI 在每行内容前加的边框符号。单行渲染以 `ℹ` 开头。
 fn is_frame_glyph(c: char) -> bool {
     matches!(c, '│' | '└' | '├' | '◇' | '●' | '•' | 'ℹ')
 }
 
-/// Drop leading frame glyphs from a line while preserving the content
-/// indentation behind them.
+/// 去掉行首的边框符号，同时保留符号之后的正文缩进。
 ///
-/// Spaces before a glyph are consumed with it; when no glyph follows, the
-/// original leading spaces are kept so plain-indented fixtures still carry a
-/// measurable depth.
+/// 符号前的空格会随符号一起消耗；若后面没有符号，则保留原始前导空格，
+/// 使纯缩进的测试样例仍具有可度量的深度。
 fn strip_frame_glyphs(line: &str) -> &str {
     let mut rest = line;
     loop {
@@ -583,14 +579,12 @@ fn strip_frame_glyphs(line: &str) -> &str {
     }
 }
 
-/// Classify a `skills check` result as `(has_updates, has_failures)`.
+/// 把 `skills check` 的结果归类为 `(has_updates, has_failures)`。
 ///
-/// The CLI uses exit code 1 both for "updates available" and for check
-/// failures. Failure keywords (`failed`, `error`, `denied`, `cannot`) take
-/// precedence over the word `update`, so "failed to check for updates" is a
-/// failure; otherwise a non-zero exit whose output mentions `update` counts as
-/// updates, and every other non-zero exit counts as a failure. A missing exit
-/// code (killed process) is always a failure.
+/// CLI 用退出码 1 同时表示「有更新」与「检查失败」。失败关键词
+/// （`failed`、`error`、`denied`、`cannot`）优先于 `update` 一词，因此
+/// "failed to check for updates" 判为失败；否则非零退出且输出提到 `update`
+/// 判为有更新，其余非零退出判为失败。退出码缺失（进程被杀）始终判为失败。
 pub fn interpret_check(code: Option<i32>, output: &str) -> (bool, bool) {
     match code {
         Some(0) => (false, false),
@@ -610,7 +604,7 @@ pub fn interpret_check(code: Option<i32>, output: &str) -> (bool, bool) {
     }
 }
 
-/// Accept only the two scopes the UI exposes.
+/// 只接受界面暴露的两个作用域。
 pub fn normalize_scope(scope: &str) -> Result<&str> {
     match scope {
         "global" | "project" => Ok(scope),
@@ -621,7 +615,7 @@ pub fn normalize_scope(scope: &str) -> Result<&str> {
     }
 }
 
-/// Working directory for a list call; project scope must be a real directory.
+/// 列表调用的工作目录；项目作用域必须是真实目录。
 fn project_workdir(scope: &str, project_path: Option<&str>) -> Result<Option<PathBuf>> {
     if scope != "project" {
         return Ok(None);
@@ -640,11 +634,10 @@ fn project_workdir(scope: &str, project_path: Option<&str>) -> Result<Option<Pat
     Ok(Some(dir))
 }
 
-/// Find an installed skill by both name and scope.
+/// 同时按名称与作用域查找已安装技能。
 ///
-/// The CLI can report the same skill name in both scopes, so matching on the
-/// name alone would return whichever row happened to come first. The requested
-/// scope is authoritative.
+/// CLI 可能在两个作用域里报告同名技能，只按名称匹配会返回先出现的那一行。
+/// 请求的作用域才是权威。
 fn find_target<'a>(
     skills: &'a [InstalledSkill],
     name: &str,
@@ -655,12 +648,11 @@ fn find_target<'a>(
         .find(|skill| skill.name == name && skill.scope == scope)
 }
 
-/// Decide whether a `skills list` invocation is usable.
+/// 判断一次 `skills list` 调用是否可用。
 ///
-/// A zero exit is always accepted. A non-zero exit is accepted only when it
-/// still produced at least one entry; an empty listing from a failed run is
-/// indistinguishable from "no skills installed" in the UI, so it is returned
-/// as an error carrying the CLI failure detail.
+/// 退出码 0 始终接受。非零退出只有在仍产出至少一个条目时才接受；失败运行
+/// 返回空列表在界面上与「没有安装技能」无法区分，因此作为错误返回并附带
+/// CLI 失败细节。
 fn accept_listing(
     success: bool,
     entries: Vec<list::RawListEntry>,
@@ -676,7 +668,7 @@ fn accept_listing(
     )))
 }
 
-/// Keep the first row of each `(scope, name)` pair.
+/// 每个 `(scope, name)` 组合只保留第一行。
 fn dedupe_entries(entries: Vec<list::RawListEntry>) -> Vec<list::RawListEntry> {
     let mut seen = std::collections::HashSet::new();
     entries
@@ -685,11 +677,11 @@ fn dedupe_entries(entries: Vec<list::RawListEntry>) -> Vec<list::RawListEntry> {
         .collect()
 }
 
-/// Reject empty, flag-like, quoted and control-character skill/agent names.
+/// 拒绝空、类参数、含引号与控制字符的技能/agent 名称。
 ///
-/// Quotes are rejected for the same reason as in [`cli::is_valid_source`]:
-/// `\"` is not a cmd.exe escape, so a name containing `"` and `&`/`|` could
-/// break out of the quoting on the Windows `cmd.exe /c` path.
+/// 拒绝引号的原因与 [`cli::is_valid_source`] 相同：`\"` 不是 cmd.exe 的
+/// 转义，因此含 `"` 且带 `&`/`|` 的名称可能在 Windows `cmd.exe /c` 路径上
+/// 突破引号。
 fn is_valid_name(name: &str) -> bool {
     let trimmed = name.trim();
     !trimmed.is_empty()
@@ -698,9 +690,9 @@ fn is_valid_name(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
-/// Accept a write invocation: stdout on success, an error with the CLI
-/// diagnostic otherwise. A mutation has no partial-success semantics worth
-/// preserving here; callers re-list to show the actual state afterwards.
+/// 接受一次写调用：成功返回 stdout，否则返回带 CLI 诊断的错误。
+/// 写操作没有值得保留的「部分成功」语义；调用方事后会重新列出以显示真实
+/// 状态。
 fn accept_mutation(output: cli::CliOutput) -> Result<String> {
     if output.success {
         return Ok(output.stdout.trim().to_string());
@@ -709,7 +701,7 @@ fn accept_mutation(output: cli::CliOutput) -> Result<String> {
     Err(AppError::Skill(mutation_failure_detail(&output)))
 }
 
-/// Prefer stderr, fall back to stdout, then to the exit code.
+/// 优先用 stderr，其次 stdout，最后退出码。
 fn mutation_failure_detail(output: &cli::CliOutput) -> String {
     let stderr = output.stderr.trim();
     if !stderr.is_empty() {
@@ -727,7 +719,7 @@ fn mutation_failure_detail(output: &cli::CliOutput) -> String {
         .unwrap_or_else(|| "unknown error".to_string())
 }
 
-/// Join stdout and stderr, separated by a newline when both are present.
+/// 用换行连接 stdout 与 stderr（两者都有时）。
 fn combine_output(output: &cli::CliOutput) -> String {
     let stdout = output.stdout.trim_end();
     let stderr = output.stderr.trim_end();
@@ -740,10 +732,10 @@ fn combine_output(output: &cli::CliOutput) -> String {
     }
 }
 
-/// Remove ANSI escape sequences (CSI and OSC) from CLI output.
+/// 去除 CLI 输出中的 ANSI 转义序列（CSI 与 OSC）。
 ///
-/// `NO_COLOR=1` is set for every invocation, but npx and some shims still emit
-/// color when stdout is a pipe, so the listing is cleaned before parsing.
+/// 每次调用都设置了 `NO_COLOR=1`，但 npx 与部分 shim 在 stdout 是管道时
+/// 仍会输出颜色，因此解析前先清洗。
 fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -755,7 +747,7 @@ fn strip_ansi(input: &str) -> String {
         }
 
         match chars.peek().copied() {
-            // CSI: ESC [ ... final byte in 0x40..=0x7e
+            // CSI：ESC [ ... 结束字节在 0x40..=0x7e
             Some('[') => {
                 chars.next();
                 for next in chars.by_ref() {
@@ -764,7 +756,7 @@ fn strip_ansi(input: &str) -> String {
                     }
                 }
             }
-            // OSC: ESC ] ... BEL or ESC \
+            // OSC：ESC ] ... BEL 或 ESC \
             Some(']') => {
                 chars.next();
                 while let Some(next) = chars.next() {
@@ -779,7 +771,7 @@ fn strip_ansi(input: &str) -> String {
                     }
                 }
             }
-            // Any other escape sequence: drop ESC plus one character.
+            // 其他转义序列：丢弃 ESC 及其后一个字符。
             Some(_) => {
                 chars.next();
             }
@@ -790,7 +782,7 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
-/// One actionable line describing a failed CLI invocation.
+/// 描述一次失败 CLI 调用的单行可操作信息。
 fn cli_failure_detail(output: &cli::CliOutput) -> String {
     let stderr = output
         .stderr
@@ -806,10 +798,10 @@ fn cli_failure_detail(output: &cli::CliOutput) -> String {
     }
 }
 
-/// Read a skill's `SKILL.md`, truncating the text at 256 KiB.
+/// 读取技能的 `SKILL.md`，超过 256 KiB 时截断。
 ///
-/// `path` may be the skill directory or the file itself. A missing or
-/// unreadable file is reported as [`AppError::NotFound`].
+/// `path` 可以是技能目录或文件本身。文件缺失或不可读时返回
+/// [`AppError::NotFound`]。
 fn read_content_file(path: &Path) -> Result<String> {
     let file_path = if path.is_dir() {
         path.join("SKILL.md")
@@ -919,12 +911,12 @@ mod tests {
 
     #[test]
     fn rejects_failed_listing_only_when_empty() {
-        // A successful run may legitimately report no skills.
+        // 成功运行可能合法地报告没有技能。
         assert!(accept_listing(true, vec![], "ignored".into())
             .unwrap()
             .is_empty());
 
-        // A failed run that still printed entries keeps working.
+        // 失败但仍有输出的运行保持可用。
         let entries = vec![raw_entry("one", "global", Some("p".into()))];
         assert_eq!(
             accept_listing(false, entries, "ignored".into())
@@ -933,7 +925,7 @@ mod tests {
             1
         );
 
-        // A failed run with an empty listing must surface the failure.
+        // 失败且输出为空的运行必须暴露错误。
         let err = accept_listing(false, vec![], "boom".into()).unwrap_err();
         assert!(matches!(err, AppError::Skill(_)));
         assert!(err.to_string().contains("boom"));
@@ -941,7 +933,7 @@ mod tests {
 
     #[test]
     fn project_scope_requires_an_existing_directory() {
-        // Global scope never passes a working directory.
+        // 全局作用域从不传工作目录。
         assert!(project_workdir("global", None).unwrap().is_none());
 
         assert!(project_workdir("project", None).is_err());

@@ -1,10 +1,10 @@
 use crate::core::error::Result;
 use crate::features::session::lifecycle::LifecycleManager;
 
-/// Generate a title for a session if:
-/// 1. title_source != 'manual'
-/// 2. session has >= 2 messages
-/// 3. no auto title generated yet
+/// 满足以下条件时为会话生成标题：
+/// 1. `title_source != 'manual'`
+/// 2. 会话至少 2 条消息
+/// 3. 尚未生成过自动标题
 pub async fn maybe_generate_title(
     lifecycle: &LifecycleManager,
     session_id: &str,
@@ -14,33 +14,33 @@ pub async fn maybe_generate_title(
     if !cfg.auto_title_enabled {
         return Ok(());
     }
-    // Use configured title model or fall back to session model
+    // 使用配置的标题模型，否则沿用会话模型
     let actual_model = cfg.title_model.clone().unwrap_or_else(|| model_id.to_string());
     drop(cfg);
 
     let db = lifecycle.db.lock().await;
 
-    // Check session: only generate if title_source == 'manual' (default)
+    // 仅当 title_source == 'manual'（默认值）时才生成
     let sess = db.get_session(session_id)?
         .ok_or_else(|| crate::core::error::AppError::NotFound("Session gone".to_string()))?;
 
-    // If already auto-generated or manually set, skip
+    // 已自动生成或手动设置过则跳过
     if sess.title_source != "manual" {
         return Ok(());
     }
 
     let messages = db.get_messages(session_id)?;
     if messages.len() < 2 {
-        return Ok(()); // Need at least user + assistant
+        return Ok(()); // 至少需要一轮 user + assistant
     }
 
-    // Only generate if title is still the default/placeholder
+    // 只在标题仍是默认占位时生成
     let title_is_default = sess.title == "新对话" || sess.title.is_empty();
     if !title_is_default {
         return Ok(());
     }
 
-    // Take first user message + first assistant response as context
+    // 取第一条用户消息与第一条助手回复作为上下文
     let first_user = messages.iter().find(|m| m.role == "user");
     let first_assistant = messages.iter().find(|m| m.role == "assistant");
 

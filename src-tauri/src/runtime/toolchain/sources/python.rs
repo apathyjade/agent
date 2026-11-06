@@ -1,17 +1,18 @@
-// ── Python Version Source ──
-//
-// Fetches available Python versions from the python-build-standalone GitHub releases.
-// Falls back to a curated list of known versions on API failure.
+//! Python 版本源。
+//!
+//! 从 python-build-standalone 的 GitHub Releases 获取可用版本；API 失败时
+//! 回退到一份人工维护的版本列表。
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::error::Result;
 use crate::runtime::toolchain::http_client::get_http_client;
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::runtime::toolchain::RuntimeType;
 
-/// GitHub release API response entry.
+/// GitHub release API 响应条目。
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -21,40 +22,18 @@ struct GitHubRelease {
     published_at: String,
 }
 
-/// Fallback known versions when GitHub API is unreachable.
+/// GitHub API 不可用时的已知版本回退列表。
 const FALLBACK_VERSIONS: &[&str] = &["3.13.3", "3.12.10", "3.11.12", "3.10.20"];
 
+/// Python 版本源：从 python-build-standalone 拉取版本。
 pub struct PythonVersionSource;
 
 impl PythonVersionSource {
-    fn platform_label(&self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            "x86_64-pc-windows-msvc"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "x86_64-unknown-linux-gnu"
-        }
-        #[cfg(target_os = "macos")]
-        {
-            "aarch64-apple-darwin"
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        {
-            "x86_64-unknown-linux-gnu"
-        }
-    }
-
-    fn archive_ext(&self) -> &'static str {
-        "tar.gz"
-    }
-
-    /// Build a download URL for a given Python version using python-build-standalone.
+    /// 拼接某个 Python 版本的下载地址（python-build-standalone 命名规则）。
     fn build_download_url(&self, version: &str, tag: &str) -> String {
-        let platform = self.platform_label();
-        let ext = self.archive_ext();
-        let archive_name = format!("cpython-{}+{}-{}-install_only", version, tag, platform);
+        let platform_label = platform::rust_triple();
+        let ext = platform::archive_ext(&RuntimeType::Python);
+        let archive_name = format!("cpython-{}+{}-{}-install_only", version, tag, platform_label);
         format!(
             "https://github.com/astral-sh/python-build-standalone/releases/download/{}/{}",
             tag, archive_name
@@ -62,20 +41,22 @@ impl PythonVersionSource {
             + ext
     }
 
-    /// Parse a version from a release tag like "20250115" -> no direct version mapping.
-    /// We extract version info from the release name/body.
+    /// 从 release 标签解析版本号。
+    ///
+    /// python-build-standalone 的 tag 只表示构建日期（如 "20250115"），不直接
+    /// 编码 Python 版本，因此这里沿用回退列表，并把该 tag 作为下载路径的一部分。
     fn parse_versions_from_release(&self, release: &GitHubRelease) -> Vec<(String, String)> {
         let tag = &release.tag_name;
-        // python-build-standalone tags don't encode Python versions directly.
-        // For a proper implementation, we'd parse the release body or use a manifest.
-        // For now, return the fallback list with this release's tag.
+        // python-build-standalone 的 tag 不直接编码 Python 版本。
+        // 若要完整实现，应解析 release body 或使用 manifest。
+        // 当前实现返回回退列表，并复用本次 release 的 tag。
         FALLBACK_VERSIONS
             .iter()
             .map(|v| (v.to_string(), tag.clone()))
             .collect()
     }
 
-    /// Create RuntimeVersion entries from version + tag pairs.
+    /// 把「版本号 + tag」组合转换成 `RuntimeVersion` 列表。
     fn build_versions(&self, version_tag_pairs: Vec<(String, String)>) -> Vec<RuntimeVersion> {
         version_tag_pairs
             .into_iter()
@@ -103,7 +84,7 @@ impl VersionSource for PythonVersionSource {
     }
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
-        // Try GitHub API first
+        // 优先尝试 GitHub API
         let client = get_http_client();
         match client
             .get("https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=5")
@@ -118,13 +99,13 @@ impl VersionSource for PythonVersionSource {
                             let pairs = self.parse_versions_from_release(latest);
                             return Ok(self.build_versions(pairs));
                         }
-                        // Fall through to fallback
+                        // 继续走回退逻辑
                     }
-                    Err(_) => { /* Fall through to fallback */ }
+                    Err(_) => { /* 继续走回退逻辑 */ }
                 }
             }
             Ok(response) => {
-                // Rate limited or other error - use fallback
+                // 被限流或其它错误 —— 使用回退列表
                 log::warn!(
                     "GitHub API returned {} for Python versions, using fallback",
                     response.status()
@@ -135,7 +116,7 @@ impl VersionSource for PythonVersionSource {
             }
         }
 
-        // Fallback: use known curated list with a default tag
+        // 回退：使用已知版本列表和默认 tag
         let default_tag = "20260510";
         let pairs: Vec<(String, String)> = FALLBACK_VERSIONS
             .iter()

@@ -1,4 +1,4 @@
-// ── Version Registry: Source Trait, Registry, and Caching ──
+//! 版本注册表：版本源 trait、注册表与缓存。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use crate::runtime::toolchain::RuntimeType;
 
 use super::sources;
 
-/// A version available for download with metadata.
+/// 带元数据的可下载版本。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeVersion {
     pub runtime_type: RuntimeType,
@@ -25,17 +25,20 @@ pub struct RuntimeVersion {
     pub file_size: Option<u64>,
 }
 
-/// Trait implemented by each runtime version source.
-/// Each source knows how to fetch available versions for a specific runtime type.
+/// 每个运行时版本源都要实现的 trait。
+/// 每个源负责获取某一运行时的可用版本列表。
 #[async_trait]
 pub trait VersionSource: Send + Sync {
-    /// Fetch available versions from the remote API.
+    /// 从远端 API 获取可用版本。
+    ///
+    /// 这是网络操作；具体源可在失败时返回内置回退列表，调用方不应假设一定
+    /// 访问了网络。
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>>;
-    /// Return the runtime type this source provides versions for.
+    /// 返回该源提供版本的运行时类型。
     fn runtime_type(&self) -> RuntimeType;
 }
 
-/// Cached versions with TTL tracking.
+/// 带 TTL 记录的版本缓存。
 #[derive(Debug, Clone)]
 pub struct CachedVersions {
     pub fetched_at: Instant,
@@ -43,7 +46,7 @@ pub struct CachedVersions {
     pub ttl_secs: u64,
 }
 
-/// Central registry that manages version sources and provides cached access.
+/// 管理版本源并提供缓存访问的中心注册表。
 pub struct RuntimeRegistry {
     sources: HashMap<RuntimeType, Box<dyn VersionSource>>,
     cache: Arc<Mutex<HashMap<RuntimeType, CachedVersions>>>,
@@ -56,7 +59,7 @@ impl Default for RuntimeRegistry {
 }
 
 impl RuntimeRegistry {
-    /// Create a new registry with all built-in version sources registered.
+    /// 创建注册表并注册所有内置版本源。
     pub fn new() -> Self {
         let mut sources: HashMap<RuntimeType, Box<dyn VersionSource>> = HashMap::new();
 
@@ -93,10 +96,12 @@ impl RuntimeRegistry {
         }
     }
 
-    /// Get versions for a runtime type.
-    /// Uses cache if available and fresh (within TTL), otherwise fetches from the source.
+    /// 获取某个运行时的版本列表。
+    ///
+    /// 缓存未过期（在 TTL 内）时直接返回缓存副本，否则从版本源重新拉取。
+    /// 返回的是克隆结果，调用方修改不会影响缓存。
     pub async fn get_versions(&self, rt: &RuntimeType) -> Result<Vec<RuntimeVersion>> {
-        // Check cache first
+        // 先查缓存
         {
             let cache = self.cache.lock().await;
             if let Some(cached) = cache.get(rt) {
@@ -106,16 +111,16 @@ impl RuntimeRegistry {
             }
         }
 
-        // Cache miss or expired — fetch fresh
+        // 缓存未命中或已过期 —— 重新拉取
         self.fetch_and_cache(rt).await
     }
 
-    /// Force refresh: bypass cache and fetch from remote API.
+    /// 强制刷新：绕过缓存，直接从远端 API 拉取。
     pub async fn force_refresh(&self, rt: &RuntimeType) -> Result<Vec<RuntimeVersion>> {
         self.fetch_and_cache(rt).await
     }
 
-    /// Internal: fetch from source and update cache.
+    /// 内部：从版本源拉取并更新缓存。
     async fn fetch_and_cache(&self, rt: &RuntimeType) -> Result<Vec<RuntimeVersion>> {
         let source = self.sources.get(rt).ok_or_else(|| {
             crate::core::error::AppError::NotFound(format!("没有可用的版本源: {}", rt.display_name()))
@@ -123,7 +128,7 @@ impl RuntimeRegistry {
 
         let versions = self.fetch_with_retry(source.as_ref(), rt).await?;
 
-        // Update cache with default 1-hour TTL
+        // 更新缓存，默认 TTL 为 1 小时
         {
             let mut cache = self.cache.lock().await;
             cache.insert(
@@ -131,7 +136,7 @@ impl RuntimeRegistry {
                 CachedVersions {
                     fetched_at: Instant::now(),
                     versions: versions.clone(),
-                    ttl_secs: 3600, // 1 hour default
+                    ttl_secs: 3600, // 默认 1 小时
                 },
             );
         }
@@ -139,7 +144,7 @@ impl RuntimeRegistry {
         Ok(versions)
     }
 
-    /// Fetch versions with retry: try once, wait 1s, retry once.
+    /// 带重试的拉取：先试一次，等待 1 秒后再试一次。
     async fn fetch_with_retry(
         &self,
         source: &dyn VersionSource,
@@ -168,18 +173,18 @@ impl RuntimeRegistry {
         }))
     }
 
-    /// Check if a source exists for the given runtime type.
+    /// 检查某个运行时是否有对应的版本源。
     pub fn has_source(&self, rt: &RuntimeType) -> bool {
         self.sources.contains_key(rt)
     }
 
-    /// Register an additional version source (for extensibility).
+    /// 注册额外的版本源（用于扩展）。
     pub fn register_source(&mut self, source: Box<dyn VersionSource>) {
         let rt = source.runtime_type();
         self.sources.insert(rt, source);
     }
 
-    /// Get the number of registered sources.
+    /// 获取已注册版本源的数量。
     pub fn source_count(&self) -> usize {
         self.sources.len()
     }

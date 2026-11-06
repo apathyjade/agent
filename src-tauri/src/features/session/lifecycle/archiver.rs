@@ -1,7 +1,7 @@
 use crate::core::error::Result;
 use crate::features::session::lifecycle::LifecycleManager;
 
-/// Run archive check on startup. Archives sessions past the configured inactivity threshold.
+/// 启动时执行归档检查：把超过配置不活跃天数的会话标记为已归档。
 pub async fn run_archive_check(lifecycle: &LifecycleManager) -> Result<()> {
     let cfg = lifecycle.config.lock().await;
     if !cfg.auto_archive_enabled {

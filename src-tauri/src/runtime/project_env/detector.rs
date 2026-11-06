@@ -1,4 +1,4 @@
-// ── Project Detector: Scan project directories for runtime version requirements ──
+//! 项目探测器：扫描项目目录中的运行时版本需求。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::core::error::Result;
 use crate::runtime::toolchain::RuntimeType;
 
-/// A project bound to runtime version management.
+/// 绑定到运行时版本管理的项目。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BoundProject {
     pub id: String,
@@ -21,16 +21,16 @@ pub struct BoundProject {
     pub updated_at: String,
 }
 
-/// A single runtime requirement from a project.
+/// 项目中的单条运行时需求。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectRuntimeRequirement {
     pub runtime_type: RuntimeType,
-    pub version_spec: String, // ">=18", "3.12.x", "stable", "20.18.3"
-    pub source_file: String,  // ".nvmrc", "go.mod", ".runtime-version"
+    pub version_spec: String, // ">=18"、"3.12.x"、"stable"、"20.18.3"
+    pub source_file: String,  // ".nvmrc"、"go.mod"、".runtime-version"
     pub resolved_version: Option<String>,
 }
 
-/// Result of scanning a project directory.
+/// 扫描项目目录的结果。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectScanResult {
     pub project_path: String,
@@ -39,7 +39,7 @@ pub struct ProjectScanResult {
     pub errors: Vec<String>,
 }
 
-/// Result of syncing a project's runtime versions.
+/// 同步项目运行时版本的结果。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SyncResult {
     pub project_id: String,
@@ -48,16 +48,17 @@ pub struct SyncResult {
     pub error: Option<String>,
 }
 
+/// 单条同步动作。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SyncAction {
     pub runtime_type: RuntimeType,
-    pub action: String, // "install", "switch", "already_matched", "skipped"
+    pub action: String, // "install"、"switch"、"already_matched"、"skipped"
     pub from_version: Option<String>,
     pub to_version: String,
     pub success: bool,
 }
 
-// ── .runtime-version YAML schema ──
+// ── .runtime-version YAML 结构 ──
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -66,21 +67,24 @@ struct RuntimeVersionFile {
     runtimes: Option<HashMap<String, String>>,
 }
 
-/// Detects runtime version requirements from project configuration files.
-/// Scans for .runtime-version (authoritative), .nvmrc, .python-version,
-/// go.mod, package.json (engines.node), and Cargo.toml.
+/// 从项目配置文件中检测运行时版本需求。
+/// 扫描 `.runtime-version`（权威来源）、`.nvmrc`、`.python-version`、
+/// `go.mod`、`package.json`（engines.node）与 `Cargo.toml`。
 pub struct ProjectDetector;
 
 impl ProjectDetector {
-    /// Scan a directory for all version config files.
-    /// Priority: .runtime-version > individual config files (.nvmrc > .python-version > go.mod > package.json > Cargo.toml).
-    /// If .runtime-version is found, skip all other checks (it's authoritative).
+    /// 扫描目录中的所有版本配置文件。
+    ///
+    /// 优先级从高到低：`.runtime-version`，其次是各独立配置文件
+    /// （`.nvmrc`、`.python-version`、`go.mod`、`package.json`、`Cargo.toml`）。
+    /// 找到 `.runtime-version` 时会跳过其余检查（它是权威来源）。
+    /// 该函数只读取本地文件，不访问网络。
     pub async fn scan(path: &Path) -> Result<ProjectScanResult> {
         let project_name = Self::project_name_from_path(path);
         let mut requirements = Vec::new();
         let mut errors = Vec::new();
 
-        // 1. Check authoritative .runtime-version first
+        // 1. 先检查权威的 .runtime-version
         let runtime_version_path = path.join(".runtime-version");
         if runtime_version_path.exists() {
             match Self::parse_runtime_version(&runtime_version_path) {
@@ -99,7 +103,7 @@ impl ProjectDetector {
             }
         }
 
-        // 2. Check individual config files (ordered by priority)
+        // 2. 检查独立配置文件（按优先级排序）
         // .nvmrc
         let nvmrc_path = path.join(".nvmrc");
         if nvmrc_path.exists() {
@@ -139,7 +143,7 @@ impl ProjectDetector {
             }
         }
 
-        // package.json (engines.node)
+        // package.json 的 engines.node 字段
         let package_json_path = path.join("package.json");
         if package_json_path.exists() {
             if let Some(spec) = Self::parse_package_json_engines(&package_json_path) {
@@ -152,7 +156,7 @@ impl ProjectDetector {
             }
         }
 
-        // Cargo.toml (implies Rust)
+        // Cargo.toml（意味着需要 Rust）
         if Self::has_cargo_toml(path) {
             requirements.push(ProjectRuntimeRequirement {
                 runtime_type: RuntimeType::Rust,
@@ -170,8 +174,8 @@ impl ProjectDetector {
         })
     }
 
-    /// Parse .runtime-version YAML file.
-    /// Schema:
+    /// 解析 .runtime-version YAML 文件。
+    /// 结构：
     /// ```yaml
     /// version: 1
     /// runtimes:
@@ -199,7 +203,7 @@ impl ProjectDetector {
         Some(requirements)
     }
 
-    /// Read .nvmrc, return version spec.
+    /// 读取 .nvmrc，返回版本规格。
     fn parse_nvmrc(path: &Path) -> Option<String> {
         let content = std::fs::read_to_string(path).ok()?;
         let spec = content.trim().to_string();
@@ -210,7 +214,7 @@ impl ProjectDetector {
         }
     }
 
-    /// Read .python-version file.
+    /// 读取 .python-version 文件。
     fn parse_python_version(path: &Path) -> Option<String> {
         let content = std::fs::read_to_string(path).ok()?;
         let spec = content.trim().to_string();
@@ -221,16 +225,16 @@ impl ProjectDetector {
         }
     }
 
-    /// Parse go.mod for `go X.Y` directive.
+    /// 解析 go.mod 中的 `go X.Y` 指令。
     fn parse_go_mod(path: &Path) -> Option<String> {
         let content = std::fs::read_to_string(path).ok()?;
-        // Look for "go X.Y" at the start of a line
+        // 在行首查找 "go X.Y"
         let re = regex::Regex::new(r"(?m)^go\s+(\d+\.\d+(?:\.\d+)?)").ok()?;
         let cap = re.captures(&content)?;
         Some(cap.get(1)?.as_str().to_string())
     }
 
-    /// Read engines.node from package.json.
+    /// 读取 package.json 中的 engines.node。
     fn parse_package_json_engines(path: &Path) -> Option<String> {
         let content = std::fs::read_to_string(path).ok()?;
         let json: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -239,12 +243,12 @@ impl ProjectDetector {
         node.as_str().map(|s| s.to_string())
     }
 
-    /// Check if Cargo.toml exists.
+    /// 检查 Cargo.toml 是否存在。
     fn has_cargo_toml(path: &Path) -> bool {
         path.join("Cargo.toml").exists()
     }
 
-    /// Extract project name from path (directory name).
+    /// 从路径中提取项目名（目录名）。
     fn project_name_from_path(path: &Path) -> String {
         path.file_name()
             .map(|s| s.to_string_lossy().to_string())

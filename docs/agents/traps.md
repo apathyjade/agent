@@ -6,9 +6,15 @@
 - **Provider 非 feature-gated**：Rig 0.46 中所有 provider 内置在 rig-core 中，**没有** `openai`/`anthropic` 等 feature flag。`features = ["openai", "anthropic"]` 会导致构建失败——正确方式：`rig = "0.46"`
 - **schemars 版本匹配**：`extract_structured<T>()` 要求 T 实现 `schemars::JsonSchema`。Rig 内部使用 `schemars v1.2.x`，项目中需使用相同版本，否则 trait bound 不满足（错误："trait `schemars::JsonSchema` is not satisfied"）
 - **客户端构造不再返回 Result**：`OpenAI::new(key)` / `Anthropic::new(key)` 现在是直接返回客户端；只有 `from_env()` 返回 `Result`。真正的错误边界在 `AgentRunner` 执行时
-- **工具不是 `ToolDyn`**：自定义工具实现项目内的 `agent::tools::base::AgentTool`，由 `ToolRegistry::to_rig_tools()` 转成 `rig::tool::DynamicTool`；直接 `impl rig::tool::ToolDyn` 会编译失败
-- **流式传输不携带工具调用**：当前流式适配器只透出文本 delta（`rig::streaming::StreamEvent::Text`）和 `FinalResponse`。工具调用走 `prompt_with_tools()` 的非流式路径，通过 `ToolLoop` 的输出通道（`agent::fast_loop::StreamEvent`）推送 ToolCall/ToolResult 事件
+- **工具来自 `rig-tools`**：内置工具（`read` / `write` / `edit` / `search` / `list` / `shell` / `delete` / `move`）直接使用官方 `rig-tools` crate，不再手写 `impl Tool`；注册表只做启用状态、别名、审批与 MCP 包装。策略注解与 `footprint` 由 rig-tools 自带，`agent/tools/convert.rs` 负责转成 `DynamicTool`
+- **流式工具事件**：`stream_with_tools()` 产出 `ToolCall` / `ToolResult`，`agent/fast_loop.rs` 转成 `StreamEvent` 推给前端；流结束只发一次 `Done`，错误走 `Error` 事件，不再把 `FinalResponse` 文本重复追加
 - **记忆语义搜索依赖 OpenAI API**：`MemoryManager` 的语义搜索需要 OpenAI API key（`OPENAI_API_KEY` 环境变量或 config 中第一个 OpenAI 模型的 key）。无 key 时自动降级到关键词 LIKE 搜索
+- **工具失败标志在 `ToolResult.is_error`**：Rig 0.46 的 `ToolResult` 用 `is_error: bool` 标记失败，`content` 里放失败原因。项目在 `agent/fast_loop.rs` 转成 `ToolResultInfo` 时必须透传该字段——丢失它会导致工具失败被当作成功上报给前端。用字符串前缀（如 `"Tool execution error:"`）判断失败是不可靠的：全仓没有代码产生该前缀，判定分支是死代码
+
+## 字符串与编码
+
+- **禁止按字节切片字符串**：`&s[..s.len().min(n)]` 按**字节**截断，切口落在多字节字符（中文 3 字节/字）中间会 panic（`byte index N is not a char boundary`）。本应用的模型输出经常是中文，所有「截取预览」场景必须用 `core::util::truncate_chars(s, n)`（按字符计数，不切半个字符）。另注意 `s.len()` 是字节数而非字符数。
+- **源码 UTF-8 无 BOM**：用 PowerShell 写 `.rs` 文件时用 `UTF8Encoding($false)`，否则 BOM 会污染源码。仓库 `core.autocrlf=true` 且无 `.gitattributes`，工作区为 CRLF、仓库内为 LF。
 
 ## 项目配置
 

@@ -1,9 +1,8 @@
-//! Parsing of `skills list --json` output and enrichment from `SKILL.md`.
+//! 解析 `skills list --json` 输出，并从 `SKILL.md` 补充元数据。
 //!
-//! The CLI prints human-readable banner lines before the JSON payload, so the
-//! raw stdout is sliced from the first `[` to the last `]` before deserializing.
-//! Entries carry only CLI-known fields; the rest (description, version, author,
-//! tags) is read from each skill's `SKILL.md` frontmatter.
+//! CLI 会在 JSON 之前打印人类可读的横幅，因此先截取第一个 `[` 到最后一个
+//! `]` 之间的内容再反序列化。CLI 条目只包含它已知的字段；description、
+//! version、author、tags 由各技能目录下的 `SKILL.md` frontmatter 补齐。
 
 use std::path::Path;
 
@@ -13,15 +12,14 @@ use crate::core::error::{AppError, Result};
 
 use super::frontmatter::{self, SkillMd};
 
-/// Upper bound for a `SKILL.md` read: 256 KiB. Anything larger is skipped
-/// rather than pulled into memory.
+/// `SKILL.md` 读取上限：256 KiB。更大的文件直接跳过，不读进内存。
 const MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
 
 const STATUS_TRACKED: &str = "tracked";
 const STATUS_UNTRACKED: &str = "untracked";
 const STATUS_MISSING: &str = "missing";
 
-/// A skill entry as reported by `skills list --json`.
+/// `skills list --json` 返回的一条技能记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawListEntry {
     pub name: String,
@@ -38,7 +36,7 @@ pub struct RawListEntry {
     pub status: String,
 }
 
-/// A skill entry with metadata merged in from `SKILL.md`.
+/// 合并了 `SKILL.md` 元数据的技能记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledSkill {
     pub name: String,
@@ -60,11 +58,10 @@ fn default_status() -> String {
     STATUS_UNTRACKED.to_string()
 }
 
-/// Extract the JSON array from raw CLI stdout and parse it.
+/// 从 CLI 原始 stdout 中提取 JSON 数组并解析。
 ///
-/// Banner lines before and after the payload are ignored. Entries with a
-/// status this build does not know about are reported as `untracked`, so an
-/// upstream addition never hides a skill.
+/// 忽略载荷前后的横幅行。状态值未知的条目按 `untracked` 处理，使上游新增
+/// 状态不会导致技能被隐藏。
 pub fn parse_entries(stdout: &str) -> Result<Vec<RawListEntry>> {
     let start = stdout
         .find('[')
@@ -88,10 +85,10 @@ pub fn parse_entries(stdout: &str) -> Result<Vec<RawListEntry>> {
     Ok(entries)
 }
 
-/// Merge `SKILL.md` frontmatter into a CLI entry.
+/// 把 `SKILL.md` frontmatter 合并进 CLI 条目。
 ///
-/// Missing skills (status `missing`, `path: null`) keep an empty description
-/// and report `has_skill_md = false`. The `name` from the CLI always wins.
+/// 缺失的技能（status 为 `missing`、`path: null`）保持空描述并返回
+/// `has_skill_md = false`。`name` 始终以 CLI 为准。
 pub fn enrich(entry: RawListEntry) -> InstalledSkill {
     let RawListEntry {
         name,
@@ -137,11 +134,10 @@ pub fn enrich(entry: RawListEntry) -> InstalledSkill {
     }
 }
 
-/// Read and parse the `SKILL.md` of one skill.
+/// 读取并解析单个技能的 `SKILL.md`。
 ///
-/// `path` may be either the skill directory or the `SKILL.md` file itself.
-/// Returns `None` when the file is absent, larger than 256 KiB, not UTF-8, or
-/// otherwise unreadable.
+/// `path` 可以是技能目录，也可以是 `SKILL.md` 文件本身。文件不存在、超过
+/// 256 KiB、非 UTF-8 或不可读时返回 `None`。
 pub fn read_skill_md(path: &Path) -> Option<SkillMd> {
     let file = if path.is_dir() {
         path.join("SKILL.md")
@@ -158,7 +154,7 @@ pub fn read_skill_md(path: &Path) -> Option<SkillMd> {
     Some(frontmatter::parse(&content))
 }
 
-/// Map a CLI status onto the three known values; anything else is `untracked`.
+/// 把 CLI 状态映射到三个已知值；其他值一律按 `untracked`。
 fn normalize_status(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         STATUS_TRACKED => STATUS_TRACKED.to_string(),

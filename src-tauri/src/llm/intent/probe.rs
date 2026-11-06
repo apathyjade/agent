@@ -1,8 +1,7 @@
-//! Bounded, read-only project probe.
+//! 有界、只读的项目探针。
 //!
-//! Used only when the LLM rerank is low-confidence. The probe never reuses the
-//! agent `ToolRegistry`: it lists the project root and does one keyword search
-//! inside it. Any error, timeout, or path escape yields `None`.
+//! 仅在 LLM rerank 低置信时使用。探针绝不复用 agent 的 `ToolRegistry`：它只列出
+//! 项目根目录，并在其中做一次关键词搜索。任何错误、超时或路径越界都返回 `None`。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,7 +31,7 @@ const SKIPPED_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
-/// Collect a short evidence string for `intent` inside `project_root`.
+/// 在 `project_root` 内为 `intent` 收集一小段证据文本。
 pub async fn probe(
     intent: &IntentRecord,
     project_root: &Path,
@@ -239,7 +238,7 @@ fn is_probably_text(path: &Path) -> bool {
     !bytes.contains(&0)
 }
 
-/// Canonicalize `candidate` and require it to stay inside `root`.
+/// canonicalize `candidate`，并要求它仍位于 `root` 之内。
 fn safe_path(root: &Path, candidate: &Path) -> Option<PathBuf> {
     let canonical = candidate.canonicalize().ok()?;
     if canonical.starts_with(root) {

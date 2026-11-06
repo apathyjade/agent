@@ -1,7 +1,7 @@
-// ── Project runtime binding service ──
-//
-// Scans project files for runtime requirements, persists bindings and applies
-// them. This is the project-level layer above the standalone toolchain engine.
+//! 项目运行时绑定服务。
+//!
+//! 扫描项目文件中的运行时需求，持久化绑定关系并应用它们。这是独立工具链
+//! 引擎之上的项目级封装。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,14 +17,14 @@ use super::detector::{
     BoundProject, ProjectDetector, ProjectRuntimeRequirement, SyncAction, SyncResult,
 };
 
-/// List bound projects with decoded requirements.
+/// 列出已绑定项目，并解码其运行时需求。
 pub async fn list(db: &Arc<Mutex<Database>>) -> Result<Vec<BoundProject>> {
     let db = db.lock().await;
     let models = db.list_bound_projects()?;
     Ok(models.into_iter().map(bound_project_from_model).collect())
 }
 
-/// Scan a directory and persist it as a bound project.
+/// 扫描目录并将其持久化为绑定项目。
 pub async fn bind(db: &Arc<Mutex<Database>>, path: &str) -> Result<BoundProject> {
     let project_path = std::path::PathBuf::from(path);
     let name = project_path
@@ -32,7 +32,7 @@ pub async fn bind(db: &Arc<Mutex<Database>>, path: &str) -> Result<BoundProject>
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // Scan before locking so a slow filesystem cannot block other DB users.
+    // 先扫描再取锁，避免慢速文件系统阻塞其它数据库使用者。
     let scan = ProjectDetector::scan(&project_path).await?;
 
     let db = db.lock().await;
@@ -58,16 +58,17 @@ pub async fn bind(db: &Arc<Mutex<Database>>, path: &str) -> Result<BoundProject>
     })
 }
 
+/// 删除一个绑定项目。
 pub async fn remove(db: &Arc<Mutex<Database>>, id: &str) -> Result<()> {
     let db = db.lock().await;
     db.remove_bound_project(id)
 }
 
-/// Apply a project's requirements.
+/// 应用项目的运行时需求。
 ///
-/// For each requirement: resolve the spec, switch to the target version and,
-/// when the version is not installed locally, install it first. The result
-/// reports every requirement so callers can show partial success.
+/// 对每条需求：解析版本规格、切换到目标版本；若本地未安装则先安装。结果会
+/// 逐条上报，便于调用方展示部分成功。该过程可能访问网络（安装/解析）并阻塞
+/// 直到所有需求处理完毕。
 pub async fn sync(
     services: &RuntimeServices,
     db: &Arc<Mutex<Database>>,
@@ -122,7 +123,7 @@ pub async fn sync(
                 success: true,
             }),
             Err(_) => {
-                // The target version is not installed: install it, then retry.
+                // 目标版本未安装：先安装再重试
                 match services
                     .install(&rt, Some(target.clone()), active_manager, |_| {})
                     .await
@@ -170,6 +171,7 @@ pub async fn sync(
     })
 }
 
+/// 构造一条“跳过”的同步动作。
 fn skipped(requirement: &ProjectRuntimeRequirement, current: String, target: String) -> SyncAction {
     SyncAction {
         runtime_type: requirement.runtime_type.clone(),
@@ -180,6 +182,7 @@ fn skipped(requirement: &ProjectRuntimeRequirement, current: String, target: Str
     }
 }
 
+/// 把数据库模型转换为 `BoundProject`。
 fn bound_project_from_model(model: BoundProjectModel) -> BoundProject {
     BoundProject {
         id: model.id,
@@ -193,6 +196,7 @@ fn bound_project_from_model(model: BoundProjectModel) -> BoundProject {
     }
 }
 
+/// 解码数据库中存储的需求 JSON；内容缺失或非法时返回空列表。
 pub fn decode_requirements(raw: Option<&str>) -> Vec<ProjectRuntimeRequirement> {
     raw.and_then(|value| serde_json::from_str(value).ok())
         .unwrap_or_default()

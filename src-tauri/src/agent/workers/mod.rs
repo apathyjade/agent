@@ -1,3 +1,8 @@
+//! worker 实现：每个 worker 负责一类子任务，并支持 `@@command` 形式的内嵌指令。
+//!
+//! 公共契约在 [`WorkerAgent`]；具体 worker 只实现 `execute`，
+//! 需要「带反馈重试」时使用 trait 的默认实现。
+
 pub mod code_editor;
 pub mod code_explorer;
 pub mod mcp_bridge;
@@ -12,7 +17,7 @@ use serde_json::Value;
 
 use crate::core::error::Result;
 
-/// Lightweight feedback struct for worker retry (no dependency on critic module).
+/// worker 重试时使用的轻量反馈结构（不依赖 critic 模块）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerFeedback {
     pub issues: Vec<String>,
@@ -20,11 +25,13 @@ pub struct WorkerFeedback {
 }
 
 impl WorkerFeedback {
+    /// 用问题列表与建议列表构造反馈。
     pub fn new(issues: Vec<String>, suggestions: Vec<String>) -> Self {
         Self { issues, suggestions }
     }
 }
 
+/// worker 类型，决定任务由谁执行。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerKind {
@@ -38,6 +45,7 @@ pub enum WorkerKind {
 }
 
 impl WorkerKind {
+    /// 返回用于日志与持久化的稳定字符串标识。
     pub fn as_str(&self) -> &'static str {
         match self {
             WorkerKind::Thinker => "thinker",
@@ -51,7 +59,7 @@ impl WorkerKind {
     }
 }
 
-/// Result returned by a worker after executing a sub-task.
+/// worker 执行完子任务后返回的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerResult {
     pub worker: WorkerKind,
@@ -63,7 +71,7 @@ pub struct WorkerResult {
     pub duration_ms: Option<u64>,
 }
 
-/// Sub-task dispatched by the Orchestrator to a Worker.
+/// 编排器下发给 worker 的子任务。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubTask {
     pub id: String,
@@ -80,19 +88,27 @@ pub struct SubTask {
     pub context: Option<Value>,
 }
 
+/// worker 的统一契约。
+///
+/// 实现方只需提供 `kind`、`description` 与 `execute`；
+/// [`WorkerAgent::execute_with_feedback`] 提供了默认的「拼接反馈后重试」实现。
 #[async_trait]
 pub trait WorkerAgent: Send + Sync {
+    /// 该 worker 的类型。
     fn kind(&self) -> WorkerKind;
+
+    /// 供前端展示的能力描述。
     fn description(&self) -> &str;
 
+    /// 执行一个子任务。
     async fn execute(&self, task: SubTask) -> Result<WorkerResult>;
 
+    /// 带评审反馈重新执行：默认把反馈拼到指令前再调用 `execute`。
     async fn execute_with_feedback(
         &self,
         task: SubTask,
         feedback: &WorkerFeedback,
     ) -> Result<WorkerResult> {
-        // Default: prepend feedback to instruction and retry
         let mut amended = task.clone();
         amended.instruction = format!(
             "Previous attempt had these issues:\n{}\n\nFeedback:\n{}\n\nPlease fix and retry.\n\n{}",

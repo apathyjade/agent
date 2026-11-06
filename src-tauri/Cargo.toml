@@ -55,6 +55,9 @@ notify = "7"
 git2 = { version = "0.19", features = ["vendored-libgit2"] }
 # Rig AI framework — provider adapter + extractor
 rig = "0.46"
+rig-harness = "0.46"
+# 官方编码工具（read/write/edit/search/list/shell/delete/move）
+rig-tools = "0.46"
 schemars = "1.2"
 
 [dev-dependencies]

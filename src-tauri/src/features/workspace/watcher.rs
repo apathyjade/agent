@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 
 use crate::core::error::Result;
 
-/// Events emitted by the FileWatcher.
+/// `FileWatcher` 发出的事件。
 #[derive(Debug, Clone)]
 pub enum FileChangeEvent {
     Created(PathBuf),
@@ -11,7 +11,7 @@ pub enum FileChangeEvent {
     Deleted(PathBuf),
 }
 
-/// Directories to exclude from watching.
+/// 不参与监听的目录。
 const EXCLUDED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -26,21 +26,20 @@ const EXCLUDED_DIRS: &[&str] = &[
     ".svelte-kit",
 ];
 
-/// FileWatcher monitors a directory for file system changes.
+/// 监视目录的文件系统变化。
 ///
-/// Uses the `notify` crate with a blocking thread bridged to tokio's async
-/// event channel. Excluded directories (`.git`, `node_modules`, etc.) are
-/// filtered out before forwarding events.
+/// 使用 `notify` crate，并把阻塞线程桥接到 tokio 的异步事件通道。被排除的
+/// 目录（`.git`、`node_modules` 等）在转发事件前过滤掉。
 pub struct FileWatcher {
     event_tx: mpsc::Sender<FileChangeEvent>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl FileWatcher {
-    /// Create a new FileWatcher for the given root path.
+    /// 为给定根路径创建 `FileWatcher`。
     ///
-    /// Spawns a background blocking thread that watches the filesystem and
-    /// forwards [`FileChangeEvent`]s to the returned receiver.
+    /// 启动一个后台阻塞线程监听文件系统，并把 [`FileChangeEvent`] 转发到
+    /// 返回的接收端。
     pub fn spawn(root: &Path) -> Result<(Self, mpsc::Receiver<FileChangeEvent>)> {
         let (event_tx, event_rx) = mpsc::channel::<FileChangeEvent>(256);
         let watch_root = root.to_path_buf();
@@ -50,7 +49,7 @@ impl FileWatcher {
             Self::run_blocking(&watch_root, tx);
         });
 
-        // Wrap so the outer JoinHandle can be aborted on drop
+        // 包一层，使外层 JoinHandle 在 drop 时可以 abort
         let handle = tokio::spawn(async move {
             let _ = blocking_handle.await;
         });
@@ -64,7 +63,7 @@ impl FileWatcher {
         ))
     }
 
-    /// Blocking loop that owns the `notify` watcher and forwards events.
+    /// 持有 `notify` watcher 并转发事件的阻塞循环。
     fn run_blocking(root: &Path, tx: mpsc::Sender<FileChangeEvent>) {
         use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -127,7 +126,7 @@ impl FileWatcher {
         }
     }
 
-    /// Returns `true` if the event's path lies inside an excluded directory.
+    /// 事件路径位于被排除目录内时返回 `true`。
     fn is_excluded(event: &FileChangeEvent) -> bool {
         let path = match event {
             FileChangeEvent::Created(p)
@@ -145,7 +144,7 @@ impl FileWatcher {
         })
     }
 
-    /// Get a sender for subscribing to events (clone of the internal channel).
+    /// 获取事件订阅端（内部通道的克隆）。
     pub fn subscribe(&self) -> mpsc::Sender<FileChangeEvent> {
         self.event_tx.clone()
     }
@@ -218,7 +217,7 @@ mod tests {
 
         let tx2 = watcher.subscribe();
         let event = FileChangeEvent::Created(PathBuf::from("/test/file.rs"));
-        // Both the original tx and the subscribed tx should work
+        // 原始 tx 与订阅 tx 都应可用
         assert!(tx2.try_send(event).is_ok());
     }
 }

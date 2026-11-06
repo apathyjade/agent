@@ -2,7 +2,9 @@ use chrono::Utc;
 
 use crate::core::db::models::PersonaRecord;
 
-/// Built-in default personas seeded on first launch.
+/// 首次启动时写入的内置默认 persona。
+///
+/// 系统提示词属于用户可见数据，保持英文原文，不随注释语言翻译。
 pub fn default_personas() -> Vec<PersonaRecord> {
     let now = Utc::now().to_rfc3339();
 
@@ -11,7 +13,7 @@ pub fn default_personas() -> Vec<PersonaRecord> {
             id: "persona_default_dev".to_string(),
             name: "Dev".to_string(),
             title: "通用开发者".to_string(),
-            emoji: "\u{1f9d1}\u{200d}\u{1f4bb}".to_string(), // 🧑‍💻
+            emoji: "\u{1f9d1}\u{200d}\u{1f4bb}".to_string(), // 表情符号：🧑‍💻
             description: "一个全能的软件开发者，擅长编写代码、调试问题和实现功能。".to_string(),
             system_prompt: "You are Dev, a versatile software developer.\n\n\
             Core principles:\n\
@@ -33,7 +35,7 @@ pub fn default_personas() -> Vec<PersonaRecord> {
             id: "persona_default_arch".to_string(),
             name: "Arch".to_string(),
             title: "系统架构师".to_string(),
-            emoji: "\u{1f3db}".to_string(), // 🏛
+            emoji: "\u{1f3db}".to_string(), // 表情符号：🏛
             description: "专注于系统设计、架构决策和技术选型的高层架构师。".to_string(),
             system_prompt: "You are Arch, a system architect with deep expertise in software architecture.\n\n\
             Your approach:\n\
@@ -55,7 +57,7 @@ pub fn default_personas() -> Vec<PersonaRecord> {
             id: "persona_default_qa".to_string(),
             name: "QA".to_string(),
             title: "质量与安全工程师".to_string(),
-            emoji: "\u{1f50d}".to_string(), // 🔍
+            emoji: "\u{1f50d}".to_string(), // 表情符号：🔍
             description: "专注于代码质量、安全审计和测试覆盖的工程师。".to_string(),
             system_prompt: "You are QA, a quality and security engineer.\n\n\
             Your focus areas:\n\

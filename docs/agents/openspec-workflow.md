@@ -53,3 +53,6 @@ change 产物在 `openspec/changes/<name>/` 下，是工具工作目录。有长
 | `intent-routing` | 📦 archived | 意图路由功能 |
 | `intent-domain-runtime-integration` | ✅ complete | 意图领域接入 Agent 运行时 |
 | `intent-routing-redesign` | 🔄 in-progress | 信号 → 决策 → 策略的意图链路重构 |
+| `fix-intent-routing-timeout` | ✅ complete | 提高分类超时并迁移旧默认值，修复路由退化到闲聊 |
+| `fix-provider-key-restore` | ✅ complete | 启动时从钥匙串恢复模型 API Key |
+| `fix-rerank-none-outcome` | ✅ complete | 区分 rerank 明确无匹配与调用不可用 |

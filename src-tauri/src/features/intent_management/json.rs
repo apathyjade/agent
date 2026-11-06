@@ -1,14 +1,12 @@
-//! JSON import/export for intent definitions.
+//! 意图定义的 JSON 导入/导出。
 //!
-//! Pure and database-free: [`parse_intent_array`] and [`to_records`] turn an
-//! untrusted JSON array into validated [`IntentRecord`]s, and
-//! [`to_json_array`] turns records back into the same shape. The caller owns
-//! persistence and timestamps, so the whole batch can be validated in memory
-//! and then written in one transaction.
+//! 纯函数、不碰数据库：[`parse_intent_array`] 与 [`to_records`] 把不可信的
+//! JSON 数组转换成校验过的 [`IntentRecord`]，[`to_json_array`] 再转回同样的
+//! 结构。持久化与时间戳由调用方负责，因此整批数据可以先在内存里校验完，
+//! 再在一个事务里写入。
 //!
-//! Import never trusts the incoming `id`: `intents.id` is a global primary key,
-//! so re-importing an export has to mint fresh ids or the batch would collide
-//! with the rows it came from.
+//! 导入从不信任传入的 `id`：`intents.id` 是全局主键，重新导入一份导出数据
+//! 必须生成新 id，否则整批数据会与来源行冲突。
 
 use std::collections::HashMap;
 
@@ -17,36 +15,33 @@ use serde::{Deserialize, Serialize};
 use crate::core::db::models::IntentRecord;
 use crate::core::error::{AppError, Result};
 
-/// `path` defaults to `fast` so an entry carrying only `name` is still valid.
-/// An explicit empty string is *not* accepted, which keeps the
-/// `{fast, deep}` check meaningful.
+/// `path` 缺省为 `fast`，使只带 `name` 的条目仍然合法。
+/// 显式空字符串*不*接受，从而保证 `{fast, deep}` 校验有意义。
 fn default_path() -> String {
     "fast".to_string()
 }
 
-/// Missing `enabled` means enabled, matching the column default. A `false`
-/// default would turn a minimal paste into an all-disabled batch that the
-/// "at least one enabled intent" guard rejects wholesale.
+/// 缺省 `enabled` 视为启用，与列默认值一致。若默认为 `false`，一次最小粘贴
+/// 会变成全禁用批次，被「至少一条启用的意图」校验整批拒绝。
 fn default_true() -> bool {
     true
 }
 
-/// Missing `confidence_threshold` uses the column default. Defaulting to `0.0`
-/// would silently disable the confidence fallback, since a confidence can
-/// never be negative.
+/// 缺省 `confidence_threshold` 使用列默认值。若默认为 `0.0`，会静默关闭置信
+/// 度回退，因为置信度不可能为负。
 fn default_threshold() -> f64 {
     0.7
 }
 
-/// Missing `scope` uses the column default instead of leaving the value blank.
+/// 缺省 `scope` 使用列默认值，而不是留空。
 fn default_scope() -> String {
     "global".to_string()
 }
 
-/// Wire shape of one intent in the §6.3 array format.
+/// §6.3 数组格式中单条意图的传输结构。
 ///
-/// Every field except `name` is optional on input. `id` is carried through
-/// export for reference but ignored on import.
+/// 除 `name` 外所有字段在输入时都可选。`id` 在导出时保留供参考，导入时
+/// 忽略。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentJson {
     #[serde(default)]
@@ -82,10 +77,10 @@ pub struct IntentJson {
     pub max_iterations: Option<usize>,
 }
 
-/// Parses the imported text into the wire entries.
+/// 把导入文本解析成传输条目。
 ///
-/// Only structural problems are rejected here (malformed JSON, not an array,
-/// empty array); per-field validation happens in [`to_records`].
+/// 这里只拒绝结构性问题（JSON 格式错误、不是数组、空数组）；字段级校验在
+/// [`to_records`] 中进行。
 pub fn parse_intent_array(json: &str) -> Result<Vec<IntentJson>> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|err| AppError::InvalidInput(format!("JSON 解析失败：{err}")))?;
@@ -106,15 +101,14 @@ pub fn parse_intent_array(json: &str) -> Result<Vec<IntentJson>> {
     Ok(inputs)
 }
 
-/// Validates the whole batch and converts it into fresh records.
+/// 校验整批数据并转换成全新的记录。
 ///
-/// Nothing is returned unless every entry is valid, so the caller can write the
-/// batch in a single transaction. Each record gets a new uuid, `version = 1`,
-/// `sort_order = index * 10`, and `created_at` / `updated_at` set to `now`.
+/// 只有全部条目都合法才会返回结果，调用方因此可以在一个事务里写入整批。
+/// 每条记录会获得新 uuid、`version = 1`、`sort_order = index * 10`，以及
+/// 设为 `now` 的 `created_at` / `updated_at`。
 ///
-/// `fallback_intent` may reference another entry by its incoming `id` or by its
-/// `name`; it is rewritten to the generated id, and an unresolvable reference
-/// fails the batch with the 1-based index of the offending entry.
+/// `fallback_intent` 可以按传入的 `id` 或 `name` 引用另一条目；它会被改写
+/// 为生成后的 id，无法解析的引用会让整批失败并指出出错条目的 1 基下标。
 pub fn to_records(domain_id: &str, inputs: &[IntentJson], now: &str) -> Result<Vec<IntentRecord>> {
     if inputs.is_empty() {
         return Err(AppError::InvalidInput("导入内容不能是空数组".to_string()));
@@ -158,8 +152,8 @@ pub fn to_records(domain_id: &str, inputs: &[IntentJson], now: &str) -> Result<V
         .map(|_| uuid::Uuid::new_v4().to_string())
         .collect();
 
-    // Both lookup tables map to the entry index, which keeps the resolved
-    // value tied to the generated id rather than to a borrowed string.
+    // 两张查找表都映射到条目下标，使解析结果绑定到生成的 id 而不是借用的
+    // 字符串。
     let mut by_id: HashMap<&str, usize> = HashMap::new();
     let mut by_name: HashMap<&str, usize> = HashMap::new();
     for (index, input) in inputs.iter().enumerate() {
@@ -217,11 +211,10 @@ pub fn to_records(domain_id: &str, inputs: &[IntentJson], now: &str) -> Result<V
     Ok(records)
 }
 
-/// Serializes records into the importable array format.
+/// 把记录序列化成可导入的数组格式。
 ///
-/// Internal routing fields are included so a round trip loses no business
-/// field; `sort_order` is omitted because order in the array already carries
-/// it.
+/// 内部路由字段一并导出，使往返不丢失业务字段；`sort_order` 省略，因为
+/// 数组中的顺序已经表达了它。
 pub fn to_json_array(intents: &[IntentRecord]) -> Result<String> {
     let payload: Vec<IntentJson> = intents
         .iter()
@@ -258,8 +251,8 @@ mod tests {
 
     const NOW: &str = "2026-11-04T00:00:00Z";
 
-    /// Unwraps an `InvalidInput` error and returns its message, so a wrong
-    /// error variant fails loudly instead of silently matching on text.
+    /// 取出 `InvalidInput` 错误的信息，使错误的变体不匹配时立刻失败，而不是
+    /// 静默按文本匹配。
     fn invalid_message(err: AppError) -> String {
         match err {
             AppError::InvalidInput(msg) => msg,
@@ -366,8 +359,8 @@ mod tests {
             "path 越界必须点名条目与字段，实际：{msg}"
         );
 
-        // A missing `path` falls back to "fast"; an explicit empty one does
-        // not, so the boundary above stays meaningful.
+        // 缺省 `path` 回退为 "fast"；显式空字符串不会，从而保证上面的边界
+        // 校验仍然有意义。
         let mut empty_path = entry("d", "");
         empty_path.path = String::new();
         assert!(to_records("domain", &[empty_path], NOW).is_err());
@@ -445,8 +438,8 @@ mod tests {
             );
         }
 
-        // `fallback_intent` holds an id, which changes on import, so compare
-        // the destination by relative position instead of by raw id.
+        // `fallback_intent` 保存的是 id，导入后会变化，因此按相对位置而不是
+        // 原始 id 比较目标。
         for (index, (original, record)) in originals.iter().zip(records.iter()).enumerate() {
             let expected = originals
                 .iter()

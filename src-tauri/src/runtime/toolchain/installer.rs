@@ -1,7 +1,7 @@
-// ── Runtime Installer ──
-//
-// Version-aware installer. Stores versions in {install_dir}/{rt}/{version}/.
-// Uses a manifest file (.manifest.json) to track the active version.
+//! 运行时安装器。
+//!
+//! 按版本安装运行时，版本存放于 `{install_dir}/{rt}/{version}/`，并通过
+//! 清单文件 `.manifest.json` 记录当前生效版本。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,26 +10,34 @@ use chrono::Utc;
 use futures::StreamExt;
 
 use crate::core::error::Result;
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::RuntimeType::*;
 use crate::runtime::toolchain::{
     read_manifest, write_manifest, AvailableVersion, InstallProgress, RuntimeInfo, RuntimeManifest,
     RuntimeSource, RuntimeType,
 };
 
+/// 负责下载、解压并登记运行时版本的安装器。
 pub struct RuntimeInstaller {
     install_dir: PathBuf,
 }
 
 impl RuntimeInstaller {
+    /// 用指定的运行时根目录创建安装器。
     pub fn new(install_dir: PathBuf) -> Self {
         Self { install_dir }
     }
 
+    /// 更新运行时根目录（不会移动已安装的文件）。
     pub fn set_runtimes_dir(&mut self, new_dir: PathBuf) {
         self.install_dir = new_dir;
     }
 
-    /// Install a specific version of a runtime.
+    /// 安装运行时的指定版本。
+    ///
+    /// `version` 为 `None` 时按各运行时约定安装 "latest"。下载与解压是异步
+    /// 网络操作，进度通过 `on_progress` 回调同步推送；安装失败时会自动清理
+    /// 未完成的版本目录。
     pub async fn install(
         &self,
         rt: &RuntimeType,
@@ -89,10 +97,10 @@ impl RuntimeInstaller {
         let install_dir = &self.install_dir;
         let rt_dir = install_dir.join(dir_name);
 
-        // Determine which version to install
+        // 决定要安装的版本
         let version_str = version.clone().unwrap_or_else(|| "latest".to_string());
 
-        // Get download info (use "latest" or specific version)
+        // 获取下载信息（支持 "latest" 或具体版本）
         let dl_info = info_fn(&version_str).ok_or_else(|| {
             crate::core::error::AppError::InvalidInput(format!(
                 "不支持的版本: {}. 请选择可用版本后重试",
@@ -103,7 +111,7 @@ impl RuntimeInstaller {
         let display = rt.display_name();
         let ver_dir = rt_dir.join(&dl_info.version);
 
-        // Guard: clean up partial installation on failure
+        // 守卫：失败时清理未完成的安装目录
         let mut _cleanup = CleanupGuard::new(ver_dir.clone());
 
         emit_progress(
@@ -118,13 +126,13 @@ impl RuntimeInstaller {
 
         emit_progress(&on_progress, rt.clone(), "extracting", 0.9, "正在解压...");
 
-        // Clean version dir and recreate
+        // 清空版本目录并重新创建
         if ver_dir.exists() {
             std::fs::remove_dir_all(&ver_dir)?;
         }
         std::fs::create_dir_all(&rt_dir)?;
 
-        // Extract
+        // 解压
         if let Some(subdir) = dl_info.extract_subdir {
             extract_archive(&bytes, &rt_dir, dl_info.ext)?;
             let extracted = rt_dir.join(subdir);
@@ -135,7 +143,7 @@ impl RuntimeInstaller {
             extract_archive(&bytes, &ver_dir, dl_info.ext)?;
         }
 
-        // Make executables
+        // 设置可执行权限
         #[cfg(not(target_os = "windows"))]
         for exe_name in &dl_info.executables {
             let candidates = [ver_dir.join(exe_name), ver_dir.join("bin").join(exe_name)];
@@ -146,7 +154,7 @@ impl RuntimeInstaller {
             }
         }
 
-        // Update manifest: set this version as active, add to versions list
+        // 更新清单：把该版本设为生效版本并加入版本列表
         let manifest_path = rt_dir.join(".manifest.json");
         let mut manifest = read_manifest(&manifest_path).unwrap_or_else(|| RuntimeManifest {
             active_version: None,
@@ -170,10 +178,10 @@ impl RuntimeInstaller {
             &format!("{} {} 安装完成", display, dl_info.version),
         );
 
-        // Disarm cleanup: installation succeeded
+        // 解除清理守卫：安装成功
         _cleanup.disarm();
 
-        // Return updated RuntimeInfo via simple detection
+        // 通过简单检测返回更新后的 RuntimeInfo
         Ok(RuntimeInfo {
             runtime_type: rt.clone(),
             display_name: format!("{} (内置)", display),
@@ -202,7 +210,7 @@ impl RuntimeInstaller {
             "正在检查 rustup...",
         );
 
-        // Check if rustup is available
+        // 检查 rustup 是否可用
         let rustup_check = tokio::process::Command::new("rustup")
             .arg("--version")
             .output()
@@ -218,7 +226,7 @@ impl RuntimeInstaller {
                     &format!("正在通过 rustup 安装 Rust {}...", version_str),
                 );
 
-                // Install the requested toolchain
+                // 安装请求的工具链
                 let install_result = tokio::process::Command::new("rustup")
                     .args(["toolchain", "install", &version_str])
                     .output()
@@ -234,7 +242,7 @@ impl RuntimeInstaller {
                             "正在设置默认工具链...",
                         );
 
-                        // Set as default
+                        // 设为默认工具链
                         let _ = tokio::process::Command::new("rustup")
                             .args(["default", &version_str])
                             .output()
@@ -273,7 +281,7 @@ impl RuntimeInstaller {
                 }
             }
             _ => {
-                // rustup not available
+                // rustup 不可用
                 Err(crate::core::error::AppError::InvalidInput(
                     "请通过 https://rustup.rs 安装 rustup".to_string(),
                 ))
@@ -366,17 +374,20 @@ impl RuntimeInstaller {
             "正在检查系统 Ruby...",
         );
 
-        // Ruby cannot be easily installed as a portable binary.
-        // Recommend using rbenv, RVM, or system package manager.
+        // Ruby 难以作为便携二进制安装，
+        // 建议使用 rbenv、RVM 或系统包管理器。
         Err(crate::core::error::AppError::InvalidInput(
             "请通过 rbenv 或 RVM 安装 Ruby，或访问 https://www.ruby-lang.org/".to_string(),
         ))
     }
 }
 
-// ── Available Versions ──
+// ── 可下载版本 ──
 
-/// Get available versions for download for a given runtime.
+/// 返回某个运行时可直接下载的版本列表。
+///
+/// 注意：这里返回的是**离线静态清单**，不访问网络；实时版本请使用
+/// `sources` 中的版本源。Docker 通过独立安装程序安装，因此返回空列表。
 pub fn available_versions(rt: &RuntimeType) -> Vec<AvailableVersion> {
     match rt {
         Node => node_versions(),
@@ -386,23 +397,22 @@ pub fn available_versions(rt: &RuntimeType) -> Vec<AvailableVersion> {
         Rust => rust_versions(),
         Java => java_versions(),
         Deno => deno_versions(),
-        Docker => vec![], // Docker installed via installer download
+        Docker => vec![], // Docker 通过安装程序下载
         Bun => bun_versions(),
         Ruby => ruby_versions(),
     }
 }
 
+// 下面 9 个函数结构相似，但每个运行时的下载地址模板、默认版本与资产命名
+// 规则都不同（例如 Java 每个大版本对应不同仓库，Ruby 使用源码包，Rust 由
+// rustup 管理没有下载地址）。因此保留为独立函数，而不是强行合并成一张表：
+// 一旦某个运行时的 URL 规则变化，只需修改对应函数，避免表格驱动带来的隐式
+// 假设。平台相关部分统一委托给 `platform` 模块。
+
 fn node_versions() -> Vec<AvailableVersion> {
-    let is_win = cfg!(target_os = "windows");
-    let arch = if cfg!(target_os = "windows") {
-        "win-x64"
-    } else if cfg!(target_os = "linux") {
-        "linux-x64"
-    } else {
-        "darwin-arm64"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
-    // Known LTS versions
+    let arch = platform::node_dist_platform();
+    let ext = platform::archive_ext(&Node);
+    // 已知的 LTS 版本
     ["22.14.0", "20.18.3", "18.20.7"]
         .iter()
         .map(|v| {
@@ -420,15 +430,8 @@ fn node_versions() -> Vec<AvailableVersion> {
 }
 
 fn uv_versions() -> Vec<AvailableVersion> {
-    let is_win = cfg!(target_os = "windows");
-    let arch = if cfg!(target_os = "windows") {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(target_os = "linux") {
-        "x86_64-unknown-linux-gnu"
-    } else {
-        "aarch64-apple-darwin"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let arch = platform::rust_triple();
+    let ext = platform::archive_ext(&Uv);
     ["0.6.2", "0.5.29", "0.5.0"]
         .iter()
         .map(|v| {
@@ -447,14 +450,8 @@ fn uv_versions() -> Vec<AvailableVersion> {
 
 fn python_versions() -> Vec<AvailableVersion> {
     let tag = "20260510";
-    let arch_label = if cfg!(target_os = "windows") {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(target_os = "linux") {
-        "x86_64-unknown-linux-gnu"
-    } else {
-        "aarch64-apple-darwin"
-    };
-    let ext = "tar.gz";
+    let arch_label = platform::rust_triple();
+    let ext = platform::archive_ext(&Python);
     ["3.10.20", "3.11.12", "3.12.10"]
         .iter()
         .map(|v| {
@@ -473,15 +470,12 @@ fn python_versions() -> Vec<AvailableVersion> {
 }
 
 fn go_versions() -> Vec<AvailableVersion> {
-    let is_win = cfg!(target_os = "windows");
-    let arch = if cfg!(target_os = "windows") {
-        "windows-amd64"
-    } else if cfg!(target_os = "linux") {
-        "linux-amd64"
-    } else {
-        "darwin-arm64"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let arch = format!(
+        "{}-{}",
+        platform::go_platform_os(),
+        platform::go_platform_arch()
+    );
+    let ext = platform::archive_ext(&Go);
     ["1.22.4", "1.21.13", "1.20.14"]
         .iter()
         .map(|v| {
@@ -496,8 +490,8 @@ fn go_versions() -> Vec<AvailableVersion> {
 }
 
 fn rust_versions() -> Vec<AvailableVersion> {
-    // Rust is managed via rustup — no direct download URLs
-    // Return available toolchains that rustup can install
+    // Rust 由 rustup 管理 —— 没有直接下载地址
+    // 返回 rustup 可安装的工具链名称
     vec![
         AvailableVersion {
             version: "stable".to_string(),
@@ -528,21 +522,11 @@ fn rust_versions() -> Vec<AvailableVersion> {
 }
 
 fn java_versions() -> Vec<AvailableVersion> {
-    // Java JDK versions from Adoptium
-    let os = if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        "mac"
-    };
+    // 来自 Adoptium 的 JDK 版本
+    let os = platform::java_platform_os();
     let arch = "x64";
-    let ext = if cfg!(target_os = "windows") {
-        "zip"
-    } else {
-        "tar.gz"
-    };
-    // Known JDK versions with their download URLs
+    let ext = platform::archive_ext(&Java);
+    // 已知 JDK 版本及其下载地址
     vec![
         AvailableVersion {
             version: "21.0.7".to_string(),
@@ -568,7 +552,7 @@ fn java_versions() -> Vec<AvailableVersion> {
 }
 
 fn bun_versions() -> Vec<AvailableVersion> {
-    let asset = bun_platform_asset();
+    let asset = platform::bun_asset_name_for_installer();
     ["1.2.5", "1.1.42", "1.0.36", "0.8.1"]
         .iter()
         .map(|v| {
@@ -600,38 +584,8 @@ fn ruby_versions() -> Vec<AvailableVersion> {
     ]
 }
 
-fn bun_platform_asset() -> &'static str {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        "bun-windows-x64.zip"
-    }
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        "bun-linux-x64.zip"
-    }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        "bun-darwin-arm64.zip"
-    }
-    #[cfg(not(any(
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64"),
-    )))]
-    {
-        "bun-windows-x64.zip"
-    }
-}
-
 fn deno_versions() -> Vec<AvailableVersion> {
-    let is_win = cfg!(target_os = "windows");
-    let suffix = if is_win {
-        "x86_64-pc-windows-msvc.zip"
-    } else if cfg!(target_os = "linux") {
-        "x86_64-unknown-linux-gnu.tar.gz"
-    } else {
-        "aarch64-apple-darwin.tar.gz"
-    };
+    let suffix = platform::deno_asset_suffix_for_installer();
     ["2.2.0", "2.1.10", "2.0.6", "1.46.3"]
         .iter()
         .map(|v| {
@@ -648,30 +602,26 @@ fn deno_versions() -> Vec<AvailableVersion> {
         .collect()
 }
 
-// ── Download descriptor ──
+// ── 下载描述符 ──
 
+/// 单个版本的下载描述信息。
 struct RuntimeDownloadInfo {
+    /// 下载地址（随平台变化）。
     url: String,
+    /// 实际安装的版本号（"latest" 已解析为具体版本）。
     version: String,
+    /// 压缩包扩展名。
     ext: &'static str,
+    /// 解压后需要重命名的子目录（部分归档会多包一层）。
     extract_subdir: Option<String>,
-    /// Only read on Unix to make extracted binaries executable.
+    /// 仅 Unix 下读取，用于给解压出的二进制加可执行权限。
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     executables: Vec<&'static str>,
 }
 
-// type InfoFn = fn(&str) -> Option<RuntimeDownloadInfo>;
-
 fn node_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let is_win = cfg!(target_os = "windows");
-    let arch = if cfg!(target_os = "windows") {
-        "win-x64"
-    } else if cfg!(target_os = "linux") {
-        "linux-x64"
-    } else {
-        "darwin-arm64"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let arch = platform::node_dist_platform();
+    let ext = platform::archive_ext(&Node);
     let v = if version == "latest" {
         "20.18.3"
     } else {
@@ -691,15 +641,8 @@ fn node_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 }
 
 fn uv_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let is_win = cfg!(target_os = "windows");
-    let arch = if cfg!(target_os = "windows") {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(target_os = "linux") {
-        "x86_64-unknown-linux-gnu"
-    } else {
-        "aarch64-apple-darwin"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let arch = platform::rust_triple();
+    let ext = platform::archive_ext(&Uv);
     let v = if version == "latest" {
         "0.6.2"
     } else {
@@ -719,14 +662,8 @@ fn uv_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 
 fn python_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
     let tag = "20260510";
-    let arch_label = if cfg!(target_os = "windows") {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(target_os = "linux") {
-        "x86_64-unknown-linux-gnu"
-    } else {
-        "aarch64-apple-darwin"
-    };
-    let ext = "tar.gz";
+    let arch_label = platform::rust_triple();
+    let ext = platform::archive_ext(&Python);
     let v = if version == "latest" {
         "3.12.10"
     } else {
@@ -746,15 +683,12 @@ fn python_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 }
 
 fn go_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let is_win = cfg!(target_os = "windows");
-    let arch = if cfg!(target_os = "windows") {
-        "windows-amd64"
-    } else if cfg!(target_os = "linux") {
-        "linux-amd64"
-    } else {
-        "darwin-arm64"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let arch = format!(
+        "{}-{}",
+        platform::go_platform_os(),
+        platform::go_platform_arch()
+    );
+    let ext = platform::archive_ext(&Go);
     let v = if version == "latest" {
         "1.22.4"
     } else {
@@ -770,23 +704,16 @@ fn go_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 }
 
 fn java_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let is_win = cfg!(target_os = "windows");
-    let os = if is_win {
-        "windows"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        "mac"
-    };
+    let os = platform::java_platform_os();
     let arch = "x64";
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let ext = platform::archive_ext(&Java);
     let v = if version == "latest" {
         "21.0.7"
     } else {
         version
     };
 
-    // Parse major version for correct Adoptium repository
+    // 解析大版本号以选择正确的 Adoptium 仓库
     let major = v.split('.').next().unwrap_or("21");
     let download_url = match major {
         "21" => format!("https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B9/OpenJDK21U-jdk_{}_{}_hotspot_21.0.7_9.{}", arch, os, ext),
@@ -796,7 +723,7 @@ fn java_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
         _ => format!("https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B9/OpenJDK21U-jdk_{}_{}_hotspot_21.0.7_9.{}", arch, os, ext),
     };
 
-    // The JDK archive extracts to a directory like "jdk-21.0.7+9"
+    // JDK 归档解压后会得到形如 "jdk-21.0.7+9" 的目录
     let subdir = format!("jdk-{}", v.replace('+', "%2B"));
 
     Some(RuntimeDownloadInfo {
@@ -809,15 +736,8 @@ fn java_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 }
 
 fn deno_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let is_win = cfg!(target_os = "windows");
-    let suffix = if is_win {
-        "x86_64-pc-windows-msvc.zip"
-    } else if cfg!(target_os = "linux") {
-        "x86_64-unknown-linux-gnu.tar.gz"
-    } else {
-        "aarch64-apple-darwin.tar.gz"
-    };
-    let ext = if is_win { "zip" } else { "tar.gz" };
+    let suffix = platform::deno_asset_suffix_for_installer();
+    let ext = platform::archive_ext(&Deno);
     let v = if version == "latest" {
         "2.2.0"
     } else {
@@ -836,12 +756,8 @@ fn deno_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
 }
 
 fn bun_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
-    let asset = bun_platform_asset();
-    let ext = if asset.ends_with(".zip") {
-        "zip"
-    } else {
-        "tar.gz"
-    };
+    let asset = platform::bun_asset_name_for_installer();
+    let ext = platform::archive_ext(&Bun);
     let v = if version == "latest" {
         "1.2.5"
     } else {
@@ -859,7 +775,7 @@ fn bun_install_info(version: &str) -> Option<RuntimeDownloadInfo> {
     })
 }
 
-// ── Helper functions ──
+// ── 辅助函数 ──
 
 fn emit_progress<F: Fn(InstallProgress) + Send + 'static>(
     cb: &F,
@@ -971,8 +887,8 @@ fn make_executable(path: &str) -> std::io::Result<()> {
     std::fs::set_permissions(path, perms)
 }
 
-/// Cleanup guard: removes the tracked directory on drop if not disarmed.
-/// Used to clean up partial installations when `install_portable` fails.
+/// 清理守卫：若未解除，在 drop 时删除跟踪的目录。
+/// 用于 `install_portable` 失败时清理未完成的安装。
 struct CleanupGuard {
     path: Option<std::path::PathBuf>,
 }

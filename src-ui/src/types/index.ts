@@ -75,6 +75,18 @@ export interface ToolInfo {
   description: string;
   parameters: Record<string, unknown>;
   enabled: boolean;
+  read_only: boolean;
+  destructive: boolean;
+  open_world: boolean;
+  source: string;
+}
+
+/** 一次工具审批请求。 */
+export interface ToolApprovalRequest {
+  id: string;
+  tool_name: string;
+  arguments: unknown;
+  reason: string;
 }
 
 export interface StreamChunk {
@@ -85,6 +97,7 @@ export interface StreamChunk {
     name: string;
     status: string;
     result?: string;
+    arguments?: unknown;
   }>;
   phase?: string | null;
 }

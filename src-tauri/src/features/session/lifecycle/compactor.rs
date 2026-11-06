@@ -3,7 +3,7 @@ use rig::completion::Message as ApiMessage;
 use crate::core::db::repository::Database;
 use crate::core::error::Result;
 
-/// Extract text content from a `Message` for token estimation.
+/// 从消息中提取纯文本，用于估算 token。
 fn message_text(msg: &ApiMessage) -> String {
     match msg {
         ApiMessage::System { content } => content.clone(),
@@ -27,8 +27,11 @@ fn message_text(msg: &ApiMessage) -> String {
     }
 }
 
-/// Replace old message blocks with their summaries where available.
-/// Returns optimized message list in the same order (system messages preserved).
+/// 在 token 预算内压缩上下文：系统消息始终保留，会话消息从最新往旧收集，
+/// 超限后丢弃更早的部分。
+///
+/// 返回的消息保持原有顺序。当前实现不读取已有摘要，`_db` / `_session_id`
+/// 预留给后续「用摘要替换旧消息」的版本。
 pub fn compress_context(
     _db: &Database,
     _session_id: &str,
@@ -39,7 +42,7 @@ pub fn compress_context(
         return Ok(messages);
     }
 
-    // Separate system messages from conversation messages
+    // 把系统消息和会话消息分开
     let system_msgs: Vec<ApiMessage> = messages
         .iter()
         .filter(|m| matches!(m, ApiMessage::System { .. }))
@@ -56,18 +59,18 @@ pub fn compress_context(
         .map(|m| crate::agent::fast_loop::estimate_tokens(&message_text(m)))
         .sum();
 
-    // If system messages alone exceed limit, truncate them (unlikely but safe)
+    // 仅系统消息就超限时直接截断（理论上少见，但保证不越界）
     if total_tokens > max_tokens {
         return Ok(system_msgs);
     }
 
     let mut remaining: Vec<ApiMessage> = Vec::new();
 
-    // Walk messages from newest to oldest, collecting until we hit the token limit
+    // 从最新到最旧遍历，累积到 token 上限为止
     for msg in conv_msgs.into_iter().rev() {
         let msg_tokens = crate::agent::fast_loop::estimate_tokens(&message_text(&msg));
         if total_tokens + msg_tokens > max_tokens {
-            // Over limit — drop remaining older messages
+            // 超限：丢弃剩余更早的消息
             break;
         }
         total_tokens += msg_tokens;

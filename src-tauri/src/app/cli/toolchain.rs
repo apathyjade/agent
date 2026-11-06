@@ -1,9 +1,8 @@
-// ── Toolchain CLI commands ──
-//
-// Commands in this module only touch the standalone toolchain engine. The
-// app-specific project binding service is loaded lazily and only for
-// `project` subcommands, so `ls/use/install/status/check` never open the app
-// database.
+//! 工具链 CLI 子命令。
+//!
+//! 本模块只碰独立工具链引擎。应用特有的项目绑定服务按需懒加载，且只有
+//! `project` 子命令会用到，因此 `ls/use/install/status/check` 永远不会打开
+//! 应用数据库。
 
 use std::sync::Arc;
 
@@ -80,7 +79,7 @@ pub enum ProjectAction {
     Sync { id: String },
 }
 
-/// Shared toolchain context. It deliberately has no database handle.
+/// 共享的工具链上下文。刻意不持有数据库句柄。
 struct ToolchainContext {
     services: RuntimeServices,
     config: AppConfig,
@@ -93,6 +92,7 @@ impl ToolchainContext {
         Ok(Self { services, config })
     }
 
+    /// 该运行时配置的版本管理器 id；未配置时返回 `None`。
     fn active_manager(&self, rt: &RuntimeType) -> Option<&str> {
         self.config
             .active_managers
@@ -127,7 +127,7 @@ impl ToolchainContext {
                     .await
             }
             ToolchainAction::Project { action } => {
-                // Only project management needs the app database.
+                // 只有项目管理需要应用数据库。
                 let db = Arc::new(Mutex::new(Database::new()?));
                 project(&self, &db, action).await
             }
@@ -136,79 +136,95 @@ impl ToolchainContext {
         }
     }
 
-    // `serde_json::json!` expands to code that clippy sees as an unwrap.
+    /// `ls`：列出本地运行时，可选附带远程可用版本。
+    // `serde_json::json!` 展开出的代码会被 clippy 判为 unwrap。
     #[allow(clippy::disallowed_methods)]
     async fn ls(&self, runtime_type: Option<&str>, remote: bool, json: bool) -> Result<()> {
-        let runtimes = match runtime_type {
-            Some(filter) => {
-                let rt: RuntimeType = filter.parse()?;
-                vec![self.services.detect(&rt).await]
-            }
-            None => self.services.detect_all().await,
-        };
+        let runtimes = self.detect(runtime_type).await?;
 
         if json {
-            if remote {
-                let mut entries = Vec::with_capacity(runtimes.len());
-                for info in &runtimes {
-                    let mut entry = serde_json::json!({
-                        "runtime_type": info.runtime_type,
-                        "display_name": info.display_name,
-                        "version": info.version,
-                        "available": info.available,
-                        "source": info.source,
-                        "executable_path": info.executable_path,
-                    });
-                    if let Ok(versions) = self
-                        .services
-                        .registry
-                        .get_versions(&info.runtime_type)
-                        .await
-                    {
-                        entry["remote_versions"] =
-                            serde_json::to_value(versions).unwrap_or_default();
-                    }
-                    entries.push(entry);
-                }
-                print_json(&entries)?;
-            } else {
-                print_json(&runtimes)?;
-            }
-            return Ok(());
+            return self.print_runtime_json(&runtimes, remote).await;
         }
 
         println!("{}", format_runtime_table(&runtimes));
         if remote {
-            for info in &runtimes {
-                match self
-                    .services
-                    .registry
-                    .get_versions(&info.runtime_type)
-                    .await
-                {
-                    Ok(versions) => {
-                        println!("\n  {} 可用版本:", info.display_name);
-                        for version in versions.iter().take(8) {
-                            let lifecycle = crate::runtime::toolchain::lifecycle::for_runtime(
-                                &info.runtime_type,
-                                &version.version,
-                                version.lts.as_deref(),
-                            );
-                            println!(
-                                "    {}  {:<20} {}",
-                                lifecycle.emoji(),
-                                version.version,
-                                version.display_name
-                            );
-                        }
+            self.print_remote_versions(&runtimes).await;
+        }
+        Ok(())
+    }
+
+    /// 探测目标运行时：指定了 `runtime_type` 就只探测它，否则探测全部。
+    async fn detect(&self, runtime_type: Option<&str>) -> Result<Vec<RuntimeInfo>> {
+        match runtime_type {
+            Some(filter) => {
+                let rt: RuntimeType = filter.parse()?;
+                Ok(vec![self.services.detect(&rt).await])
+            }
+            None => Ok(self.services.detect_all().await),
+        }
+    }
+
+    /// 以 JSON 输出运行时列表；`remote` 为 true 时给每一项补上
+    /// `remote_versions`（查询失败则省略该字段）。
+    async fn print_runtime_json(&self, runtimes: &[RuntimeInfo], remote: bool) -> Result<()> {
+        if !remote {
+            print_json(&runtimes)?;
+            return Ok(());
+        }
+
+        let mut entries = Vec::with_capacity(runtimes.len());
+        for info in runtimes {
+            let mut entry = serde_json::json!({
+                "runtime_type": info.runtime_type,
+                "display_name": info.display_name,
+                "version": info.version,
+                "available": info.available,
+                "source": info.source,
+                "executable_path": info.executable_path,
+            });
+            if let Ok(versions) = self
+                .services
+                .registry
+                .get_versions(&info.runtime_type)
+                .await
+            {
+                entry["remote_versions"] = serde_json::to_value(versions).unwrap_or_default();
+            }
+            entries.push(entry);
+        }
+        print_json(&entries)
+    }
+
+    /// 以人类可读形式打印每个运行时的前 8 个远程版本。
+    async fn print_remote_versions(&self, runtimes: &[RuntimeInfo]) {
+        for info in runtimes {
+            match self
+                .services
+                .registry
+                .get_versions(&info.runtime_type)
+                .await
+            {
+                Ok(versions) => {
+                    println!("\n  {} 可用版本:", info.display_name);
+                    for version in versions.iter().take(8) {
+                        let lifecycle = crate::runtime::toolchain::lifecycle::for_runtime(
+                            &info.runtime_type,
+                            &version.version,
+                            version.lts.as_deref(),
+                        );
+                        println!(
+                            "    {}  {:<20} {}",
+                            lifecycle.emoji(),
+                            version.version,
+                            version.display_name
+                        );
                     }
-                    Err(error) => {
-                        println!("\n  {} 版本查询失败: {}", info.display_name, error);
-                    }
+                }
+                Err(error) => {
+                    println!("\n  {} 版本查询失败: {}", info.display_name, error);
                 }
             }
         }
-        Ok(())
     }
 
     async fn r#use(&self, runtime_type: &str, version: &str) -> Result<()> {
@@ -261,6 +277,8 @@ impl ToolchainContext {
         Ok(())
     }
 
+    /// `default`：三种形态——设默认（类型 + 版本）、查单个（仅类型）、
+    /// 列出全部（都不传）。
     async fn default(&mut self, runtime_type: Option<&str>, version: Option<&str>) -> Result<()> {
         match (runtime_type, version) {
             (Some(runtime_type), Some(version)) => {
@@ -298,7 +316,7 @@ impl ToolchainContext {
         Ok(())
     }
 
-    // `serde_json::json!` expands to code that clippy sees as an unwrap.
+    // `serde_json::json!` 展开出的代码会被 clippy 判为 unwrap。
     #[allow(clippy::disallowed_methods)]
     async fn status(&self, json: bool) -> Result<()> {
         let runtimes = self.services.detect_all().await;
@@ -366,6 +384,7 @@ impl ToolchainContext {
     }
 }
 
+/// 项目绑定子命令；这是唯一需要数据库的分支。
 async fn project(
     ctx: &ToolchainContext,
     db: &Arc<Mutex<Database>>,
@@ -443,6 +462,7 @@ fn print_requirements(requirements: &[ProjectRuntimeRequirement]) {
     }
 }
 
+/// 运行时来源的展示文案。
 fn source_label(source: &RuntimeSource) -> &'static str {
     match source {
         RuntimeSource::System => "系统",
@@ -451,6 +471,7 @@ fn source_label(source: &RuntimeSource) -> &'static str {
     }
 }
 
+/// 把运行时列表渲染成等宽表格。
 fn format_runtime_table(runtimes: &[RuntimeInfo]) -> String {
     let mut output = String::new();
     output.push_str(&format!(

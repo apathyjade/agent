@@ -1,11 +1,17 @@
+//! 任务图（DAG）：描述编排阶段要执行的子任务及其依赖关系。
+//!
+//! 图只描述结构与状态，不包含执行逻辑；`ready_nodes` 是调度器的唯一依据。
+
 use serde::{Deserialize, Serialize};
 
 use crate::agent::workers::{SubTask, WorkerKind};
 
-/// Status of a single task node in the DAG.
+/// 单个任务节点在 DAG 中的状态。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NodeStatus {
+    #[default]
     Pending,
     Running,
     Completed,
@@ -13,13 +19,8 @@ pub enum NodeStatus {
     Skipped,
 }
 
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
 
-/// A single node in the task graph — one atomic sub-task to be executed by a worker.
+/// 任务图中的一个节点 —— 由某个 worker 执行的一个原子子任务。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
     pub id: String,
@@ -34,12 +35,13 @@ pub struct TaskNode {
     pub error: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
-    /// Model ID to use for this task (None = use default).
+    /// 本任务使用的模型 ID（`None` 表示使用默认模型）。
     #[serde(default)]
     pub model_id: Option<String>,
 }
 
 impl TaskNode {
+    /// 创建一个状态为 `Pending` 的任务节点。
     pub fn new(
         id: String,
         label: String,
@@ -59,11 +61,13 @@ impl TaskNode {
         }
     }
 
+    /// 设置本任务使用的模型 ID，返回自身以便链式调用。
     pub fn with_model_id(mut self, model_id: String) -> Self {
         self.model_id = Some(model_id);
         self
     }
 
+    /// 把节点转换成可交给 worker 执行的子任务。
     pub fn to_sub_task(&self) -> SubTask {
         SubTask {
             id: self.id.clone(),
@@ -78,7 +82,7 @@ impl TaskNode {
     }
 }
 
-/// Directed edge between two task nodes.
+/// 两个任务节点之间的有向边。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskEdge {
     pub from: String,
@@ -86,12 +90,13 @@ pub struct TaskEdge {
 }
 
 impl TaskEdge {
+    /// 创建一条从 `from` 指向 `to` 的依赖边。
     pub fn new(from: String, to: String) -> Self {
         Self { from, to }
     }
 }
 
-/// A DAG (directed acyclic graph) of sub-tasks to be orchestrated.
+/// 待编排子任务构成的有向无环图（DAG）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskGraph {
     pub id: String,
@@ -101,6 +106,7 @@ pub struct TaskGraph {
 }
 
 impl TaskGraph {
+    /// 创建一个空图（没有节点，因此视为已完成）。
     pub fn new(id: String, goal: String) -> Self {
         Self {
             id,
@@ -110,15 +116,17 @@ impl TaskGraph {
         }
     }
 
+    /// 添加一个任务节点。
     pub fn add_node(&mut self, node: TaskNode) {
         self.nodes.push(node);
     }
 
+    /// 添加一条依赖边：`to` 必须在 `from` 完成之后才能执行。
     pub fn add_edge(&mut self, from: &str, to: &str) {
         self.edges.push(TaskEdge::new(from.into(), to.into()));
     }
 
-    /// Returns nodes that are Pending AND whose dependencies (if any) are all Completed.
+    /// 返回状态为 `Pending` 且所有依赖都已完成的节点。
     pub fn ready_nodes(&self) -> Vec<&TaskNode> {
         self.nodes
             .iter()
@@ -126,7 +134,7 @@ impl TaskGraph {
                 if node.status != NodeStatus::Pending {
                     return false;
                 }
-                // All incoming edges must have their `from` node completed
+                // 所有入边的起点都必须已完成
                 let deps: Vec<&str> = self
                     .edges
                     .iter()
@@ -145,27 +153,31 @@ impl TaskGraph {
             .collect()
     }
 
-    /// Returns true when all nodes are Completed.
+    /// 所有节点都完成时返回 `true`。
     pub fn is_complete(&self) -> bool {
         self.nodes.iter().all(|n| n.status == NodeStatus::Completed)
     }
 
-    /// Returns true when any node has Failed status.
+    /// 存在失败节点时返回 `true`。
     pub fn has_failures(&self) -> bool {
         self.nodes
             .iter()
             .any(|n| matches!(n.status, NodeStatus::Failed(_)))
     }
 
+    /// 按 id 查找节点。
     pub fn get_node(&self, id: &str) -> Option<&TaskNode> {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    /// 按 id 查找节点并允许修改其状态。
     pub fn get_node_mut(&mut self, id: &str) -> Option<&mut TaskNode> {
         self.nodes.iter_mut().find(|n| n.id == id)
     }
 
-    /// Simple topological sort: repeatedly pick nodes whose dependencies are already in the result.
+    /// 简单的拓扑排序：反复挑选依赖都已排入结果的节点。
+    ///
+    /// 存在环时无法排完，返回的列表会短于节点总数。
     pub fn topological_order(&self) -> Vec<&TaskNode> {
         let mut ordered: Vec<&TaskNode> = Vec::new();
         let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();

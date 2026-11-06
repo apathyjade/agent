@@ -1,9 +1,9 @@
-// ── Ruby Version Source ──
-//
-// Ruby does not have a simple JSON API for download versions.
-// Uses a curated list of known stable versions with URLs from ruby-lang.org.
-//
-// Future improvement: could parse https://www.ruby-lang.org/en/downloads/releases/
+//! Ruby 版本源。
+//!
+//! Ruby 没有便于解析的下载版本 JSON API，因此使用一份人工维护的稳定版本
+//! 列表，下载地址来自 ruby-lang.org。
+//!
+//! 后续改进：可以解析 https://www.ruby-lang.org/en/downloads/releases/ 。
 
 use async_trait::async_trait;
 
@@ -11,6 +11,7 @@ use crate::core::error::Result;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
 use crate::runtime::toolchain::RuntimeType;
 
+/// Ruby 版本源：返回人工维护的稳定版本列表。
 pub struct RubyVersionSource;
 
 #[async_trait]
@@ -25,8 +26,7 @@ impl VersionSource for RubyVersionSource {
 }
 
 impl RubyVersionSource {
-    /// Returns a curated list of known stable Ruby versions.
-    /// Source tarballs from ruby-lang.org.
+    /// 返回已知的稳定 Ruby 版本列表，源码包来自 ruby-lang.org。
     fn curated_versions() -> Vec<RuntimeVersion> {
         let known_versions = [
             ("3.4.2", "3.4"),

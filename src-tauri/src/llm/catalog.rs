@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+/// 暴露给前端配置界面的模型信息。
+///
+/// 它是 [`crate::llm::model::ModelConfig`] 的投影，字段一一对应；`provider` 在这里
+/// 是字符串，便于 IPC 直接序列化。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
+    /// 配置内唯一 id，也是注册表查找键。
     pub id: String,
+    /// 发给供应商的模型名。
     pub name: String,
+    /// 界面展示名。
     pub display_name: String,
+    /// 供应商标识（小写，如 `openai`）。
     pub provider: String,
     pub api_key: String,
+    /// 自定义 API 地址；`None` 表示使用供应商默认地址。
     pub base_url: Option<String>,
     pub is_default: bool,
     pub enabled: bool,
@@ -31,6 +40,10 @@ impl From<&crate::llm::model::ModelConfig> for ModelInfo {
     }
 }
 
+/// 前端下拉框里的供应商预设。
+///
+/// 每个元组依次是：供应商标识、展示名、默认 API 地址、默认模型名。`custom`
+/// 的地址为空，表示必须由用户填写。
 pub const PROVIDER_OPTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "openai",
@@ -95,7 +108,7 @@ pub const PROVIDER_OPTIONS: &[(&str, &str, &str, &str)] = &[
     ("custom", "自定义", "", "custom-model"),
 ];
 
-/// Known model IDs per provider, used as fallback when no models are configured.
+/// 各供应商已知的模型 id，在没有配置任何模型时作为回退列表。
 pub const PROVIDER_MODELS: &[(&str, &[&str])] = &[
     (
         "openai",

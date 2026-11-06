@@ -1,23 +1,21 @@
-//! Utilities for processing LLM responses.
+//! 处理 LLM 响应的工具函数。
 
-/// Extract JSON from an LLM response string.
+/// 从 LLM 响应字符串中提取 JSON。
 ///
-/// LLMs often wrap JSON output in markdown code fences.  This function
-/// strips those fences and returns the bare JSON, falling back to a
-/// heuristic scan for `{ … }` when no fence is found.
+/// LLM 经常把 JSON 包在 markdown 代码围栏里。本函数剥掉围栏返回裸 JSON；没有
+/// 围栏时退化为 `{ … }` 的启发式扫描。
 ///
-/// # Handling order
+/// # 处理顺序
 ///
-/// 1. ```json … ```  — explicit JSON code fence
-/// 2. ``` … ```      — generic code fence
-/// 3. `{ … }`        — first `{` to last `}` in the text
-/// 4. Full trimmed input (fallback)
+/// 1. ```json … ```  — 显式 JSON 代码围栏
+/// 2. ``` … ```      — 通用代码围栏
+/// 3. `{ … }`        — 文本中第一个 `{` 到最后一个 `}`
+/// 4. 整段输入（兜底）
 pub fn extract_json(input: &str) -> String {
     let trimmed = input.trim();
 
-    // Walk every fenced block once. A ```json fence wins; otherwise keep the
-    // first non-empty generic fence. Empty fences are skipped so a stray
-    // ```json\n``` cannot mask a later usable block.
+    // 只遍历每个围栏块一次。```json 优先；否则保留第一个非空的通用围栏。
+    // 空围栏会被跳过，避免一个孤立的 ```json\n``` 掩盖后面可用的块。
     let mut generic_fence: Option<String> = None;
     let mut rest = trimmed;
     while let Some(start) = rest.find("```") {
@@ -40,7 +38,7 @@ pub fn extract_json(input: &str) -> String {
             }
         }
 
-        // Continue after the closing fence.
+        // 从闭合围栏之后继续扫描。
         let consumed = start + 3 + (after_open.len() - after_line.len()) + end + 3;
         rest = &rest[consumed..];
     }
@@ -49,7 +47,7 @@ pub fn extract_json(input: &str) -> String {
         return block;
     }
 
-    // Look for a bare JSON object — find first '{' and last '}'
+    // 寻找裸 JSON 对象 —— 第一个 '{' 与最后一个 '}'
     if let Some(start) = trimmed.find('{') {
         if let Some(end) = trimmed.rfind('}') {
             if end > start {
@@ -58,7 +56,7 @@ pub fn extract_json(input: &str) -> String {
         }
     }
 
-    // Fallback: return the whole input cleaned up
+    // 兜底：返回清理后的整段输入
     trimmed.to_string()
 }
 
@@ -98,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_empty_fence_skips_to_next_heuristic() {
-        // Empty ```json block — should skip to bare-object heuristic
+        // 空的 ```json 块 —— 应跳到裸对象启发式
         let input = "```json\n```\n{\"fallback\": true}";
         let result = extract_json(input);
         assert!(result.contains("fallback"));
@@ -112,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_generic_fence_with_language_tag() {
-        // The info string must not leak into the extracted content.
+        // info 字符串不得泄漏进提取结果。
         let input = "```rust\nfn main() {}\n```";
         assert_eq!(extract_json(input), "fn main() {}");
     }

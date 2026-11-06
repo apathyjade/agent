@@ -592,7 +592,7 @@ Phase 4 为**可选阶段**，取决于 Phase 1-3 的效果评估。
 | 项目 | 理由 |
 |------|------|
 | 删除现有的 Native provider | 保持降级能力和用户选择权 |
-| 用 Rig 替换工具系统 | 当前工具系统灵活且与 MCP 深度耦合 |
+| ~~用 Rig 替换工具系统~~ | **已实施**：工具编写形态为 `rig::tool::Tool`、运行时形态为 `DynamicTool`，详见 `docs/design/2026-11-05-rig-toolchain-migration-design.md` |
 | 用 Rig 替换 pipeline 引擎 | 工作流 YAML DSL 是独特设计，Rig 链模式不匹配 |
 | 重构 AppState | Rig 没有提供更好的并发模式 |
 

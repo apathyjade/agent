@@ -1,18 +1,19 @@
-// ── Java Version Source ──
-//
-// Fetches available JDK versions from the Adoptium API.
-// Supports major versions: 8, 11, 17, 21, 23.
-// Falls back to hardcoded versions on API failure.
+//! Java 版本源。
+//!
+//! 通过 Adoptium API 获取可用的 JDK 版本，覆盖主要版本 8、11、17、21、23。
+//! API 调用失败时回退到内置的版本列表。
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::error::Result;
 use crate::runtime::toolchain::http_client::get_http_client;
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::runtime::toolchain::version::sort_versions_desc;
 use crate::runtime::toolchain::RuntimeType;
 
-/// Top-level response from Adoptium API.
+/// Adoptium API 的顶层响应。
 #[derive(Debug, Deserialize)]
 struct AdoptiumResponse {
     #[allow(dead_code)]
@@ -20,7 +21,7 @@ struct AdoptiumResponse {
     assets: Option<Vec<AdoptiumAsset>>,
 }
 
-/// A single asset entry from the Adoptium API.
+/// Adoptium API 返回的单个资产条目。
 #[derive(Debug, Deserialize)]
 struct AdoptiumAsset {
     version: AdoptiumVersion,
@@ -31,7 +32,7 @@ struct AdoptiumAsset {
     release_name: Option<String>,
 }
 
-/// Version metadata from Adoptium.
+/// Adoptium 返回的版本元数据。
 #[derive(Debug, Deserialize)]
 struct AdoptiumVersion {
     semver: Option<String>,
@@ -45,7 +46,7 @@ struct AdoptiumVersion {
     raw: Option<String>,
 }
 
-/// Binary info from Adoptium.
+/// Adoptium 返回的二进制信息。
 #[derive(Debug, Deserialize)]
 struct AdoptiumBinary {
     os: Option<String>,
@@ -53,7 +54,7 @@ struct AdoptiumBinary {
     package: Option<AdoptiumPackage>,
 }
 
-/// Package download info.
+/// 下载包信息。
 #[derive(Debug, Deserialize)]
 struct AdoptiumPackage {
     #[allow(dead_code)]
@@ -61,27 +62,13 @@ struct AdoptiumPackage {
     link: Option<String>,
 }
 
+/// Java（JDK）版本源：从 Adoptium API 拉取版本。
 pub struct JavaVersionSource;
 
 impl JavaVersionSource {
-    /// Feature versions to query.
+    /// 需要查询的 feature 版本。
     fn feature_versions() -> &'static [i64] {
         &[23, 21, 17, 11, 8]
-    }
-
-    fn current_os() -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            "windows"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "linux"
-        }
-        #[cfg(target_os = "macos")]
-        {
-            "mac"
-        }
     }
 }
 
@@ -92,52 +79,35 @@ impl VersionSource for JavaVersionSource {
     }
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
-        let os = Self::current_os();
+        let os = platform::java_platform_os();
 
-        // Try to fetch from API for each feature version
+        // 逐个 feature 版本尝试从 API 获取
         let mut versions = Vec::new();
 
         for &feature_ver in Self::feature_versions() {
             match self.fetch_feature_version(feature_ver, os).await {
                 Ok(Some(rv)) => versions.push(rv),
-                Ok(None) => {} // skip if no matching binary
+                Ok(None) => {} // 没有匹配的二进制，跳过
                 Err(_) => {
-                    // API failure for this feature version — continue to next
+                    // 单个 feature 版本请求失败时继续下一个
                 }
             }
         }
 
-        // If API returned nothing, use fallback
+        // API 完全没有结果时使用回退列表
         if versions.is_empty() {
             versions = Self::fallback_versions();
         }
 
-        // Sort: newest version first (semver comparison)
-        versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let b_parts: Vec<u64> = b
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
-                if av != bv {
-                    return bv.cmp(av);
-                }
-            }
-            b_parts.len().cmp(&a_parts.len())
-        });
+        // 排序：新版本在前（逐段数值比较）
+        sort_versions_desc(&mut versions);
 
         Ok(versions)
     }
 }
 
 impl JavaVersionSource {
-    /// Fetch a single feature version from the Adoptium API.
+    /// 从 Adoptium API 获取单个 feature 版本。
     async fn fetch_feature_version(
         &self,
         feature_ver: i64,
@@ -165,7 +135,7 @@ impl JavaVersionSource {
             None => return Ok(None),
         };
 
-        // Find the first asset with a matching binary for our platform
+        // 找到第一个匹配当前平台与架构的资产
         for asset in assets {
             let semver = match asset.version.semver {
                 Some(ref s) => s.clone(),
@@ -177,7 +147,7 @@ impl JavaVersionSource {
                 None => continue,
             };
 
-            // Find a matching binary for our OS and architecture
+            // 找到匹配当前操作系统与架构的二进制
             let matching_binary = binaries
                 .iter()
                 .find(|b| b.os.as_deref() == Some(os) && b.architecture.as_deref() == Some("x64"));
@@ -189,7 +159,7 @@ impl JavaVersionSource {
                     .and_then(|p| p.link.clone())
                     .unwrap_or_default();
 
-                // Build display name like "JDK 21.0.7 (LTS)"
+                // 生成形如 "JDK 21.0.7 (LTS)" 的展示名
                 let display_name = match feature_ver {
                     21 | 17 | 11 | 8 => format!("JDK {} (LTS)", semver),
                     _ => format!("JDK {}", semver),
@@ -214,7 +184,7 @@ impl JavaVersionSource {
         Ok(None)
     }
 
-    /// Fallback hardcoded versions when the API is unavailable.
+    /// API 不可用时使用的内置版本列表。
     fn fallback_versions() -> Vec<RuntimeVersion> {
         vec![
             RuntimeVersion {

@@ -1,3 +1,7 @@
+//! 记忆 worker：通过 SQLite 存取记忆，支持 `@@store` / `@@search` / `@@list`。
+//!
+//! 工作在存储层，不使用 embedding 或向量检索；检索依赖 FTS5 全文索引。
+
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::Arc;
@@ -8,29 +12,30 @@ use crate::core::db::repository::Database;
 use crate::core::error::Result;
 use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
-/// A worker that stores and retrieves memories directly via the SQLite database.
+/// 直接通过 SQLite 存取记忆的 worker。
 ///
-/// Unlike the high-level [`crate::features::memory::MemoryManager`], this worker operates
-/// at the storage layer — it does not use embeddings or vector search.
+/// 与高层的 [`crate::features::memory::MemoryManager`] 不同，本 worker 工作在
+/// 存储层 —— 不使用 embedding，也不做向量检索。
 ///
-/// ## Commands
+/// ## 命令
 ///
-/// - `@@store("content")` — store a new memory
-/// - `@@store("content", "tag1,tag2")` — store with tags
-/// - `@@search("query")` — search memories by FTS5 full-text match
-/// - `@@search("query", 5)` — search with custom limit (default 10)
-/// - `@@list()` — list recent memories (default 10)
-/// - `@@list(20)` — list with custom limit
+/// - `@@store("content")` —— 存入一条新记忆
+/// - `@@store("content", "tag1,tag2")` —— 带标签存入
+/// - `@@search("query")` —— 按 FTS5 全文匹配检索
+/// - `@@search("query", 5)` —— 指定返回条数（默认 10）
+/// - `@@list()` —— 列出最近的记忆（默认 10 条）
+/// - `@@list(20)` —— 指定条数
 pub struct MemoryWorker {
     db: Arc<Mutex<Database>>,
 }
 
 impl MemoryWorker {
+    /// 用共享的数据库连接构造 worker。
     pub fn new(db: Arc<Mutex<Database>>) -> Self {
         Self { db }
     }
 
-    /// Parse and execute @@store, @@search, and @@list commands from the instruction.
+    /// 解析并执行指令中的 `@@store`、`@@search`、`@@list` 命令。
     async fn execute_tools(&self, instruction: &str) -> String {
         let mut result = String::new();
 
@@ -52,7 +57,7 @@ impl MemoryWorker {
         result
     }
 
-    /// Handle `@@store(content)` or `@@store(content, tags)`.
+    /// 处理 `@@store(content)` 或 `@@store(content, tags)`。
     async fn handle_store(&self, args: &str, output: &mut String) {
         let (content, tags_opt) = Self::parse_store_args(args);
 
@@ -87,7 +92,7 @@ impl MemoryWorker {
         }
     }
 
-    /// Parse store arguments: `"content"` or `"content", "tags"`.
+    /// 解析 store 参数：`"content"` 或 `"content", "tags"`。
     fn parse_store_args(args: &str) -> (&str, Option<String>) {
         let trimmed = args.trim();
         if let Some(comma) = trimmed.find(',') {
@@ -104,7 +109,7 @@ impl MemoryWorker {
         }
     }
 
-    /// Handle `@@search(query)` or `@@search(query, limit)`.
+    /// 处理 `@@search(query)` 或 `@@search(query, limit)`。
     async fn handle_search(&self, args: &str, output: &mut String) {
         let (query, limit) = Self::parse_search_args(args);
 
@@ -142,7 +147,7 @@ impl MemoryWorker {
         }
     }
 
-    /// Parse search arguments: `"query"` or `"query", 5`.
+    /// 解析 search 参数：`"query"` 或 `"query", 5`。
     fn parse_search_args(args: &str) -> (&str, usize) {
         let trimmed = args.trim();
         if let Some(comma) = trimmed.find(',') {
@@ -154,7 +159,7 @@ impl MemoryWorker {
         }
     }
 
-    /// Handle `@@list()` or `@@list(limit)`.
+    /// 处理 `@@list()` 或 `@@list(limit)`。
     async fn handle_list(&self, args: &str, output: &mut String) {
         let limit_str = args.trim();
         let limit: usize = if limit_str.is_empty() {
@@ -169,9 +174,8 @@ impl MemoryWorker {
                     output.push_str("No memories stored yet.\n");
                     return;
                 }
-                // Show most recent first (list_memories returns by relevance DESC,
-                // so we reverse to get newest first, then take limit, then re-reverse
-                // to preserve chronological order within the window).
+                // 最近的排前面：list_memories 按 relevance 降序返回，
+                // 因此先反转取最新的一段，再反转回来保持时间顺序。
                 let shown: Vec<_> = records.iter().rev().take(limit).collect();
                 for mem in shown.iter().rev() {
                     let preview: String = mem.content.chars().take(200).collect();

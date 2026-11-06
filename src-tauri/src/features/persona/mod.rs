@@ -1,3 +1,9 @@
+//! Persona（人格）管理。
+//!
+//! Persona 是一组可复用的角色设定：系统提示词、温度、回复风格与偏好模型。
+//! 本模块只负责数据库 CRUD 与「为某条消息挑选 persona」的解析逻辑，不直接
+//! 调用 LLM；向量检索与记忆注入由调用方组装。
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -10,7 +16,7 @@ use crate::core::db::models::PersonaRecord;
 use crate::core::db::repository::Database;
 use crate::core::error::Result;
 
-/// Lightweight persona info returned to the frontend.
+/// 返回给前端的轻量 persona 信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonaInfo {
     pub id: String,
@@ -48,6 +54,7 @@ impl From<PersonaRecord> for PersonaInfo {
     }
 }
 
+/// 创建 persona 的入参；除 `name` 与 `system_prompt` 外都可缺省。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePersonaParams {
     pub name: String,
@@ -62,6 +69,7 @@ pub struct CreatePersonaParams {
     pub is_default: Option<bool>,
 }
 
+/// 更新 persona 的入参；`None` 表示该字段保持不变。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatePersonaParams {
     pub name: Option<String>,
@@ -76,29 +84,34 @@ pub struct UpdatePersonaParams {
     pub is_default: Option<bool>,
 }
 
-/// Persona resolution result — how a persona was selected for a session.
+/// persona 解析结果，说明本次会话的 persona 是如何选出来的。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersonaResolution {
-    /// User explicitly specified
+    /// 用户显式指定
     Manual(PersonaInfo),
-    /// System auto-detected (or continued from active)
+    /// 系统自动识别（或沿用当前活跃 persona）
     Auto(PersonaInfo),
-    /// Using default persona
+    /// 使用默认 persona
     Default(PersonaInfo),
-    /// No persona matched
+    /// 没有匹配到任何 persona
     None,
 }
 
+/// Persona 的数据库访问层。
+///
+/// 所有方法都会短暂持有数据库互斥锁；解析流程（[`PersonaManager::resolve`]）
+/// 内部会多次加锁，因此不要在调用方已持有锁时再调用。
 pub struct PersonaManager {
     db: Arc<Mutex<Database>>,
 }
 
 impl PersonaManager {
+    /// 用共享数据库句柄构造管理器。
     pub fn new(db: Arc<Mutex<Database>>) -> Self {
         Self { db }
     }
 
-    /// Seed default personas if none exist.
+    /// 首次启动时写入内置 persona；已有任何 persona 时直接返回 0。
     pub async fn seed_defaults(&self) -> Result<usize> {
         let default_personas = crate::features::persona::seeds::default_personas();
         let db = self.db.lock().await;
@@ -119,8 +132,13 @@ impl PersonaManager {
         Ok(count)
     }
 
-    // ── CRUD ──
+    // ── 增删改查 ──
 
+    /// 创建 persona。
+    ///
+    /// 校验名称与系统提示词非空、`response_style` 属于
+    /// `{concise, verbose, academic}`；温度会被夹到 `[0.0, 2.0]`。
+    /// 指定 `is_default` 时会先清除其他默认标记。
     pub async fn create(&self, params: CreatePersonaParams) -> Result<PersonaInfo> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -166,12 +184,14 @@ impl PersonaManager {
         Ok(PersonaInfo::from(record))
     }
 
+    /// 列出全部 persona。
     pub async fn list(&self) -> Result<Vec<PersonaInfo>> {
         let db = self.db.lock().await;
         let records = db.list_personas()?;
         Ok(records.into_iter().map(PersonaInfo::from).collect())
     }
 
+    /// 按 id 获取 persona，不存在时返回 `NotFound`。
     pub async fn get(&self, id: &str) -> Result<PersonaInfo> {
         let db = self.db.lock().await;
         let record = db.get_persona(id)?
@@ -179,18 +199,24 @@ impl PersonaManager {
         Ok(PersonaInfo::from(record))
     }
 
+    /// 按名称获取 persona；重名时返回数据库找到的第一个。
     pub async fn get_by_name(&self, name: &str) -> Result<Option<PersonaInfo>> {
         let db = self.db.lock().await;
         let record = db.get_persona_by_name(name)?;
         Ok(record.map(PersonaInfo::from))
     }
 
+    /// 获取当前默认 persona。
     pub async fn get_default(&self) -> Result<Option<PersonaInfo>> {
         let db = self.db.lock().await;
         let record = db.get_default_persona()?;
         Ok(record.map(PersonaInfo::from))
     }
 
+    /// 更新 persona，只覆盖入参中给出值的字段。
+    ///
+    /// 与 [`PersonaManager::create`] 相同的校验规则；设置 `is_default`
+    /// 为 true 时会先清除其他默认标记。
     pub async fn update(&self, id: &str, params: UpdatePersonaParams) -> Result<PersonaInfo> {
         let db = self.db.lock().await;
         let mut record = db.get_persona(id)?
@@ -235,6 +261,7 @@ impl PersonaManager {
         Ok(PersonaInfo::from(record))
     }
 
+    /// 删除 persona；不存在时返回 `NotFound`。
     pub async fn delete(&self, id: &str) -> Result<()> {
         let db = self.db.lock().await;
         let _ = db.get_persona(id)?
@@ -243,75 +270,82 @@ impl PersonaManager {
         Ok(())
     }
 
-    // ── Memory linking ──
+    // ── 记忆关联 ──
 
+    /// 把一条记忆关联到 persona。
     pub async fn link_memory(&self, persona_id: &str, memory_id: &str) -> Result<()> {
         let db = self.db.lock().await;
         db.link_memory_to_persona(persona_id, memory_id)?;
         Ok(())
     }
 
+    /// 解除 persona 与一条记忆的关联。
     pub async fn unlink_memory(&self, persona_id: &str, memory_id: &str) -> Result<()> {
         let db = self.db.lock().await;
         db.unlink_memory_from_persona(persona_id, memory_id)?;
         Ok(())
     }
 
+    /// 获取 persona 关联的所有记忆 id。
     pub async fn get_linked_memory_ids(&self, persona_id: &str) -> Result<Vec<String>> {
         let db = self.db.lock().await;
         db.get_persona_memory_ids(persona_id)
     }
 
-    // ── Project binding ──
+    // ── 项目绑定 ──
 
+    /// 把 persona 绑定到项目路径；`auto_select` 表示进入该项目时自动选用。
     pub async fn bind_project(&self, persona_id: &str, project_path: &str, auto_select: bool) -> Result<()> {
         let db = self.db.lock().await;
         db.bind_persona_to_project(persona_id, project_path, auto_select)?;
         Ok(())
     }
 
+    /// 解除 persona 与项目的绑定。
     pub async fn unbind_project(&self, persona_id: &str, project_path: &str) -> Result<()> {
         let db = self.db.lock().await;
         db.unbind_persona_from_project(persona_id, project_path)?;
         Ok(())
     }
 
-    // ── Resolution (Persona Selection) ──
+    // ── 解析（persona 选择） ──
 
-    /// Try to extract a persona name from the beginning of a user message.
-    /// Supports: "Alex, xxx", "Alex: xxx", "/persona Alex", "Alex：xxx"
+    /// 尝试从用户消息开头提取 persona 名称。
+    /// 支持：`Alex, xxx`、`Alex: xxx`、`/persona Alex`、`Alex：xxx`。
     pub fn extract_persona_from_message(msg: &str) -> Option<String> {
         let msg = msg.trim();
-        // /persona <name>
+        // 显式指令：/persona <name>
         if let Some(rest) = msg.strip_prefix("/persona ") {
-            let name = rest.trim().split_whitespace().next()?;
+            let name = rest.split_whitespace().next()?;
             if !name.is_empty() { return Some(name.to_string()); }
         }
-        // "Name, ..." or "Name: ..." or "Name，..."
+        // 形式："Name, ..." / "Name: ..." / "Name，..."
         for sep in [", ", ": ", "\u{ff0c}", "\u{ff1a}"] {
             if let Some(idx) = msg.find(sep) {
                 let candidate = &msg[..idx].trim();
-                if !candidate.is_empty() && candidate.len() <= 30 {
-                if candidate.chars().next().map_or(false, |c| c.is_uppercase() || !c.is_ascii()) {
+                if !candidate.is_empty() && candidate.len() <= 30
+                && candidate.chars().next().is_some_and(|c| c.is_uppercase() || !c.is_ascii()) {
                     return Some(candidate.to_string());
-                }
                 }
             }
         }
         None
     }
 
-    /// Try to auto-detect the best persona for a project based on file/language detection.
+    /// 根据项目路径与文件/语言特征尝试自动识别最合适的 persona。
+    ///
+    /// 先看显式项目绑定，再按名称/标题里的关键词打分；只有唯一最高分或
+    /// 领先第二名至少 3 分时才返回结果，避免模棱两可的选择。
     pub async fn detect_for_project(&self, project_path: &str) -> Result<Option<PersonaInfo>> {
         let db = self.db.lock().await;
 
-        // 1. Check explicit project bindings
+        // 1. 显式项目绑定
         let bound = db.get_personas_for_project(project_path)?;
         if let Some(p) = bound.into_iter().find(|p| p.is_default) {
             return Ok(Some(PersonaInfo::from(p)));
         }
 
-        // 2. Score personas by name/title matching project context keywords
+        // 2. 按名称/标题与项目上下文关键词打分
         let all = db.list_personas()?;
         let path_lower = project_path.to_lowercase();
 
@@ -346,23 +380,25 @@ impl PersonaManager {
         Ok(None)
     }
 
-    /// Resolve which persona to use.
-    /// Priority: manual → active session → project detect → default → none.
+    /// 解析本次应使用的 persona。
+    ///
+    /// 优先级：消息里的手动指定 → 消息前缀匹配 → 当前活跃 persona →
+    /// 项目识别 → 默认 persona → 无。
     pub async fn resolve(
         &self,
         message: &str,
         project_path: Option<&str>,
         active_persona_id: Option<&str>,
     ) -> PersonaResolution {
-        // 1. Manual from message prefix
+        // 1. 消息前缀里的显式名称
         if let Some(name) = Self::extract_persona_from_message(message) {
             if let Ok(Some(p)) = self.get_by_name(&name).await {
                 return PersonaResolution::Manual(p);
             }
         }
 
-        // 1b. Prefix matching for names without separators (e.g. CJK "张三介绍一下...")
-        //     Match the LONGEST persona name at the start of the message.
+        // 1b. 无分隔符的前缀匹配（例如中文「张三介绍一下...」），
+        //     取消息开头能匹配到的最长 persona 名称。
         let trimmed = message.trim();
         if let Ok(personas) = self.list().await {
             let mut best: Option<PersonaInfo> = None;
@@ -381,21 +417,21 @@ impl PersonaManager {
             }
         }
 
-        // 2. Continue active persona from session
+        // 2. 沿用会话当前的 persona
         if let Some(active_id) = active_persona_id {
             if let Ok(p) = self.get(active_id).await {
                 return PersonaResolution::Auto(p);
             }
         }
 
-        // 3. Project-based detection
+        // 3. 按项目识别
         if let Some(path) = project_path {
             if let Ok(Some(p)) = self.detect_for_project(path).await {
                 return PersonaResolution::Auto(p);
             }
         }
 
-        // 4. Default fallback
+        // 4. 回退到默认 persona
         if let Ok(Some(p)) = self.get_default().await {
             return PersonaResolution::Default(p);
         }

@@ -1,13 +1,12 @@
-//! Detection and import of skills left behind by the legacy in-app manager.
+//! 旧版内置管理器遗留技能的检测与导入。
 //!
-//! The legacy manager stored skills as first-level directories under
-//! `<data_dir>/agent/skills` and `~/.agent/skills`, using either `skill.yaml`
-//! (the old format) or `SKILL.md` (the Agent Skills format the CLI expects).
-//! Only `SKILL.md` directories can be handed to `skills add`; the rest are
-//! reported so the UI can explain why they are skipped.
+//! 旧管理器把技能存成 `<data_dir>/agent/skills` 与 `~/.agent/skills` 下的
+//! 一级目录，格式是 `skill.yaml`（旧格式）或 `SKILL.md`（CLI 期望的 Agent
+//! Skills 格式）。只有含 `SKILL.md` 的目录能交给 `skills add`；其余会被
+//! 报告出来，让界面解释跳过原因。
 //!
-//! Importing never deletes the source directory: the CLI links the skill (or
-//! copies it with `--copy`), and the old directory stays untouched.
+//! 导入不会删除源目录：CLI 会链接技能（或配合 `--copy` 复制），旧目录保持
+//! 原样。
 
 use std::path::{Path, PathBuf};
 
@@ -16,37 +15,37 @@ use serde::{Deserialize, Serialize};
 use super::is_valid_name;
 use crate::core::error::{AppError, Result};
 
-/// One skill directory found under a legacy root.
+/// 在旧根目录下发现的一个技能目录。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacySkill {
-    /// Directory name, which is what the CLI uses as the skill name.
+    /// 目录名，CLI 会把它当作技能名。
     pub name: String,
     pub path: String,
-    /// True when the directory contains `SKILL.md` and can be imported.
+    /// 目录含 `SKILL.md`、可导入时为 true。
     pub importable: bool,
-    /// Why the directory cannot be imported, when `importable` is false.
+    /// `importable` 为 false 时说明不可导入的原因。
     pub reason: Option<String>,
 }
 
-/// Outcome of one bulk import run.
+/// 一次批量导入的结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyImportResult {
     pub imported: Vec<String>,
     pub failed: Vec<LegacyImportFailure>,
 }
 
-/// One path that could not be imported, with the reason.
+/// 一个导入失败的路径及其原因。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyImportFailure {
     pub path: String,
     pub error: String,
 }
 
-/// Reason shown for directories still using the old `skill.yaml` format.
+/// 仍在使用旧 `skill.yaml` 格式的目录所显示的原因。
 const YAML_REASON: &str = "旧格式（skill.yaml），不符合 Agent Skills 规范";
 
-/// Legacy skill roots, deduplicated. Paths need not exist; [`scan_root`]
-/// returns an empty list for a missing directory.
+/// 旧技能根目录，已去重。路径不要求存在；[`scan_root`] 对不存在的目录
+/// 返回空列表。
 pub fn roots() -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
 
@@ -62,11 +61,10 @@ pub fn roots() -> Vec<PathBuf> {
     found
 }
 
-/// Scan the first-level subdirectories of `root`.
+/// 扫描 `root` 的一级子目录。
 ///
-/// A directory with `SKILL.md` is importable. A directory with only
-/// `skill.yaml` is reported as incompatible. Directories with neither are
-/// skipped entirely, as are plain files and unreadable entries.
+/// 含 `SKILL.md` 的目录可导入；只有 `skill.yaml` 的目录报告为不兼容；
+/// 两者都没有的目录、普通文件与不可读条目全部跳过。
 pub fn scan_root(root: &Path) -> Vec<LegacySkill> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
@@ -106,10 +104,10 @@ pub fn scan_root(root: &Path) -> Vec<LegacySkill> {
     skills
 }
 
-/// Build `add` arguments that import one legacy directory globally.
+/// 构造把单个旧目录导入到全局的 `add` 参数。
 ///
-/// Imports are always global (legacy roots are user-wide), so `-g` is part of
-/// the fixed argument list rather than a parameter.
+/// 导入始终是全局的（旧根目录属于用户级），因此 `-g` 是固定参数而不是
+/// 入参。
 pub fn build_import_args(path: &str, agents: &[String], copy: bool) -> Result<Vec<String>> {
     if !is_importable_path(path) {
         return Err(AppError::SkillValidation(format!(
@@ -146,12 +144,11 @@ pub fn build_import_args(path: &str, agents: &[String], copy: bool) -> Result<Ve
     Ok(args)
 }
 
-/// Accept the paths a legacy scan can produce.
+/// 接受旧版扫描可能产生的路径。
 ///
-/// `Path::is_absolute` is false on Windows for POSIX-style paths such as
-/// `/tmp/good`, which the code still needs to accept in tests and when a
-/// user pastes a path. A leading separator or drive prefix counts as
-/// absolute-like, and flag-like or control-character values are rejected.
+/// 在 Windows 上 `Path::is_absolute` 对 `/tmp/good` 这类 POSIX 风格路径
+/// 返回 false，但测试和用户粘贴路径时仍需接受。以分隔符或盘符开头即视为
+/// 类绝对路径；以 `-` 开头或含控制字符的值会被拒绝。
 fn is_importable_path(path: &str) -> bool {
     let trimmed = path.trim();
     if trimmed.is_empty()
@@ -167,9 +164,9 @@ fn is_importable_path(path: &str) -> bool {
 }
 
 impl super::SkillsService {
-    /// Detect legacy skill directories under every [`roots`] entry.
+    /// 检测所有 [`roots`] 下的旧版技能目录。
     ///
-    /// Results from all roots are merged and deduplicated by path.
+    /// 合并各根目录的结果并按路径去重。
     pub async fn detect_legacy(&self) -> Result<Vec<LegacySkill>> {
         tokio::task::spawn_blocking(|| {
             let mut found: Vec<LegacySkill> = Vec::new();
@@ -185,12 +182,11 @@ impl super::SkillsService {
         .map_err(|err| AppError::Skill(format!("legacy skill scan task failed: {err}")))
     }
 
-    /// Import legacy skill directories through the CLI.
+    /// 通过 CLI 导入旧版技能目录。
     ///
-    /// Every path is handled independently: a missing directory, a directory
-    /// without `SKILL.md` or a failed CLI run is recorded in
-    /// [`LegacyImportResult::failed`] and the remaining paths still run.
-    /// Source directories are never removed.
+    /// 每个路径独立处理：目录不存在、缺少 `SKILL.md` 或 CLI 运行失败都会
+    /// 记入 [`LegacyImportResult::failed`]，其余路径继续执行。源目录永不
+    /// 删除。
     pub async fn import_legacy(
         &self,
         paths: &[String],

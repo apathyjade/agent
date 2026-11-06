@@ -1,3 +1,8 @@
+//! 基于 LLM 与规则的质量评审器。
+//!
+//! 评审结论只有三种：通过（`Go`）、返工（`Revise`）、上报（`Escalate`）。
+//! 规则快审不消耗 LLM 调用，LLM 深审用于规则无法覆盖的质量问题。
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -8,7 +13,7 @@ use crate::llm::util::extract_json;
 use crate::core::error::Result;
 use crate::agent::workers::{SubTask, WorkerResult};
 
-/// Critique decision from the reviewer.
+/// 评审结论。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CritiqueDecision {
@@ -17,7 +22,7 @@ pub enum CritiqueDecision {
     Escalate,
 }
 
-/// Structured critique result.
+/// 结构化的评审结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Critique {
     pub decision: CritiqueDecision,
@@ -27,7 +32,7 @@ pub struct Critique {
     pub score: Option<f32>,
 }
 
-/// System prompt for the LLM-based review.
+/// LLM 深审使用的系统提示词。
 const CRITIC_SYSTEM_PROMPT: &str = r#"You are a critical reviewer evaluating AI agent work output. Your job is to assess correctness, completeness, quality, consistency, and safety.
 
 Evaluate the worker output against these criteria:
@@ -45,33 +50,34 @@ Return your review as a JSON object with these fields:
 
 Only respond with the JSON object, no other text."#;
 
-/// Agent that critiques worker outputs using LLM review or rule-based checks.
+/// 使用 LLM 评审或规则检查来评审 worker 产出的 agent。
 pub struct CriticAgent {
     providers: Arc<Mutex<ProviderRegistry>>,
 }
 
 impl CriticAgent {
+    /// 用共享的 provider 注册表构造评审器。
     pub fn new(providers: Arc<Mutex<ProviderRegistry>>) -> Self {
         Self { providers }
     }
 
-    /// LLM-based deep review of worker output.
+    /// 基于 LLM 深度评审 worker 产出。
     ///
-    /// If `model_id` is `None`, falls back to the registry's default model.
-    /// Returns a default "Go" critique when no model is available or JSON parsing fails.
+    /// `model_id` 为 `None` 时回落到注册表的默认模型。没有可用模型或
+    /// JSON 解析失败时返回默认的「Go」，避免评审环节阻断主流程。
     pub async fn review(
         &self,
         original_task: &SubTask,
         worker_result: &WorkerResult,
         model_id: Option<&str>,
     ) -> Result<Critique> {
-        // Determine which model to use — return Go if none available
+        // 先确定模型；没有可用模型时直接通过。
         let mid = self.resolve_model_id(model_id).await;
         if mid.is_empty() {
             return Ok(self.default_go_critique());
         }
 
-        // Check that the provider actually exists in the registry
+        // 确认 provider 确实已注册。
         {
             let registry = self.providers.lock().await;
             if !registry.is_registered(&mid) {
@@ -89,8 +95,8 @@ Evaluate the worker output against the instruction and provide your critique."#,
             instruction = original_task.instruction,
             content = worker_result.content,
         );
-
-        let provider = match { let registry = self.providers.lock().await; registry.get(&mid) } {
+        let res = { let registry = self.providers.lock().await; registry.get(&mid) };
+        let provider = match res {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("Critic provider not available ({}), returning default Go", e);
@@ -108,7 +114,7 @@ Evaluate the worker output against the instruction and provide your critique."#,
 
         let extracted = extract_json(&raw);
 
-        // Try to parse the extracted JSON
+        // 解析提取出的 JSON。
         match serde_json::from_str::<Critique>(&extracted) {
             Ok(critique) => Ok(critique),
             Err(e) => {
@@ -127,9 +133,9 @@ Evaluate the worker output against the instruction and provide your critique."#,
         }
     }
 
-    /// Rule-based quick review without calling an LLM.
+    /// 不调用 LLM 的规则快审。
     ///
-    /// Returns `None` when no obvious issues are found.
+    /// 没有发现明显问题时返回 `None`。
     pub fn quick_review(_original_task: &SubTask, worker_result: &WorkerResult) -> Option<Critique> {
         let content = worker_result.content.trim();
 
@@ -167,11 +173,11 @@ Evaluate the worker output against the instruction and provide your critique."#,
             });
         }
 
-        // No obvious issues
+        // 没有发现明显问题。
         None
     }
 
-    /// Resolve the model ID to use for review, returning empty string if unavailable.
+    /// 解析本次评审使用的模型 ID；不可用时返回空串。
     async fn resolve_model_id(&self, model_id: Option<&str>) -> String {
         match model_id {
             Some(id) if !id.is_empty() => id.to_string(),
@@ -182,7 +188,7 @@ Evaluate the worker output against the instruction and provide your critique."#,
         }
     }
 
-    /// Return a default "Go" critique (pass).
+    /// 返回默认的「Go」评审结果（直接通过）。
     fn default_go_critique(&self) -> Critique {
         Critique {
             decision: CritiqueDecision::Go,
@@ -193,9 +199,10 @@ Evaluate the worker output against the instruction and provide your critique."#,
     }
 }
 
-/// Trait for components that can review worker outputs.
+/// 可评审 worker 产出的组件统一契约。
 #[async_trait]
 pub trait Reviewable: Send + Sync {
+    /// 对一次 worker 产出给出评审结论。
     async fn review(&self, task: &SubTask, result: &WorkerResult) -> Result<Critique>;
 }
 
@@ -319,7 +326,7 @@ mod tests {
         let task = make_task("t1", "Test", "Do something");
         let result = make_result(WorkerKind::Thinker, "t1", "Some output");
 
-        // With empty model_id, review should return default Go
+        // model_id 为空时，review 应返回默认的 Go。
         let rt = tokio::runtime::Runtime::new().unwrap();
         let critique = rt.block_on(agent.review(&task, &result, Some(""))).unwrap();
         assert_eq!(critique.decision, CritiqueDecision::Go);

@@ -1,19 +1,19 @@
-/// Lightweight in-memory vector index with cosine similarity search.
-///
-/// Stores `(id, text, embedding)` triples and supports top-k retrieval.
-/// The index is rebuilt from SQLite at application startup and is NOT
-/// persisted independently — SQLite is the source of truth.
+//! 轻量内存向量索引，支持余弦相似度检索。
+//!
+//! 保存 `(id, text, embedding)` 三元组并支持 top-k 召回。索引在应用启动后
+//! 从 SQLite 懒加载重建，不单独持久化——SQLite 才是唯一事实来源。
+
 use std::collections::HashMap;
 
 #[derive(Clone)]
 struct IndexEntry {
-    /// Kept alongside the embedding so entries can be inspected or rebuilt.
+    /// 与 embedding 一起保留，便于排查与重建。
     #[allow(dead_code)]
     text: String,
     embedding: Vec<f32>,
 }
 
-/// A simple in-memory vector index.
+/// 简单的内存向量索引。
 pub struct InMemoryVectorIndex {
     entries: HashMap<String, IndexEntry>,
 }
@@ -31,18 +31,18 @@ impl InMemoryVectorIndex {
         }
     }
 
-    /// Insert or update an entry.
+    /// 插入或更新一条记录。
     pub fn insert(&mut self, id: String, text: String, embedding: Vec<f32>) {
         self.entries.insert(id, IndexEntry { text, embedding });
     }
 
-    /// Remove an entry by ID.
+    /// 按 id 删除记录。
     pub fn remove(&mut self, id: &str) {
         self.entries.remove(id);
     }
 
-    /// Search for the top-k most similar entries.
-    /// Returns `(id, score)` pairs sorted by descending similarity.
+    /// 检索相似度最高的 top-k 条记录。
+    /// 返回 `(id, score)`，按相似度降序排列。
     pub fn search(&self, query_embedding: &[f32], k: usize) -> Vec<(String, f32)> {
         let mut scores: Vec<(String, f32)> = self
             .entries
@@ -54,24 +54,24 @@ impl InMemoryVectorIndex {
             .filter(|(_, sim)| sim.is_finite())
             .collect();
 
-        // Sort by descending similarity
+        // 按相似度降序排序
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scores.truncate(k);
         scores
     }
 
-    /// Total number of entries in the index.
+    /// 索引中的记录总数。
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Check if the index is empty.
+    /// 索引是否为空。
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
 
-/// Compute cosine similarity between two vectors.
+/// 计算两个向量的余弦相似度。
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -93,7 +93,7 @@ mod tests {
     use super::*;
 
     fn make_embedding(values: Vec<f32>) -> Vec<f32> {
-        // Normalize to unit vector for consistent cosine similarity
+        // 归一化为单位向量，使余弦相似度结果稳定
         let norm: f32 = values.iter().map(|x| x * x).sum::<f32>().sqrt();
         values.into_iter().map(|x| x / norm).collect()
     }
@@ -106,7 +106,7 @@ mod tests {
 
         let results = index.search(&make_embedding(vec![1.0, 0.1]), 2);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, "a"); // most similar
+        assert_eq!(results[0].0, "a"); // 最相似
         assert_eq!(results[1].0, "b");
     }
 

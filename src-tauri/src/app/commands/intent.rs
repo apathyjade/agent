@@ -1,13 +1,10 @@
-//! Intent management IPC commands.
+//! 意图管理的 IPC 命令。
 //!
-//! See the design note §7 for the contract. Every write command stamps
-//! `updated_at` itself: the repository never reads the clock.
+//! 契约见设计文档 §7。每个写命令自己写 `updated_at`：repository 层不读时钟。
 //!
-//! The frontend never sends a whole database record for a write. `IntentInput`
-//! carries only the editable fields and treats every field as optional:
-//! **absent on create means the schema default, absent on update means "keep
-//! the stored value"**. `id`, `domain_id`, `version` and the timestamps stay
-//! owned by the backend.
+//! 前端从不发送整条数据库记录。`IntentInput` 只携带可编辑字段，且每个字段
+//! 都是可选的：**创建时缺省表示用 schema 默认值，更新时缺省表示「保留已
+//! 存储的值」**。`id`、`domain_id`、`version` 与时间戳始终由后端持有。
 
 use tauri::State;
 
@@ -17,9 +14,9 @@ use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
 use crate::features::intent_management::json::{parse_intent_array, to_json_array, to_records};
 
-// ── DTOs ──
+// ── DTO（传输对象） ──
 
-/// Wire shape of a domain. Mirrors [`IntentDomainRecord`] field for field.
+/// 领域的传输形状，逐字段镜像 [`IntentDomainRecord`]。
 #[derive(serde::Serialize)]
 pub struct IntentDomainInfo {
     pub id: String,
@@ -47,9 +44,9 @@ impl From<IntentDomainRecord> for IntentDomainInfo {
     }
 }
 
-/// Wire shape of an intent. Mirrors [`IntentRecord`] field for field;
-/// `examples` and `allowed_tools` are real arrays so the frontend never has to
-/// parse a JSON string.
+/// 意图的传输形状，逐字段镜像 [`IntentRecord`]。
+///
+/// `examples` 与 `allowed_tools` 是真正的数组，前端不需要再解析 JSON 字符串。
 #[derive(serde::Serialize)]
 pub struct IntentInfo {
     pub id: String,
@@ -103,14 +100,14 @@ impl From<IntentRecord> for IntentInfo {
     }
 }
 
-/// Wire shape of a session's domain binding, rendered by the chat header
-/// selector. `domain_id` is kept even when the domain row is gone so the
-/// front-end can still describe the stored prior.
+/// 会话领域绑定的传输形状，由聊天头部的领域选择器渲染。
+///
+/// 领域行被删除后仍保留 `domain_id`，让前端还能描述已存储的先验。
 #[derive(Debug, serde::Serialize)]
 pub struct SessionIntentState {
     pub domain_id: Option<String>,
     pub domain_name: Option<String>,
-    /// `auto` (the id is only a routing prior) or `pinned` (user chose it).
+    /// `auto`（id 只是路由先验）或 `pinned`（用户显式选择）。
     pub mode: String,
 }
 
@@ -130,8 +127,8 @@ fn default_scope() -> String {
     "global".to_string()
 }
 
-/// Deserializes a present field into `Some`, including an explicit JSON `null`,
-/// so `Option<Option<T>>` can tell "absent" from "present but null".
+/// 把「存在」的字段反序列化成 `Some`，包括显式 JSON `null`，
+/// 这样 `Option<Option<T>>` 才能区分「缺省」与「存在但为 null」。
 fn deserialize_some<'de, T, D>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
 where
     T: serde::Deserialize<'de>,
@@ -140,11 +137,10 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// Editable intent fields accepted from the frontend.
+/// 前端提交的可编辑意图字段。
 ///
-/// Every field is optional: create fills absent fields from the schema
-/// defaults, update keeps the stored value for absent fields. `name` is the
-/// one field that is required on create and validated when present on update.
+/// 每个字段都是可选的：创建时缺省字段取 schema 默认值，更新时缺省字段
+/// 保留已存储值。`name` 是唯一在创建时必填、在更新时「存在才校验」的字段。
 #[derive(serde::Deserialize)]
 pub struct IntentInput {
     pub name: Option<String>,
@@ -161,18 +157,18 @@ pub struct IntentInput {
     pub auto_escalate: Option<bool>,
     pub system_prompt_appendix: Option<String>,
     pub model_id: Option<String>,
-    /// `Some(None)` clears the value; `None` keeps whatever is stored.
+    /// `Some(None)` 表示清空该值；`None` 表示保留已存储值。
     #[serde(default, deserialize_with = "deserialize_some")]
     pub max_iterations: Option<Option<usize>>,
     pub sort_order: Option<i64>,
 }
 
 impl IntentInput {
-    /// Validates the fields the router relies on. Returns a message naming the
-    /// offending field instead of letting a bad row reach SQLite.
+    /// 校验路由器依赖的字段。错误消息会点名出问题的字段，而不是让一条坏
+    /// 数据写进 SQLite。
     ///
-    /// `require_name` is true on create (a nameless intent is invalid) and
-    /// false on update (absent means "keep the stored name").
+    /// `require_name` 在创建时为 true（无名称的意图非法），在更新时为
+    /// false（缺省表示「保留已存储的名称」）。
     fn validate(&self, require_name: bool) -> Result<()> {
         match self.name.as_deref().map(str::trim) {
             Some("") => {
@@ -193,9 +189,9 @@ impl IntentInput {
             }
         }
 
-        // Deep-routed messages leave this command before `resolve_tools` runs,
-        // so an empty tool list would silently grant the whole registry. The
-        // data model must not promise a restriction the runtime cannot apply.
+        // 深度路由的消息在 `resolve_tools` 之前就离开了本命令，因此空的工具
+        // 列表会被静默解释成「整个注册表都可用」。数据模型不能承诺一个运行
+        // 时根本施加不了的限制。
         if self.path.as_deref().map(str::trim) == Some("deep")
             && matches!(self.allowed_tools.as_deref(), Some([]))
         {
@@ -215,8 +211,8 @@ impl IntentInput {
         Ok(())
     }
 
-    /// Copies the present fields onto an existing record; absent fields keep
-    /// the stored value. Identity, `version` and `created_at` are untouched.
+    /// 把存在的字段拷贝到已有记录上；缺省字段保留已存储值。
+    /// 身份、`version` 与 `created_at` 不动。
     fn apply_to(self, record: &mut IntentRecord) {
         if let Some(name) = self.name {
             record.name = name.trim().to_string();
@@ -268,8 +264,7 @@ impl IntentInput {
         }
     }
 
-    /// Builds a fresh record: absent fields fall back to the schema defaults,
-    /// present fields win.
+    /// 构造一条新记录：缺省字段回退到 schema 默认值，存在的字段优先。
     fn into_new_record(self, id: String, domain_id: String, timestamp: String) -> IntentRecord {
         let mut record = IntentRecord {
             id,
@@ -299,11 +294,10 @@ impl IntentInput {
     }
 }
 
-// ── Helpers ──
+// ── 辅助函数 ──
 
-/// Returns `wanted` when it is not already taken, otherwise appends the first
-/// free ` (n)` suffix, n starting at 2. After 20 attempts a fresh uuid is
-/// appended, so the returned value is always a usable, unique domain name.
+/// `wanted` 未被占用时原样返回，否则追加第一个空闲的 ` (n)` 后缀（n 从 2
+/// 开始）。尝试 20 次后改用 uuid 后缀，保证返回值永远是可用的唯一领域名。
 pub(crate) fn unique_domain_name(existing: &[String], wanted: &str) -> String {
     if !existing.iter().any(|name| name == wanted) {
         return wanted.to_string();
@@ -319,8 +313,8 @@ pub(crate) fn unique_domain_name(existing: &[String], wanted: &str) -> String {
     format!("{wanted} ({})", uuid::Uuid::new_v4())
 }
 
-/// Rejects a name already used by another record. `items` yields `(id, name)`
-/// pairs; `except_id` skips the record being updated.
+/// 拒绝被其他记录占用的名称。`items` 产出 `(id, name)` 对；
+/// `except_id` 用于跳过正在更新的那条记录。
 fn ensure_name_available<'a, I>(
     items: I,
     name: &str,
@@ -339,14 +333,13 @@ where
     Ok(())
 }
 
-/// Resolves a non-empty `fallback_intent` to the target intent's id, by id or
-/// by name. Empty stays empty. `intents` is the stored list and `merged` is the
-/// record about to be written, so a rename can target its own new name. A value
-/// that matches nothing is rejected with `InvalidInput` naming it.
+/// 把非空的 `fallback_intent` 解析成目标意图的 id（支持按 id 或按名称）。
+/// 空值保持为空。`intents` 是已存储列表，`merged` 是即将写入的记录，因此
+/// 改名后可以指向自己的新名字。匹配不到任何意图时返回点名该值的
+/// `InvalidInput`。
 ///
-/// Callers must write the returned id back into the record: the classifier
-/// compares the stored value against `intent.id` only, so a name stored verbatim
-/// would silently degrade to `clarify`.
+/// 调用方必须把返回的 id 写回记录：分类器只用存储值去比对 `intent.id`，
+/// 原样存一个名称会静默退化成 `clarify`。
 fn resolve_fallback_target(intents: &[IntentRecord], merged: &IntentRecord) -> Result<String> {
     let target = merged.fallback_intent.trim();
     if target.is_empty() {
@@ -369,8 +362,7 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Rebuild the in-process intent index after a write. The old snapshot keeps
-/// serving until `warm_up` atomically replaces it.
+/// 写入后重建进程内意图索引。旧快照会继续服务，直到 `warm_up` 原子替换它。
 fn refresh_intent_index(state: &AppState) {
     let router = state.intent_router.clone();
     tauri::async_runtime::spawn(async move {
@@ -391,13 +383,17 @@ fn not_found_session(id: &str) -> AppError {
     AppError::NotFound(format!("会话不存在: {id}"))
 }
 
-// ── Session domain binding ──
+// ── 会话领域绑定 ──
 
-const MODE_AUTO: &str = "auto";
-const MODE_PINNED: &str = "pinned";
+/// 会话领域绑定的两种模式值。
+///
+/// 这两个字符串会落库，也会经 IPC 回传前端，**取值不可更改**。`session.rs`
+/// 里的路由逻辑同样使用它们，避免各处重复字面量。
+pub(crate) const MODE_AUTO: &str = "auto";
+pub(crate) const MODE_PINNED: &str = "pinned";
 
-/// Requested binding for a session. `None` from the front-end means "auto",
-/// not "no domain": the stored id survives as the routing prior.
+/// 前端请求的绑定模式。`None` 表示「自动」，而不是「不要领域」：
+/// 已存储的 id 会继续作为路由先验保留。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionIntentMode {
     Auto,
@@ -420,34 +416,33 @@ impl SessionIntentMode {
     }
 }
 
-/// Everything the decision needs about the stored state, kept as plain values
-/// so it can be unit-tested without a database.
+/// 决策所需的已存储状态，全部用普通值表示，便于脱离数据库做单元测试。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SessionIntentFacts<'a> {
     pub session_id: &'a str,
     pub session_exists: bool,
-    /// Currently stored prior; reused as-is when switching to `auto`.
+    /// 当前已存储的先验；切回 `auto` 时原样复用。
     pub stored_domain_id: Option<&'a str>,
-    /// Whether the *requested* domain row exists.
+    /// **请求的**领域行是否存在。
     pub domain_exists: bool,
-    /// Enabled intents of the *requested* domain.
+    /// **请求的**领域中已启用的意图数量。
     pub enabled_intent_count: i64,
 }
 
-/// What a successful change persists.
+/// 一次成功变更要持久化的内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionIntentDecision<'a> {
     pub mode: SessionIntentMode,
-    /// `None` would erase the prior, so `auto` returns the stored id instead.
+    /// `None` 会抹掉先验，所以 `auto` 返回已存储的 id 而不是 `None`。
     pub domain_id: Option<&'a str>,
 }
 
-/// Decides what a session domain change should write.
+/// 决定会话领域变更应该写什么。
 ///
-/// - missing session is `NotFound`;
-/// - `pinned` requires an existing domain with at least one enabled intent,
-///   the same invariant `set_active_intent_domain` enforces;
-/// - `auto` always succeeds and keeps the stored domain as prior.
+/// - 会话不存在 → `NotFound`；
+/// - `pinned` 要求领域存在且至少有一个启用意图，与
+///   `set_active_intent_domain` 的不变量一致；
+/// - `auto` 永远成功，并保留已存储领域作为先验。
 pub(crate) fn decide_session_intent_change<'a>(
     facts: SessionIntentFacts<'a>,
     mode: SessionIntentMode,
@@ -482,9 +477,9 @@ pub(crate) fn decide_session_intent_change<'a>(
     }
 }
 
-/// Projects the stored columns into the wire state. A deleted domain keeps its
-/// id (the selector can still show it) but resolves no name; that is not an
-/// error.
+/// 把已存储的列投影成传输状态。
+///
+/// 领域被删除后仍保留 id（选择器还能显示它），但解析不到名称；这不算错误。
 fn session_intent_state_from(
     domain_id: Option<&str>,
     domain_name: Option<String>,
@@ -504,8 +499,9 @@ fn domain_name_for(db: &Database, domain_id: Option<&str>) -> Result<Option<Stri
     }
 }
 
-// ── Domains ──
+// ── 领域 ──
 
+/// 列出全部意图领域，按 `sort_order` 排序，含内置领域。
 #[tauri::command]
 pub async fn list_intent_domains(state: State<'_, AppState>) -> Result<Vec<IntentDomainInfo>> {
     let db = state.db.lock().await;
@@ -516,6 +512,7 @@ pub async fn list_intent_domains(state: State<'_, AppState>) -> Result<Vec<Inten
         .collect())
 }
 
+/// 取当前激活的领域；没有激活项时返回 `Ok(None)`。
 #[tauri::command]
 pub async fn get_active_intent_domain(
     state: State<'_, AppState>,
@@ -524,6 +521,9 @@ pub async fn get_active_intent_domain(
     Ok(db.get_active_intent_domain()?.map(IntentDomainInfo::from))
 }
 
+/// 新建用户领域。新领域**不会**自动激活，`is_active` 恒为 false。
+///
+/// `name` 会 trim；空名或重名都会被拒绝。
 #[tauri::command]
 pub async fn create_intent_domain(
     state: State<'_, AppState>,
@@ -560,6 +560,7 @@ pub async fn create_intent_domain(
     Ok(domain.into())
 }
 
+/// 修改领域名称与描述。重名检查会跳过领域自身。
 #[tauri::command]
 pub async fn update_intent_domain(
     state: State<'_, AppState>,
@@ -591,6 +592,7 @@ pub async fn update_intent_domain(
     Ok(domain.into())
 }
 
+/// 删除领域及其意图；成功后重建内存索引。
 #[tauri::command]
 pub async fn delete_intent_domain(state: State<'_, AppState>, id: String) -> Result<()> {
     let result = {
@@ -603,12 +605,14 @@ pub async fn delete_intent_domain(state: State<'_, AppState>, id: String) -> Res
     result
 }
 
+/// 设置全局激活领域（影响新建会话的默认领域继承）。
 #[tauri::command]
 pub async fn set_active_intent_domain(state: State<'_, AppState>, id: String) -> Result<()> {
     let db = state.db.lock().await;
     db.set_active_intent_domain(&id)
 }
 
+/// 读取会话当前的领域绑定状态，供聊天头部选择器渲染。
 #[tauri::command]
 pub async fn get_session_intent_state(
     state: State<'_, AppState>,
@@ -626,6 +630,13 @@ pub async fn get_session_intent_state(
     ))
 }
 
+/// 设置会话的领域绑定。
+///
+/// `domain_id` 的语义：
+/// - `Some(id)` → `pinned`，要求领域存在且至少有一个启用意图；
+/// - `None` → 切回 `auto`，**不清空**已存储的领域，它继续作为路由先验。
+///
+/// 返回写入后的绑定状态。
 #[tauri::command]
 pub async fn set_session_intent_domain(
     state: State<'_, AppState>,
@@ -669,8 +680,9 @@ pub async fn set_session_intent_domain(
     ))
 }
 
-// ── Intents ──
+// ── 意图 ──
 
+/// 最近的意图路由轨迹（内存环形缓冲），用于排查「为什么走了这条路径」。
 #[tauri::command]
 pub async fn get_recent_route_traces(
     state: State<'_, AppState>,
@@ -678,6 +690,7 @@ pub async fn get_recent_route_traces(
     Ok(state.intent_router.recent_traces().await)
 }
 
+/// 列出某个领域下的全部意图（含已禁用的），按 `sort_order` 排序。
 #[tauri::command]
 pub async fn list_intents(
     state: State<'_, AppState>,
@@ -691,6 +704,7 @@ pub async fn list_intents(
         .collect())
 }
 
+/// 按 id 读取单个意图；不存在时返回 `NotFound`。
 #[tauri::command]
 pub async fn get_intent(state: State<'_, AppState>, id: String) -> Result<IntentInfo> {
     let db = state.db.lock().await;
@@ -698,6 +712,10 @@ pub async fn get_intent(state: State<'_, AppState>, id: String) -> Result<Intent
     Ok(intent.into())
 }
 
+/// 在指定领域下新建意图。
+///
+/// `intent` 是稀疏输入：缺省字段取 schema 默认值。名称必填且领域内唯一；
+/// `fallback_intent` 可以写 id 或名称，落库前统一解析成目标 id。
 #[tauri::command]
 pub async fn create_intent(
     state: State<'_, AppState>,
@@ -736,6 +754,10 @@ pub async fn create_intent(
     Ok(record.into())
 }
 
+/// 更新意图。
+///
+/// `intent` 是稀疏输入：缺省字段保留已存储值，`Some(None)` 才表示清空
+/// `max_iterations`。名称存在时做唯一性校验（跳过自身）。
 #[tauri::command]
 pub async fn update_intent(
     state: State<'_, AppState>,
@@ -770,6 +792,7 @@ pub async fn update_intent(
     Ok(updated.into())
 }
 
+/// 删除意图；成功后重建内存索引。
 #[tauri::command]
 pub async fn delete_intent(state: State<'_, AppState>, id: String) -> Result<()> {
     let result = {
@@ -782,6 +805,7 @@ pub async fn delete_intent(state: State<'_, AppState>, id: String) -> Result<()>
     result
 }
 
+/// 启用或禁用单个意图；禁用后它不参与路由召回。
 #[tauri::command]
 pub async fn set_intent_enabled(
     state: State<'_, AppState>,
@@ -798,8 +822,12 @@ pub async fn set_intent_enabled(
     result
 }
 
-// ── Import / export ──
+// ── 导入 / 导出 ──
 
+/// 从 JSON 导入一个意图领域。
+///
+/// `json` 是意图数组；`name` 是期望的领域名，重名时自动追加 ` (n)` 后缀。
+/// 领域与意图在同一个事务里写入，导入内容不含启用意图时整批拒绝。
 #[tauri::command]
 pub async fn import_intent_domain(
     state: State<'_, AppState>,
@@ -816,8 +844,7 @@ pub async fn import_intent_domain(
     let domain_id = uuid::Uuid::new_v4().to_string();
     let intents = to_records(&domain_id, &inputs, &timestamp)?;
 
-    // Reject before touching the database: an imported domain that cannot be
-    // activated is worse than no import at all.
+    // 在碰数据库之前就拒绝：一个导入进来却无法激活的领域，比没有导入更糟。
     if !intents.iter().any(|intent| intent.enabled) {
         return Err(AppError::InvalidInput(
             "导入内容没有启用的意图，无法导入".to_string(),
@@ -847,6 +874,7 @@ pub async fn import_intent_domain(
     Ok(domain.into())
 }
 
+/// 把一个领域及其意图导出为 JSON 数组字符串（不含领域元数据）。
 #[tauri::command]
 pub async fn export_intent_domain(
     state: State<'_, AppState>,
@@ -953,8 +981,8 @@ mod tests {
         };
         assert!(fast_without_tools.validate(true).is_ok());
 
-        // An absent tool list says nothing about the runtime contract, so the
-        // schema default (also empty) must not be blocked at validation time.
+        // 缺省的工具列表并未对运行时契约做出任何承诺，因此 schema 默认值
+        // （同样是空列表）不应在校验阶段被拦截。
         let deep_without_tools_field = IntentInput {
             name: Some("深度意图".to_string()),
             path: Some("deep".to_string()),
@@ -1166,7 +1194,7 @@ mod tests {
         .is_err());
     }
 
-    // ── Session domain binding ──
+    // ── 会话领域绑定 ──
 
     fn facts<'a>(session_exists: bool, stored: Option<&'a str>) -> SessionIntentFacts<'a> {
         SessionIntentFacts {

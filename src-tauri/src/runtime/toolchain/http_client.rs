@@ -1,7 +1,7 @@
-// ── HTTP Client for Runtime Downloads ──
-//
-// Provides a global singleton HTTP client that respects proxy settings.
-// Initialized once at app startup with the configured proxy URL.
+//! 运行时下载用的 HTTP 客户端。
+//!
+//! 提供一个全局单例 HTTP 客户端，会遵循代理设置。应用启动时用配置的代理
+//! 地址初始化一次。
 
 use std::sync::OnceLock;
 
@@ -11,8 +11,8 @@ use crate::core::error::Result;
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-/// Initialize the global HTTP client with optional proxy settings.
-/// Should be called once at application startup.
+/// 用可选的代理设置初始化全局 HTTP 客户端。
+/// 应在应用启动时调用一次；重复调用不会覆盖已初始化的客户端。
 pub fn init_http_client(proxy_url: Option<&str>) {
     let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300));
     if let Some(proxy) = proxy_url {
@@ -30,7 +30,7 @@ pub fn init_http_client(proxy_url: Option<&str>) {
     }
 }
 
-/// Get the global HTTP client, initializing with defaults if not set.
+/// 获取全局 HTTP 客户端；未初始化时用默认配置懒加载。
 pub fn get_http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         match reqwest::Client::builder()
@@ -46,7 +46,10 @@ pub fn get_http_client() -> &'static reqwest::Client {
     })
 }
 
-/// Download bytes from a URL with progress reporting.
+/// 从 URL 下载字节，并上报下载进度。
+///
+/// `on_progress` 接收 `(已下载字节, 总字节)`；服务器未提供 `Content-Length`
+/// 时不会触发回调。这是网络操作，会阻塞直到下载完成。
 pub async fn download_bytes<F: Fn(u64, u64) + Send + 'static>(
     url: &str,
     on_progress: F,
@@ -81,7 +84,7 @@ pub async fn download_bytes<F: Fn(u64, u64) + Send + 'static>(
     Ok(bytes)
 }
 
-/// Download bytes from a URL (no progress).
+/// 从 URL 下载字节（不报告进度）。
 pub async fn download_bytes_simple(url: &str) -> Result<Vec<u8>> {
     let client = get_http_client();
     let response = client

@@ -1,17 +1,19 @@
-// ── Deno Version Source ──
-//
-// Fetches available Deno versions from the GitHub Releases API.
-// Filters for stable releases and matches the current platform.
+//! Deno 版本源。
+//!
+//! 通过 GitHub Releases API 获取可用的 Deno 版本，过滤掉预发布版本，
+//! 并按当前平台拼出下载地址。
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::error::Result;
 use crate::runtime::toolchain::http_client::get_http_client;
+use crate::runtime::toolchain::platform;
 use crate::runtime::toolchain::registry::{RuntimeVersion, VersionSource};
+use crate::runtime::toolchain::version::sort_versions_desc;
 use crate::runtime::toolchain::RuntimeType;
 
-/// A GitHub release entry.
+/// GitHub release 条目。
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -24,7 +26,7 @@ struct GitHubRelease {
     assets: Option<Vec<GitHubAsset>>,
 }
 
-/// An asset within a GitHub release.
+/// GitHub release 中的单个资产。
 #[derive(Debug, Deserialize)]
 struct GitHubAsset {
     #[allow(dead_code)]
@@ -35,48 +37,9 @@ struct GitHubAsset {
     size: Option<u64>,
 }
 
+/// Deno 版本源：从 GitHub Releases 拉取稳定版本。
 pub struct DenoVersionSource;
 
-impl DenoVersionSource {
-    /// Determine the platform-specific asset suffix for Deno downloads.
-    fn platform_asset_suffix() -> &'static str {
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        {
-            "x86_64-pc-windows-msvc.zip"
-        }
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            "x86_64-unknown-linux-gnu.tar.gz"
-        }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            "aarch64-apple-darwin.tar.gz"
-        }
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        {
-            "x86_64-apple-darwin.tar.gz"
-        }
-        #[cfg(not(any(
-            all(target_os = "windows", target_arch = "x86_64"),
-            all(target_os = "linux", target_arch = "x86_64"),
-            all(
-                target_os = "macos",
-                any(target_arch = "aarch64", target_arch = "x86_64")
-            ),
-        )))]
-        {
-            "x86_64-pc-windows-msvc.zip"
-        } // fallback
-    }
-
-    fn archive_ext() -> &'static str {
-        if Self::platform_asset_suffix().ends_with(".zip") {
-            "zip"
-        } else {
-            "tar.gz"
-        }
-    }
-}
 
 #[async_trait]
 impl VersionSource for DenoVersionSource {
@@ -85,10 +48,10 @@ impl VersionSource for DenoVersionSource {
     }
 
     async fn fetch_versions(&self) -> Result<Vec<RuntimeVersion>> {
-        let suffix = Self::platform_asset_suffix();
-        let ext = Self::archive_ext();
+        let suffix = platform::deno_asset_suffix();
+        let ext = platform::archive_ext(&RuntimeType::Deno);
 
-        // GitHub API requires a User-Agent header
+        // GitHub API 要求携带 User-Agent 头
         let client = get_http_client();
         let response = client
             .get("https://api.github.com/repos/denoland/deno/releases?per_page=20")
@@ -112,7 +75,7 @@ impl VersionSource for DenoVersionSource {
                     .unwrap_or(&r.tag_name)
                     .to_string();
 
-                // URL is constructed from the standard Deno release pattern
+                // 下载地址按 Deno 固定的发布命名规则拼接
                 let url = format!(
                     "https://github.com/denoland/deno/releases/download/v{}/deno-{}",
                     tag, suffix
@@ -131,27 +94,10 @@ impl VersionSource for DenoVersionSource {
             })
             .collect();
 
-        // Sort: newest version first (semver comparison)
-        versions.sort_by(|a, b| {
-            let a_parts: Vec<u64> = a
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let b_parts: Vec<u64> = b
-                .version
-                .split('.')
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            for (av, bv) in a_parts.iter().zip(b_parts.iter()) {
-                if av != bv {
-                    return bv.cmp(av);
-                }
-            }
-            b_parts.len().cmp(&a_parts.len())
-        });
+        // 排序：新版本在前（逐段数值比较）
+        sort_versions_desc(&mut versions);
 
-        // If we got no versions from the API, use fallback
+        // API 没有返回任何版本时使用内置回退列表
         if versions.is_empty() {
             return Ok(Self::fallback_versions(ext, suffix));
         }

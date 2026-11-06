@@ -131,9 +131,9 @@ prepare_turn
 - 候选意图（embedding top-k，默认 k=6；embedding 不可用时按廉价词法召回取 top-k；仍然取不满则取全部启用意图，上限 40）；
 - 明确指令：若都不匹配，返回 `intent: "none"`。
 
-输出：`{ "intent": "<id|none>", "confidence": 0.0-1.0, "reason": "..." }`，沿用现有的容错 JSON 解析（允许 fence / 前后 prose），但**只接受候选集内的 id**；`none`、未知 id、非有限分数都视为本次 rerank 失败。
+输出：`{ "intent": "<id|none>", "confidence": 0.0-1.0, "reason": "..." }`，沿用现有的容错 JSON 解析（允许 fence / 前后 prose），但**只接受候选集内的 id**。三种结果必须分开：`none` = 明确的「无匹配」（`NoMatch`，可信结论，不再用规则覆盖）；未知 id、非有限分数、调用失败、超时、回复不可解析 = `Unavailable`（允许后续信号兜底）。
 
-超时：`llm_timeout_ms`（默认 2500）。超时或失败不再重试，直接使用当前已有候选。
+超时：`llm_timeout_ms`（默认 8000）。必须覆盖分类模型的真实往返（实测峰值 3.7s）；2.5s 会让每次工程消息都超时，信号丢失后退化到规则打分。超时或失败不再重试，直接使用当前已有候选。
 
 ### 4.4 RuleScorer（最后信号）
 
@@ -146,14 +146,16 @@ prepare_turn
 
 ### 4.5 信号预算
 
-- `routing_budget_ms`（默认 6000）是**整个路由的硬性墙钟预算**，包含 embedding 查询、LLM rerank、探针和探针后的二次 rerank。
+- `routing_budget_ms`（默认 12000）是**整个路由的硬性墙钟预算**，包含 embedding 查询、LLM rerank、探针和探针后的二次 rerank。
 - 超时用 `tokio::time::timeout` 停止等待（future 被 drop，等于取消），不重试；用当时已有的最佳候选出决策。
 - 进入探针前检查剩余预算：`remaining < probe_timeout_ms + second_rerank_min_budget_ms` 时跳过探针，直接以 `uncertain = true` 返回。默认 `probe_timeout_ms = 1500`、`second_rerank_min_budget_ms = 1200`。
 - 索引后台预热不占用该预算（见 §4.2）。
-- 单次 LLM rerank 的 timeout 取 `min(llm_timeout_ms, remaining)`，默认 `llm_timeout_ms = 2500`。
+- 单次 LLM rerank 的 timeout 取 `min(llm_timeout_ms, remaining)`，默认 `llm_timeout_ms = 8000`。
 - 所有信号失败都返回 `None`/空候选，不允许 panic 或向上抛错。
 
-默认值下的最坏路径：embedding ~0.3s + 第一次 LLM 2.5s + 探针 1.5s + 第二次 LLM 1.2s ≈ 5.5s，落在 6s 预算内；任一步更慢时由剩余预算截断，保证不会无限等待。
+默认值下的最坏路径：embedding ~0.3s + 第一次 LLM 8s + 探针 1.5s + 第二次 LLM 1.2s ≈ 11s，落在 12s 预算内；成功路径按模型真实耗时返回（实测 1.3–3.7s），不会固定等待 8s。
+
+旧配置里的 2500 / 6000 是上一版默认值，`AppConfig::load()` 会一次性迁移到 8000 / 12000；用户显式设置的其他值不变。
 
 ---
 
@@ -298,11 +300,11 @@ pub struct IntentAppConfig {
     pub embedding_margin: f32,               // 默认 0.05（需用 eval 校准）
     pub prior_boost: f32,                    // 默认 0.04
     pub llm_rerank_enabled: bool,            // 默认 true
-    pub llm_timeout_ms: u64,                 // 默认 2500
+    pub llm_timeout_ms: u64,                 // 默认 8000
     pub probe_enabled: bool,                 // 默认 true
     pub probe_timeout_ms: u64,               // 默认 1500
     pub second_rerank_min_budget_ms: u64,    // 默认 1200
-    pub routing_budget_ms: u64,              // 默认 6000
+    pub routing_budget_ms: u64,              // 默认 12000
 }
 ```
 
@@ -374,8 +376,9 @@ pub struct IntentAppConfig {
 2. 无启用意图 / 无领域 → 合成闲聊，不发起任何网络请求。
 3. 索引尚未预热完成 → embedding 信号跳过，本条消息走 LLM（不阻塞等待索引）。
 4. 无 embedding provider（无 key / 初始化失败）→ 跳过 embedding；直接 LLM rerank（候选 = 全部启用意图，≤40 条）。
-5. LLM 超时/失败 → 不重试；有 embedding 用 embedding top1，否则用 RuleScorer；低于阈值 → `uncertain = true` 继续。RuleScorer 不覆盖 embedding。
-6. 探针超时/失败 → 当作无证据，继续。
+5. LLM 明确回答 `none`（`NoMatch`）→ 有 embedding 用 embedding top1，否则直接合成闲聊；**不得调用 RuleScorer**。
+6. LLM 超时/失败/回复不可解析（`Unavailable`）→ 不重试；有 embedding 用 embedding top1，否则用 RuleScorer；低于阈值 → `uncertain = true` 继续。RuleScorer 不覆盖 embedding。
+7. 探针超时/失败 → 当作无证据，继续。
 7. 全流程任何一步都不得让消息发不出去；路由层不向调用方返回 `Err`，只返回决策。
 
 ---
@@ -391,7 +394,9 @@ pub struct IntentAppConfig {
 - LLM 低于阈值 + 探针二次 rerank 过阈值 → `source = Probe`，`uncertain = false`。
 - LLM 低于阈值 + 探针二次 rerank 仍低/失败 → 选中第一次 LLM 的 id，`source = Llm`，`uncertain = true`。
 - `llm_rerank_enabled = false` + embedding 不 decisive → 选中 embedding top1，`uncertain = true`。
-- LLM 超时/返回 `none` + embedding 可用 → 选中 embedding top1，**不调用 RuleScorer**。
+- LLM 返回 `none`（NoMatch）+ embedding 可用 → 选中 embedding top1，**不调用 RuleScorer**。
+- LLM 返回 `none`（NoMatch）+ embedding 不可用 → 合成闲聊（`source = Fallback`，`uncertain = false`），保留 `llm_calls` 证据。
+- LLM 超时/失败（Unavailable）+ 无 embedding → RuleScorer 兜底；规则也无命中 → 合成闲聊（`uncertain = true`）。
 - `prior_boost` 只改变候选排序，不参与 floor / margin 判定，不把低于 floor 的候选抬成 decisive。
 - 剩余预算不足以覆盖探针 + 二次 rerank → 跳过探针，`uncertain = true` 返回。
 - `pinned`：候选只来自该领域；领域无启用意图 → 合成闲聊。
@@ -474,7 +479,7 @@ pub struct IntentAppConfig {
 9. **「最可能」按信号优先级取**：探针后 rerank > LLM rerank > embedding top1 > RuleScorer；不做跨来源分数加权。
 10. **`prior_boost` 只影响候选排序**，不参与 `floor` / `margin` / 阈值判定。
 11. **RuleScorer 不覆盖 embedding**，只在 embedding 不可用时运行。
-12. **路由硬预算 6s**；剩余预算不足以覆盖探针 + 二次 rerank 时跳过探针。
+12. **路由硬预算 12s**；剩余预算不足以覆盖探针 + 二次 rerank 时跳过探针。
 13. **索引后台预热**，首条消息不等索引；未 ready 时走 LLM。
 
 ---

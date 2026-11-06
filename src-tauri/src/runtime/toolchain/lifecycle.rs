@@ -1,30 +1,30 @@
-// ── Version Lifecycle: Determine support stage for each version ──
-//
-// Each runtime has a known support lifecycle. This module maps versions
-// to their lifecycle stage (Latest, LTS, Active, Maintenance, EOL).
+//! 版本生命周期：判断每个版本所处的支持阶段。
+//!
+//! 每个运行时都有已知的支持生命周期。本模块把版本映射到生命周期阶段
+//! （Latest、LTS、Active、Maintenance、EOL）。
 
-// Public API functions are used by the frontend via IPC.
+// 这些公开 API 由前端通过 IPC 使用。
 #![allow(dead_code)]
 
 use crate::runtime::toolchain::RuntimeType;
 
-/// Lifecycle stage of a runtime version.
+/// 运行时版本的生命周期阶段。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum VersionLifecycle {
-    /// Latest stable release.
+    /// 最新稳定版本。
     Latest,
-    /// Long-term support version.
+    /// 长期支持版本。
     Lts { codename: String },
-    /// Actively supported (pre-LTS). Used for Node.js odd-numbered majors.
+    /// 活跃支持期（尚未进入 LTS）。用于 Node.js 的奇数大版本。
     Active,
-    /// In maintenance mode, approaching EOL.
+    /// 维护期，临近 EOL。
     Maintenance { eol_date: Option<String> },
-    /// End-of-life, no longer supported.
+    /// 已停止支持。
     Eol { eol_date: String },
 }
 
 impl VersionLifecycle {
-    /// Human-readable label in Chinese.
+    /// 面向用户的中文标签。
     pub fn label(&self) -> &'static str {
         match self {
             VersionLifecycle::Latest => "最新",
@@ -35,7 +35,7 @@ impl VersionLifecycle {
         }
     }
 
-    /// Emoji representation for the lifecycle stage.
+    /// 生命周期阶段对应的 emoji。
     pub fn emoji(&self) -> &'static str {
         match self {
             VersionLifecycle::Latest => "🆕",
@@ -46,7 +46,7 @@ impl VersionLifecycle {
         }
     }
 
-    /// CSS color class for UI display.
+    /// UI 展示用的 CSS 颜色类名。
     pub fn color_class(&self) -> &'static str {
         match self {
             VersionLifecycle::Latest => "text-green-600",
@@ -58,16 +58,19 @@ impl VersionLifecycle {
     }
 }
 
-// ── Node.js Lifecycle ──
+// ── Node.js 生命周期 ──
 //
-// Node.js follows a predictable LTS schedule:
-// - Even-numbered majors (18, 20, 22) get LTS
-// - Odd-numbered majors (19, 21, 23) are Current/Active only
-// - LTS releases have codenames
+// Node.js 的 LTS 计划是可预测的：
+// - 偶数大版本（18、20、22）会进入 LTS
+// - 奇数大版本（19、21、23）只停留在 Current/Active
+// - LTS 版本有代号
 
-/// Known Node.js LTS codenames mapped to their major versions.
+/// Node.js 已知 LTS 代号及其大版本。
+///
+/// 按“最新 → 最旧”排列，因此第一项被当作最新 LTS 大版本。元组含义为
+/// `(大版本, 代号, EOL 日期)`。
 const NODE_LTS_CODENAMES: &[(u64, &str, &str)] = &[
-    // (major, codename, eol_date)
+    // (大版本, 代号, EOL 日期)
     (22, "Jod", "2027-04-30"),
     (20, "Iron", "2026-04-30"),
     (18, "Hydrogen", "2025-04-30"),
@@ -77,29 +80,32 @@ const NODE_LTS_CODENAMES: &[(u64, &str, &str)] = &[
     (10, "Dubnium", "2021-04-30"),
 ];
 
+/// Node.js 进入维护期的 LTS 大版本及其 EOL 日期。
+///
+/// 元组含义为 `(大版本, 维护期 EOL 日期)`；用于区分“维护期”与“已停止支持”。
 const NODE_EOL_MAINTENANCE: &[(u64, &str)] = &[
-    // (major, maintenance_eol_date)
+    // (大版本, 维护期 EOL 日期)
     (18, "2025-04-30"),
     (20, "2026-04-30"),
     (22, "2027-04-30"),
 ];
 
-/// Determine Node.js lifecycle stage based on version and LTS codename.
+/// 根据版本号与 LTS 代号判断 Node.js 生命周期阶段。
 pub fn node_lifecycle(version: &str, lts_codename: Option<&str>) -> VersionLifecycle {
     let parts: Vec<u64> = version.split('.').filter_map(|s| s.parse().ok()).collect();
     let major = parts.first().copied().unwrap_or(0);
     let latest_lts_major = NODE_LTS_CODENAMES.first().map(|(m, _, _)| *m).unwrap_or(0);
 
-    // LTS version with codename
+    // 带代号的 LTS 版本
     if let Some(codename) = lts_codename {
-        // Check if it's the latest LTS
+        // 判断是否为最新 LTS
         if major == latest_lts_major {
             return VersionLifecycle::Lts {
                 codename: codename.to_string(),
             };
         }
 
-        // Check maintenance/EOL status
+        // 检查维护期 / EOL 状态
         for &(eol_major, eol_date) in NODE_EOL_MAINTENANCE {
             if major == eol_major {
                 if major < latest_lts_major - 2 {
@@ -113,8 +119,8 @@ pub fn node_lifecycle(version: &str, lts_codename: Option<&str>) -> VersionLifec
             }
         }
 
-        // Old LTS version not in maintenance table (e.g. Node 16 Gallium)
-        // — treat as EOL if it's more than 2 versions behind latest
+        // 不在维护期表中的旧 LTS（例如 Node 16 Gallium）
+        // —— 落后最新版超过 2 个大版本时视为 EOL
         if major < latest_lts_major - 2 {
             return VersionLifecycle::Eol {
                 eol_date: "已结束".to_string(),
@@ -126,7 +132,7 @@ pub fn node_lifecycle(version: &str, lts_codename: Option<&str>) -> VersionLifec
         };
     }
 
-    // No LTS codename: even major = Active, odd major = EOL
+    // 没有 LTS 代号：偶数大版本为 Active，奇数大版本为 EOL
     if major % 2 == 0 {
         VersionLifecycle::Active
     } else {
@@ -136,15 +142,17 @@ pub fn node_lifecycle(version: &str, lts_codename: Option<&str>) -> VersionLifec
     }
 }
 
-// ── Python Lifecycle ──
+// ── Python 生命周期 ──
 //
-// Python release cycle:
-// - Each major.minor gets ~18 months of bugfix releases, then ~18 months of security fixes
-// - Total support ~3 years per minor release
+// Python 发布节奏：
+// - 每个 major.minor 先经历约 18 个月的 bugfix 发布，再进入约 18 个月的安全修复
+// - 每个 minor 版本总支持期约 3 年
 
-/// Known Python EOL dates by minor version.
+/// Python 各 minor 版本的 EOL 日期。
+///
+/// 元组含义为 `(minor, EOL 日期)`，仅比较版本号的第二段。
 const PYTHON_EOL_DATES: &[(u64, &str)] = &[
-    // (minor, eol_date)
+    // (minor, EOL 日期)
     (7, "2023-06-27"),
     (8, "2024-10-07"),
     (9, "2025-10-05"),
@@ -154,26 +162,29 @@ const PYTHON_EOL_DATES: &[(u64, &str)] = &[
     (13, "2029-10-01"),
 ];
 
+/// Python 各 minor 版本进入安全维护期的日期。
+///
+/// 元组含义为 `(minor, 维护期开始日期)`。
 const PYTHON_MAINTENANCE_START: &[(u64, &str)] = &[
-    // (minor, maintenance_start_date)
+    // (minor, 维护期开始日期)
     (10, "2025-04-07"),
     (11, "2025-04-24"),
     (12, "2026-04-02"),
     (13, "2027-04-01"),
 ];
 
-/// Determine Python lifecycle stage based on version.
+/// 根据版本号判断 Python 生命周期阶段。
 pub fn python_lifecycle(version: &str) -> VersionLifecycle {
     let parts: Vec<u64> = version.split('.').filter_map(|s| s.parse().ok()).collect();
     let minor = parts.get(1).copied().unwrap_or(0);
 
-    // Latest Python version is 3.13
+    // 当前最新 Python 版本是 3.13
     let latest_minor = 13;
     if minor == latest_minor {
         return VersionLifecycle::Latest;
     }
 
-    // Check EOL status
+    // 检查 EOL 状态
     for &(eol_minor, eol_date) in PYTHON_EOL_DATES {
         if minor == eol_minor {
             return VersionLifecycle::Eol {
@@ -182,7 +193,7 @@ pub fn python_lifecycle(version: &str) -> VersionLifecycle {
         }
     }
 
-    // Check maintenance status
+    // 检查维护期状态
     for &(maint_minor, _) in PYTHON_MAINTENANCE_START {
         if minor == maint_minor {
             return VersionLifecycle::Maintenance {
@@ -194,31 +205,37 @@ pub fn python_lifecycle(version: &str) -> VersionLifecycle {
         }
     }
 
-    // Active support
+    // 活跃支持期
     VersionLifecycle::Active
 }
 
-// ── Go Lifecycle ──
+// ── Go 生命周期 ──
 //
-// Go release policy: last two major releases receive security updates.
-// As of 2025: Go 1.22 and 1.23 are supported, 1.21 and older are EOL.
+// Go 发布策略：最近两个大版本仍接收安全更新。
+// 截至 2025 年：Go 1.22 与 1.23 受支持，1.21 及更早版本已 EOL。
 
+/// Go 当前仍受支持的 `(major, minor)` 列表。
+///
+/// 按“最新 → 最旧”排列，第一项视为最新版本。
 const GO_SUPPORTED_MAJORS: &[(u64, u64)] = &[
-    // (major, minor) — currently supported
+    // (major, minor) —— 当前受支持
     (1, 24),
     (1, 23),
     (1, 22),
 ];
 
+/// Go 已停止支持版本的 EOL 日期表。
+///
+/// 元组含义为 `(major, minor, EOL 日期)`。
 const GO_EOL_DATES: &[(u64, u64, &str)] = &[
-    // (major, minor, eol_date)
+    // (major, minor, EOL 日期)
     (1, 21, "2024-08-13"),
     (1, 20, "2024-02-06"),
     (1, 19, "2023-09-06"),
     (1, 18, "2023-02-01"),
 ];
 
-/// Determine Go lifecycle stage based on version.
+/// 根据版本号判断 Go 生命周期阶段。
 pub fn go_lifecycle(version: &str) -> VersionLifecycle {
     let parts: Vec<u64> = version.split('.').filter_map(|s| s.parse().ok()).collect();
     if parts.len() < 2 {
@@ -227,7 +244,7 @@ pub fn go_lifecycle(version: &str) -> VersionLifecycle {
     let major = parts[0];
     let minor = parts[1];
 
-    // Latest Go version
+    // 最新 Go 版本
     let latest = GO_SUPPORTED_MAJORS.first().copied();
     if let Some((lmaj, lmin)) = latest {
         if major == lmaj && minor == lmin {
@@ -235,12 +252,12 @@ pub fn go_lifecycle(version: &str) -> VersionLifecycle {
         }
     }
 
-    // Check if supported (in the supported list)
+    // 是否在受支持列表中
     let is_supported = GO_SUPPORTED_MAJORS
         .iter()
         .any(|(maj, min)| *maj == major && *min == minor);
 
-    // Check if EOL
+    // 检查是否 EOL
     for &(eol_maj, eol_min, eol_date) in GO_EOL_DATES {
         if eol_maj == major && eol_min == minor {
             return VersionLifecycle::Eol {
@@ -250,19 +267,19 @@ pub fn go_lifecycle(version: &str) -> VersionLifecycle {
     }
 
     if is_supported {
-        // In the supported list but not the latest = maintenance/active
+        // 在支持列表中但不是最新 = 维护 / 活跃
         VersionLifecycle::Active
     } else {
-        // Not in supported list and not explicitly EOL = assume EOL
+        // 不在支持列表且未显式标记 EOL = 假定已 EOL
         VersionLifecycle::Eol {
             eol_date: "未知".to_string(),
         }
     }
 }
 
-// ── Rust Lifecycle ──
+// ── Rust 生命周期 ──
 
-/// Determine Rust lifecycle stage based on version.
+/// 根据版本号判断 Rust 生命周期阶段。
 pub fn rust_lifecycle(version: &str) -> VersionLifecycle {
     match version {
         "stable" | "nightly" => VersionLifecycle::Active,
@@ -274,9 +291,9 @@ pub fn rust_lifecycle(version: &str) -> VersionLifecycle {
     }
 }
 
-// ── Java Lifecycle ──
+// ── Java 生命周期 ──
 
-/// Determine Java lifecycle stage based on version.
+/// 根据版本号判断 Java 生命周期阶段。
 pub fn java_lifecycle(version: &str) -> VersionLifecycle {
     let major = version.split('.').next().unwrap_or("");
     match major {
@@ -288,28 +305,28 @@ pub fn java_lifecycle(version: &str) -> VersionLifecycle {
     }
 }
 
-// ── Deno Lifecycle ──
+// ── Deno 生命周期 ──
 
-/// Deno has a fast-moving release cycle — all versions are considered Active.
+/// Deno 发布节奏很快 —— 所有版本都视为 Active。
 pub fn deno_lifecycle(_version: &str) -> VersionLifecycle {
     VersionLifecycle::Active
 }
 
-// ── Bun Lifecycle ──
+// ── Bun 生命周期 ──
 
-/// Bun is fast-moving — all versions are considered Active.
+/// Bun 发布节奏很快 —— 所有版本都视为 Active。
 pub fn bun_lifecycle(_version: &str) -> VersionLifecycle {
     VersionLifecycle::Active
 }
 
-// ── Ruby Lifecycle ──
+// ── Ruby 生命周期 ──
 //
-// Ruby release policy:
-// - New major.minor every ~12 months
-// - Each version gets ~2 years of bugfix support, then ~1 year of security maintenance
-// - Total lifecycle ~3 years
+// Ruby 发布策略：
+// - 每约 12 个月发布新的 major.minor
+// - 每个版本约 2 年 bugfix 支持，之后约 1 年安全维护
+// - 总生命周期约 3 年
 
-/// Determine Ruby lifecycle stage based on version.
+/// 根据版本号判断 Ruby 生命周期阶段。
 pub fn ruby_lifecycle(version: &str) -> VersionLifecycle {
     let parts: Vec<u64> = version.split('.').filter_map(|s| s.parse().ok()).collect();
     let minor = parts.get(1).copied().unwrap_or(0);
@@ -328,7 +345,7 @@ pub fn ruby_lifecycle(version: &str) -> VersionLifecycle {
     }
 }
 
-/// Dispatch to the correct lifecycle function based on runtime type.
+/// 按运行时类型分发到对应的生命周期函数。
 pub fn for_runtime(rt: &RuntimeType, version: &str, lts: Option<&str>) -> VersionLifecycle {
     match rt {
         RuntimeType::Node => node_lifecycle(version, lts),
@@ -339,7 +356,7 @@ pub fn for_runtime(rt: &RuntimeType, version: &str, lts: Option<&str>) -> Versio
         RuntimeType::Deno => deno_lifecycle(version),
         RuntimeType::Bun => bun_lifecycle(version),
         RuntimeType::Ruby => ruby_lifecycle(version),
-        // Docker and uv don't have formal lifecycle stages
+        // Docker 与 uv 没有正式的生命周期阶段
         RuntimeType::Docker | RuntimeType::Uv => VersionLifecycle::Active,
     }
 }

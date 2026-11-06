@@ -1,33 +1,43 @@
+//! worker 注册与任务分发。
+//!
+//! 分发器只按 `WorkerKind` 找到对应 worker 并调用，不关心 worker 内部实现；
+//! 未注册的类型会直接返回错误，避免静默失败。
+
 use std::collections::HashMap;
 
 use crate::core::error::{AppError, Result};
 use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerFeedback, WorkerResult};
 
-/// Manages worker registration and dispatch.
+/// 管理 worker 注册与任务分发。
 pub struct Dispatcher {
     workers: HashMap<WorkerKind, Box<dyn WorkerAgent>>,
 }
 
 impl Dispatcher {
+    /// 创建一个没有注册任何 worker 的分发器。
     pub fn new() -> Self {
         Self {
             workers: HashMap::new(),
         }
     }
 
+    /// 注册 worker；同类型重复注册会覆盖旧实例。
     pub fn register(&mut self, worker: Box<dyn WorkerAgent>) {
         let kind = worker.kind();
         self.workers.insert(kind, worker);
     }
 
+    /// 判断某个类型是否已注册 worker。
     pub fn has_worker(&self, kind: &WorkerKind) -> bool {
         self.workers.contains_key(kind)
     }
 
+    /// 列出已注册的 worker 类型。
     pub fn list_workers(&self) -> Vec<WorkerKind> {
         self.workers.keys().cloned().collect()
     }
 
+    /// 把子任务分发给对应 worker 执行。
     pub async fn dispatch(&self, task: &SubTask) -> Result<WorkerResult> {
         let worker = self.workers.get(&task.worker_kind).ok_or_else(|| {
             AppError::Orchestrator(format!(
@@ -38,6 +48,7 @@ impl Dispatcher {
         worker.execute(task.clone()).await
     }
 
+    /// 带反馈重试：把评审意见交给 worker 重新执行同一任务。
     pub async fn dispatch_with_feedback(
         &self,
         task: &SubTask,

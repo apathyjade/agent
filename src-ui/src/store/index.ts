@@ -101,27 +101,41 @@ export const useStore = create<AppState>()((set, get, store) => ({
             }));
           }
           if (chunk.tool_calls) {
-            set({ activeToolCalls: chunk.tool_calls });
+            // 并行调用按 id 合并：后到的结果不能把同轮其它调用从列表里挤掉。
+            set((state) => {
+              const byId = new Map(state.activeToolCalls.map((tc) => [tc.id, tc]));
+              for (const tc of chunk.tool_calls ?? []) {
+                byId.set(tc.id, tc);
+              }
+              return { activeToolCalls: Array.from(byId.values()) };
+            });
 
             // Persist completed/failed tool calls as visible messages in the flow
             const { currentSession } = get();
-            const finishedToolMsg = chunk.tool_calls
-              .filter(tc => tc.status === 'completed' || tc.status === 'failed')
-              .map(tc => ({
-                id: `tool-${tc.id}`,
-                session_id: currentSession?.id || '',
-                role: 'tool' as const,
-                content: JSON.stringify({
-                  name: tc.name,
-                  result: tc.result || '',
-                  status: tc.status,
-                }),
-                created_at: new Date().toISOString(),
-              }));
-            if (finishedToolMsg.length > 0) {
-              set((state) => ({
-                messages: [...state.messages, ...finishedToolMsg],
-              }));
+            const finished = chunk.tool_calls.filter(
+              (tc) => tc.status === 'completed' || tc.status === 'failed',
+            );
+            if (finished.length > 0) {
+              set((state) => {
+                const existing = new Set(state.messages.map((m) => m.id));
+                const rows = finished
+                  .filter((tc) => !existing.has(`tool-${tc.id}`))
+                  .map((tc) => ({
+                    id: `tool-${tc.id}`,
+                    session_id: currentSession?.id || '',
+                    role: 'tool' as const,
+                    content: JSON.stringify({
+                      name: tc.name,
+                      args: tc.arguments ? JSON.stringify(tc.arguments) : '',
+                      result: tc.result || '',
+                      status: tc.status,
+                    }),
+                    created_at: new Date().toISOString(),
+                  }));
+                return rows.length > 0
+                  ? { messages: [...state.messages, ...rows] }
+                  : {};
+              });
             }
           }
           if (chunk.phase !== undefined) {

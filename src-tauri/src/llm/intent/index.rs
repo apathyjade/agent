@@ -1,19 +1,18 @@
-//! In-process intent vector index.
+//! 进程内意图向量索引。
 //!
-//! Each intent is represented by one vector for `name + description` and one
-//! vector per example. An intent's score is the maximum cosine over its units.
-//! The index is rebuilt in the background; readers keep using the previous
-//! snapshot until the replacement is complete.
+//! 每个意图有一个 `name + description` 向量，外加每条 example 一个向量。意图
+//! 分数取其所有单元上的最大 cosine。索引在后台重建；替换完成前读取方继续使用
+//! 旧快照。
 
 use std::collections::{HashMap, HashSet};
 
-/// One intent's embedding units.
+/// 单个意图的 embedding 单元。
 #[derive(Debug, Clone, Default)]
 struct IntentUnits {
     vectors: Vec<Vec<f32>>,
 }
 
-/// A snapshot-able intent index.
+/// 可整体替换快照的意图索引。
 #[derive(Debug, Default)]
 pub struct IntentVectorIndex {
     units: HashMap<String, IntentUnits>,
@@ -38,7 +37,7 @@ impl IntentVectorIndex {
         self.dirty = true;
     }
 
-    /// Replace the whole snapshot and mark it ready.
+    /// 整体替换快照并标记为就绪。
     pub fn replace(&mut self, units: HashMap<String, Vec<Vec<f32>>>) {
         self.units = units
             .into_iter()
@@ -48,7 +47,7 @@ impl IntentVectorIndex {
         self.dirty = false;
     }
 
-    /// Drop the snapshot (for example when no embedder is available).
+    /// 丢弃快照（例如没有可用的 embedder 时）。
     pub fn clear(&mut self) {
         self.units.clear();
         self.ready = false;
@@ -63,10 +62,10 @@ impl IntentVectorIndex {
         self.units.is_empty()
     }
 
-    /// Score every candidate intent against `query` and return the top `k`.
+    /// 对所有候选意图与 `query` 打分，返回 top `k`。
     ///
-    /// Scores are raw cosine similarities. Candidates without a vector are
-    /// skipped; ties keep the iteration order stable by using the intent id.
+    /// 分数是原始 cosine 相似度。没有向量的候选会被跳过；同分时按意图 id 排序，
+    /// 保证顺序稳定。
     pub fn top_k(
         &self,
         query: &[f32],
@@ -100,7 +99,7 @@ impl IntentVectorIndex {
     }
 }
 
-/// Cosine similarity; mismatched dimensions or zero vectors score `0.0`.
+/// cosine 相似度；维度不一致或零向量返回 `0.0`。
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -122,7 +121,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
-/// Build the text units embedded for one intent.
+/// 构造单个意图需要 embedding 的文本单元。
 pub fn intent_units(name: &str, description: &str, examples: &[String]) -> Vec<String> {
     let mut units = Vec::with_capacity(1 + examples.len());
     let profile = format!("{name}\n{description}").trim().to_string();

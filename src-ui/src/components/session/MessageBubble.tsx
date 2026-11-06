@@ -133,7 +133,7 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  let parsed: { name?: string; args?: string; result?: string } | null = null;
+  let parsed: { name?: string; args?: string; result?: string; status?: string } | null = null;
   try {
     parsed = JSON.parse(message.content);
   } catch {
@@ -143,6 +143,17 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
   const toolName = parsed?.name || message.tool_call_id || 'tool_call';
   const displayArgs = parsed?.args || '';
   const resultContent = parsed?.result || message.content;
+  const status = parsed?.status;
+  const statusClass =
+    status === 'completed'
+      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+      : status === 'failed'
+        ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+        : status === 'rejected'
+          ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+          : status === 'policy_denied'
+            ? 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+            : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300';
 
   let prettyResult = resultContent;
   try {
@@ -180,6 +191,9 @@ const ToolMessage = memo(function ToolMessage({ message }: MessageBubbleProps) {
         <span className="text-orange-600 dark:text-orange-400 capitalize font-medium">
           {toolName}
         </span>
+        {status && (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusClass}`}>{status}</span>
+        )}
         <span>{formatTime(message.created_at)}</span>
         <span className="ml-auto flex items-center gap-1 text-gray-400">
           <span className="text-[11px]">{expanded ? 'hide' : 'show'}</span>

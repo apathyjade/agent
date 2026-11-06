@@ -1,3 +1,9 @@
+//! 记忆管理。
+//!
+//! 记忆持久化在 SQLite，同时可选用 Rig 的 embedding 服务构建内存向量索引
+//! 做语义检索。没有 API key 或 embedding 失败时自动退化为 SQLite 关键词
+//! 检索，功能不中断，只是召回质量下降。
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -8,7 +14,7 @@ use crate::core::db::models::MemoryRecord;
 use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
 
-// Shared Rig embedding boundary used by intent recall as well.
+// 与意图召回共用的 Rig embedding 边界。
 use crate::llm::embedding::EmbeddingService;
 
 pub mod seeds;
@@ -16,7 +22,7 @@ pub mod vector_index;
 
 use vector_index::InMemoryVectorIndex;
 
-/// Lightweight memory info returned to the frontend.
+/// 返回给前端的轻量记忆信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryInfo {
     pub id: String,
@@ -55,7 +61,7 @@ impl From<MemoryRecord> for MemoryInfo {
     }
 }
 
-/// Parameters for creating a new memory.
+/// 创建记忆的入参；缺省值由 `default_*` 函数补齐。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMemoryParams {
     pub content: String,
@@ -75,7 +81,7 @@ fn default_scope() -> String { "global".to_string() }
 fn default_source() -> String { "manual".to_string() }
 fn default_relevance() -> f64 { 1.0 }
 
-/// Parameters for updating a memory.
+/// 更新记忆的入参；`None` 表示该字段保持不变。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateMemoryParams {
     pub content: Option<String>,
@@ -85,12 +91,13 @@ pub struct UpdateMemoryParams {
     pub tags: Option<Option<Vec<String>>>,
 }
 
-/// Manages memory entries — CRUD, retrieval, and context injection.
+/// 记忆管理器：增删改查、检索与上下文注入。
 ///
-/// When an OpenAI API key is available, memories are also embedded and
-/// stored in an in-memory vector index for semantic retrieval.  If no API
-/// key is provided (or embedding fails), the system gracefully degrades
-/// to SQLite keyword search.
+/// 写入路径会尽量为记忆生成 embedding 并同步进内存向量索引；读取路径
+/// （[`MemoryManager::retrieve_relevant`]）优先走向量检索，索引为空或
+/// embedding 不可用时退化为 SQLite 关键词检索。
+///
+/// 向量索引不持久化：进程重启后首次检索会从 SQLite 懒加载重建。
 pub struct MemoryManager {
     db: Arc<Mutex<Database>>,
     embedder: Option<Arc<EmbeddingService>>,
@@ -98,7 +105,9 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    /// Create a new memory manager with the shared embedding service.
+    /// 用共享数据库句柄与可选的 embedding 服务构造管理器。
+    ///
+    /// `embedder` 为 `None` 时所有检索都走关键词回退路径。
     pub fn new(db: Arc<Mutex<Database>>, embedder: Option<Arc<EmbeddingService>>) -> Self {
         Self {
             db,
@@ -107,26 +116,29 @@ impl MemoryManager {
         }
     }
 
+    /// 返回当前可用的 embedding 服务（已配置且标记为可用）。
     fn active_embedder(&self) -> Option<&EmbeddingService> {
         self.embedder
             .as_deref()
             .filter(|embedder| embedder.available())
     }
 
-    /// Lazily rebuild the vector index from the database.
+    /// 从数据库懒加载重建向量索引；已有条目或无 embedding 服务时直接返回。
+    ///
+    /// 重建期间会先释放数据库锁再发起网络请求，避免长时间占用。
     async fn ensure_index_built(&self) -> Result<()> {
         let Some(embedder) = self.active_embedder() else {
-            return Ok(()); // no embedder available
+            return Ok(()); // 没有可用的 embedding 服务
         };
 
         let mut index = self.vector_index.lock().await;
         if !index.is_empty() {
-            return Ok(()); // already built
+            return Ok(()); // 已经构建过
         }
 
         let db = self.db.lock().await;
         let records = db.list_memories()?;
-        drop(db); // release lock before network calls
+        drop(db); // 网络调用前先释放锁
 
         for record in &records {
             if let Some(vec_f32) = embedder.embed(&record.content).await {
@@ -138,7 +150,10 @@ impl MemoryManager {
         Ok(())
     }
 
-    /// Create a new memory entry.
+    /// 创建一条记忆。
+    ///
+    /// 先写 SQLite（失败则整体失败），再尽力生成 embedding 并写入向量
+    /// 索引；embedding 失败不回滚，只是该条记忆暂时无法被语义检索命中。
     pub async fn create(&self, params: CreateMemoryParams) -> Result<MemoryInfo> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -175,7 +190,7 @@ impl MemoryManager {
         db.insert_memory(&record)?;
         drop(db);
 
-        // Compute embedding and add to vector index (best-effort)
+        // 生成 embedding 并写入向量索引（尽力而为）。
         if let Some(embedder) = self.active_embedder() {
             if let Some(vec_f32) = embedder.embed(&record.content).await {
                 let mut index = self.vector_index.lock().await;
@@ -187,24 +202,28 @@ impl MemoryManager {
     }
 
 
-    /// Get a single memory by ID.
+    /// 按 id 获取一条记忆。
+    ///
+    /// 作为读取副作用会递增 `access_count` 并刷新 `last_accessed_at`。
     pub async fn get(&self, id: &str) -> Result<MemoryInfo> {
         let db = self.db.lock().await;
         let record = db.get_memory(id)?
             .ok_or_else(|| AppError::NotFound(format!("Memory '{}' not found", id)))?;
-        // Bump access
+        // 记录一次访问
         db.touch_memory(id)?;
         Ok(MemoryInfo::from(record))
     }
 
-    /// List all memories.
+    /// 列出全部记忆（不改变访问统计）。
     pub async fn list(&self) -> Result<Vec<MemoryInfo>> {
         let db = self.db.lock().await;
         let records = db.list_memories()?;
         Ok(records.into_iter().map(MemoryInfo::from).collect())
     }
 
-    /// Search memories by keyword and optional filters.
+    /// 按关键词与可选类型/作用域过滤做 SQL 检索。
+    ///
+    /// 这是纯数据库查询，不触发 embedding，也不影响向量索引。
     pub async fn search(
         &self,
         query: &str,
@@ -216,10 +235,10 @@ impl MemoryManager {
         Ok(records.into_iter().map(MemoryInfo::from).collect())
     }
 
-    /// Retrieve memories relevant to a context string (for agent injection).
+    /// 召回与给定上下文相关的记忆，供 agent 注入。
     ///
-    /// Uses semantic search when the vector index is available, otherwise
-    /// falls back to SQLite keyword search.
+    /// 有可用向量索引时按余弦相似度取 top-k；否则回退到 SQLite 关键词
+    /// 检索。两条路径都会递增命中记忆的访问统计。
     pub async fn retrieve_relevant(&self, context: &str, limit: i64) -> Result<Vec<MemoryInfo>> {
         if context.trim().is_empty() {
             return Ok(vec![]);
@@ -227,7 +246,7 @@ impl MemoryManager {
 
         self.ensure_index_built().await?;
 
-        // Semantic search path
+        // 语义检索路径
         if let Some(embedder) = self.active_embedder() {
             let index = self.vector_index.lock().await;
             if !index.is_empty() {
@@ -242,7 +261,7 @@ impl MemoryManager {
                                 records.push(MemoryInfo::from(record));
                             }
                         }
-                        // Bump access
+                        // 记录访问
                         for r in &records {
                             let _ = db.touch_memory(&r.id);
                         }
@@ -252,7 +271,7 @@ impl MemoryManager {
             }
         }
 
-        // Fallback to SQLite keyword search
+        // 回退到 SQLite 关键词检索
         let db = self.db.lock().await;
         let records = db.retrieve_relevant(context, limit)?;
         for r in &records {
@@ -261,7 +280,10 @@ impl MemoryManager {
         Ok(records.into_iter().map(MemoryInfo::from).collect())
     }
 
-    /// Update an existing memory.
+    /// 更新一条记忆。
+    ///
+    /// 内容变更时会重新生成 embedding 并覆盖向量索引中的旧条目；内容不变
+    /// 则不动索引。
     pub async fn update(&self, id: &str, params: UpdateMemoryParams) -> Result<MemoryInfo> {
         let db = self.db.lock().await;
         let mut record = db.get_memory(id)?
@@ -299,7 +321,7 @@ impl MemoryManager {
         db.update_memory(&record)?;
         drop(db);
 
-        // Re-embed if content changed
+        // 内容变化时重新生成 embedding
         if content_changed {
             if let Some(embedder) = self.active_embedder() {
                 if let Some(vec_f32) = embedder.embed(&record.content).await {
@@ -312,32 +334,33 @@ impl MemoryManager {
         Ok(MemoryInfo::from(record))
     }
 
-    /// Delete a memory by ID.
+    /// 按 id 删除记忆，并同步从向量索引移除。
     pub async fn delete(&self, id: &str) -> Result<()> {
         let db = self.db.lock().await;
-        // Check existence first
+        // 先确认存在，避免静默删除不存在的 id
         let _ = db.get_memory(id)?
             .ok_or_else(|| AppError::NotFound(format!("Memory '{}' not found", id)))?;
         db.delete_memory(id)?;
         drop(db);
 
-        // Remove from vector index
+        // 从向量索引移除
         let mut index = self.vector_index.lock().await;
         index.remove(id);
 
         Ok(())
     }
 
-    /// Seed the database with built-in default memories if the table is empty.
-    /// Called once on first launch to give the agent useful baseline knowledge.
+    /// 表为空时写入内置默认记忆。
+    ///
+    /// 只在首次启动生效，已有任何记忆时返回 0，避免覆盖用户数据。
     pub async fn seed_defaults(&self) -> Result<usize> {
         let records = seeds::default_seed_memories();
         let db = self.db.lock().await;
 
-        // Check if table is already populated
+        // 表中已有数据则跳过
         let existing = db.list_memories()?;
         if !existing.is_empty() {
-            return Ok(0); // Already seeded
+            return Ok(0); // 已经初始化过
         }
 
         let mut count = 0;
@@ -354,8 +377,9 @@ impl MemoryManager {
         Ok(count)
     }
 
-    /// Build a system-prompt fragment from the most relevant memories.
-    /// This is what gets injected into the agent's context.
+    /// 把最相关的记忆拼成系统提示词片段，即注入 agent 上下文的内容。
+    ///
+    /// 没有命中任何记忆时返回 `None`，调用方无需拼接空片段。
     pub async fn build_context_prompt(&self, user_message: &str, max_memories: i64) -> Result<Option<String>> {
         let relevant = self.retrieve_relevant(user_message, max_memories).await?;
         if relevant.is_empty() {

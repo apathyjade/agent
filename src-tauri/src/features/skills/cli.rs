@@ -1,8 +1,7 @@
-//! Thin wrapper around the official `skills` CLI (skills.sh).
+//! 官方 `skills` CLI（skills.sh）的薄封装。
 //!
-//! Every invocation is built from an argument array — the CLI is never run
-//! through a shell string. Child processes get color/telemetry disabled and,
-//! on Windows, are started without a console window.
+//! 所有调用都由参数数组构造——CLI 从不通过 shell 字符串执行。子进程会关闭
+//! 颜色与遥测，Windows 下不弹出控制台窗口。
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -14,17 +13,17 @@ use tokio::process::Command;
 
 use crate::core::error::{AppError, Result};
 
-/// Pinned CLI version — the module is built against this exact release.
+/// 固定的 CLI 版本——本模块针对该版本构建。
 pub const SKILLS_CLI_VERSION: &str = "1.7.6";
-/// Minimum Node.js version required by the CLI.
+/// CLI 要求的最低 Node.js 版本。
 pub const MIN_NODE_VERSION: (u64, u64, u64) = (22, 20, 0);
-/// Probe timeout: local checks only, never a download.
+/// 探测超时：只做本地检查，绝不下载。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
-/// `CREATE_NO_WINDOW` — avoids a flashing console window for CLI shims.
+/// `CREATE_NO_WINDOW` —— 避免 CLI shim 闪出控制台窗口。
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Result of a local environment probe (shown on the skills page).
+/// 本地环境探测结果（显示在技能页面）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliStatus {
     pub available: bool,
@@ -34,7 +33,7 @@ pub struct CliStatus {
     pub error: Option<String>,
 }
 
-/// A resolved way to call the CLI: either `skills` directly or `npx skills@x`.
+/// 解析出的 CLI 调用方式：直接 `skills` 或 `npx skills@x`。
 #[derive(Debug, Clone)]
 pub struct CliCommand {
     pub program: PathBuf,
@@ -42,7 +41,7 @@ pub struct CliCommand {
     pub display: String,
 }
 
-/// Captured result of one CLI invocation.
+/// 一次 CLI 调用的捕获结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliOutput {
     pub stdout: String,
@@ -71,9 +70,9 @@ const NODE_EXE: &str = "node.exe";
 #[cfg(not(windows))]
 const NODE_EXE: &str = "node";
 
-/// Resolve the CLI command, first match wins:
-/// 1. `skills` on PATH, 2. `npx` on PATH, 3. the fnm default alias,
-/// 4. a bare `npx` (spawn fails later and `probe` reports it).
+/// 解析 CLI 命令，首个命中者胜出：
+/// 1. PATH 上的 `skills`；2. PATH 上的 `npx`；3. fnm 默认别名目录；
+/// 4. 裸 `npx`（后续 spawn 失败时由 `probe` 报告）。
 pub fn resolve_command() -> CliCommand {
     if let Some(program) = find_in_path(SKILLS_NAMES) {
         return CliCommand {
@@ -96,15 +95,15 @@ pub fn resolve_command() -> CliCommand {
         }
     }
 
-    // Last resort: let the process spawner resolve `npx` through PATH.
+    // 最后手段：交给进程启动器通过 PATH 解析 `npx`。
     npx_command(PathBuf::from(if cfg!(windows) { "npx.cmd" } else { "npx" }))
 }
 
-/// Translate a resolved command into the concrete `(program, argv)` pair.
+/// 把解析出的命令翻译成具体的 `(program, argv)` 对。
 ///
-/// Windows `.cmd`/`.bat` shims cannot be spawned directly, so they are wrapped
-/// in `cmd.exe /c`. The shim path is quoted so `cmd.exe` sees one token even
-/// when it contains spaces (`C:\Program Files\nodejs\npx.cmd`).
+/// Windows 的 `.cmd` / `.bat` shim 不能直接 spawn，因此包一层
+/// `cmd.exe /c`。shim 路径会加引号，使 `cmd.exe` 即使遇到含空格的路径
+/// （`C:\Program Files\nodejs\npx.cmd`）也只看到一个 token。
 pub fn spawn_parts(command: &CliCommand) -> (String, Vec<String>) {
     let mut args = command.prefix_args.clone();
     let is_script = command
@@ -125,11 +124,11 @@ pub fn spawn_parts(command: &CliCommand) -> (String, Vec<String>) {
     }
 }
 
-/// Run the CLI with the given arguments.
+/// 以给定参数运行 CLI。
 ///
-/// `cwd` is used for project-scoped operations; global operations pass `None`.
-/// The child inherits a PATH with the Node install directory prepended so
-/// `.cmd` shims can find `node` even when the GUI process has no Node on PATH.
+/// `cwd` 用于项目级操作；全局操作传 `None`。子进程的 PATH 会前置 Node
+/// 安装目录，使 `.cmd` shim 在 GUI 进程 PATH 里没有 Node 时也能找到
+/// `node`。
 pub async fn run(
     command: &CliCommand,
     args: &[String],
@@ -151,10 +150,10 @@ pub async fn run(
     .await
 }
 
-/// Probe the local environment without downloading anything.
+/// 探测本地环境，不下载任何内容。
 ///
-/// Checks `node --version` and `<cli> --version`; a failure never returns an
-/// error, it fills [`CliStatus::error`] with an actionable hint instead.
+/// 检查 `node --version` 与 `<cli> --version`；失败不会返回错误，而是把可
+/// 操作的提示写进 [`CliStatus::error`]。
 pub async fn probe(command: &CliCommand) -> CliStatus {
     let node_dir = node_dir_for(command);
     let mut status = CliStatus {
@@ -165,7 +164,7 @@ pub async fn probe(command: &CliCommand) -> CliStatus {
         error: None,
     };
 
-    // ── Node.js ──
+    // ── Node.js 环境 ──
     let node_program = node_program(node_dir.as_deref());
     let node_args = vec!["--version".to_string()];
     let node_result = execute(
@@ -195,15 +194,14 @@ pub async fn probe(command: &CliCommand) -> CliStatus {
         return status;
     }
 
-    // The npx form is pinned to `skills@1.7.6`, and running it here would hit
-    // the network on a cold cache. Node alone is enough to declare it usable;
-    // the version is verified by the pinned invocation itself.
+    // npx 形式固定使用 `skills@1.7.6`，在这里运行会在冷缓存时访问网络。
+    // 只要 Node 可用即可判定为可用；版本由固定版本的调用本身验证。
     if !is_direct_skills(command) {
         status.available = true;
         return status;
     }
 
-    // ── skills CLI (direct binary only) ──
+    // ── skills CLI（仅直接二进制） ──
     let (program, mut cli_args) = spawn_parts(command);
     cli_args.push("--version".to_string());
     let cli_result = execute(
@@ -258,7 +256,7 @@ pub async fn probe(command: &CliCommand) -> CliStatus {
     status
 }
 
-/// Parse `1.7.6`, `v1.7.6` or `v22.20.0` into a comparable tuple.
+/// 把 `1.7.6`、`v1.7.6` 或 `v22.20.0` 解析成可比较的元组。
 pub fn parse_version(raw: &str) -> Option<(u64, u64, u64)> {
     let trimmed = raw.trim();
     let without_prefix = trimmed
@@ -277,12 +275,11 @@ pub fn parse_version(raw: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// Reject empty, flag-like, quoted and control-character sources before they
-/// reach the CLI.
+/// 在来源进入 CLI 前拒绝空、类参数、含引号与控制字符的值。
 ///
-/// A literal `"` is rejected because `\"` is not a cmd.exe escape: on the
-/// Windows `cmd.exe /c` path a quote followed by `&`/`|` could break out of
-/// the argument quoting. `&`, `?` and `=` stay valid for URLs.
+/// 字面量 `"` 被拒绝，因为 `\"` 不是 cmd.exe 的转义：在 Windows 的
+/// `cmd.exe /c` 路径上，引号后跟 `&`/`|` 可能突破参数引号。`&`、`?`、`=`
+/// 对 URL 仍保持有效。
 pub fn is_valid_source(source: &str) -> bool {
     if source.chars().any(char::is_control) || source.contains('"') {
         return false;
@@ -291,11 +288,11 @@ pub fn is_valid_source(source: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    // A leading `-` would be parsed as a flag by the CLI.
+    // 开头的 `-` 会被 CLI 当作参数。
     !trimmed.starts_with('-')
 }
 
-// ── Internals ──
+// ── 内部实现 ──
 
 async fn execute(
     program: &str,
@@ -329,7 +326,7 @@ async fn execute(
 
     #[cfg(windows)]
     {
-        // Provided by `tokio::process::Command` itself on Windows.
+        // Windows 上由 `tokio::process::Command` 自身提供。
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
@@ -352,14 +349,12 @@ async fn execute(
     }
 }
 
-/// Feed `args` to the child, special-casing the `cmd.exe /c` wrapper.
+/// 把 `args` 传给子进程，并对 `cmd.exe /c` 包装做特殊处理。
 ///
-/// `spawn_parts` already quotes the shim path; [`build_cmd_line`] quotes every
-/// remaining token and appends the result with `raw_arg`, so `cmd.exe` never
-/// sees an unquoted `&`, `|`, `^`, `<` or `>` from a user-supplied source or
-/// skill name. Appending raw also keeps the quotes literal instead of letting
-/// the Windows argv builder escape them as `\"` (which `cmd.exe` would not
-/// understand).
+/// `spawn_parts` 已给 shim 路径加引号；[`build_cmd_line`] 会给其余每个 token
+/// 加引号并用 `raw_arg` 追加，使 `cmd.exe` 永远看不到来自用户来源或技能名的
+/// 未加引号 `&`、`|`、`^`、`<`、`>`。用 raw 追加还能让引号保持字面量，而
+/// 不会被 Windows argv 构造器转义成 `\"`（cmd.exe 无法理解）。
 fn append_args(cmd: &mut Command, program: &str, args: &[String]) {
     #[cfg(windows)]
     {
@@ -376,13 +371,11 @@ fn append_args(cmd: &mut Command, program: &str, args: &[String]) {
     cmd.args(args);
 }
 
-/// Assemble a `cmd.exe` command line with every token double-quoted.
+/// 组装 `cmd.exe` 命令行，每个 token 都加双引号。
 ///
-/// `tokens[0]` is the shim path that [`spawn_parts`] already quoted; it is
-/// unquoted first so the result never contains doubled-up quotes. Embedded
-/// quotes are escaped as `\"` (cmd-style). The whole line is then wrapped in
-/// one extra pair of quotes: `cmd /c` strips the outermost pair before
-/// parsing, which is what leaves the remaining quoted tokens intact.
+/// `tokens[0]` 是 [`spawn_parts`] 已加过引号的 shim 路径；先去掉这层引号，
+/// 避免结果出现双重引号。内嵌引号按 cmd 风格转义为 `\"`。整行再包一层
+/// 引号：`cmd /c` 解析前会剥掉最外层，剩下的带引号 token 因而保持完整。
 #[cfg(windows)]
 fn build_cmd_line(tokens: &[String]) -> String {
     let quoted: Vec<String> = tokens
@@ -404,7 +397,7 @@ fn build_cmd_line(tokens: &[String]) -> String {
     format!("\"{}\"", quoted.join(" "))
 }
 
-/// True when the resolved program is a `skills` binary, not the npx shim.
+/// 解析出的程序是 `skills` 二进制而非 npx shim 时返回 true。
 fn is_direct_skills(command: &CliCommand) -> bool {
     command
         .program
@@ -435,7 +428,7 @@ fn find_in_path(names: &[&str]) -> Option<PathBuf> {
     None
 }
 
-/// fnm's stable "default" alias directory, which holds the Node shims.
+/// fnm 稳定的 "default" 别名目录，存放 Node shim。
 fn fnm_default_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -465,7 +458,7 @@ fn fnm_default_dir() -> Option<PathBuf> {
     }
 }
 
-/// Directory that must be on the child PATH (and used to locate `node`).
+/// 必须出现在子进程 PATH 上的目录（也用于定位 `node`）。
 fn node_dir_for(command: &CliCommand) -> Option<PathBuf> {
     if let Some(parent) = command.program.parent() {
         if !parent.as_os_str().is_empty() && parent.is_dir() {
@@ -594,8 +587,7 @@ mod tests {
             line.starts_with("\"\"C:\\node\\npx.cmd\""),
             "shim path must stay one token: {line}"
         );
-        // cmd /c strips the outermost pair of quotes, leaving the fully
-        // quoted command line intact.
+        // cmd /c 会剥掉最外层引号，使完整带引号的命令行保持原样。
         assert!(line.starts_with("\"\""), "line: {line}");
         assert!(line.ends_with("\"\""), "line: {line}");
     }

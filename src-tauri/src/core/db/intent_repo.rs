@@ -1,3 +1,8 @@
+//! 意图领域（intent domains）与意图（intents）的读写。
+//!
+//! 领域是路由的第一层分类，意图是领域内的具体处理路径；
+//! 两者都有“最后一条启用项不可删除/停用”的一致性约束。
+
 use rusqlite::{params, OptionalExtension};
 
 use crate::core::db::models::{IntentDomainRecord, IntentRecord};
@@ -18,6 +23,7 @@ impl Database {
         })
     }
 
+    /// 列出全部意图领域：活跃领域排最前，其余按 `name` 升序。
     pub fn list_intent_domains(&self) -> Result<Vec<IntentDomainRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, is_active, source, version, created_at, updated_at
@@ -29,6 +35,7 @@ impl Database {
         Ok(domains)
     }
 
+    /// 按 id 取领域；不存在返回 `None`。
     pub fn get_intent_domain(&self, id: &str) -> Result<Option<IntentDomainRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, is_active, source, version, created_at, updated_at
@@ -40,8 +47,8 @@ impl Database {
         Ok(domain)
     }
 
-    /// Returns the active domain. `is_active` doubles as the **default domain
-    /// for new sessions** since sessions gained their own domain state.
+    /// 取当前活跃领域。自会话拥有独立领域状态后，`is_active` 同时充当
+    /// **新会话的默认领域**。
     pub fn get_active_intent_domain(&self) -> Result<Option<IntentDomainRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, is_active, source, version, created_at, updated_at
@@ -51,8 +58,8 @@ impl Database {
         Ok(domain)
     }
 
-    /// Always inserts the domain as inactive (`is_active = 0`), regardless of the record;
-    /// activation must go through [`Self::set_active_intent_domain`].
+    /// 插入领域时**强制**写入 `is_active = 0`，忽略记录里的值；
+    /// 激活必须走 [`Self::set_active_intent_domain`]。
     pub fn insert_intent_domain(&self, d: &IntentDomainRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO intent_domains (id, name, description, is_active, source, version, created_at, updated_at)
@@ -70,7 +77,8 @@ impl Database {
         Ok(())
     }
 
-    /// Updates the user-editable fields only; `is_active`, `source` and `version` are untouched.
+    /// 只更新用户可编辑的字段（`name`、`description`、`updated_at`）；
+    /// `is_active`、`source` 与 `version` 保持不变。
     pub fn update_intent_domain(&self, d: &IntentDomainRecord) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE intent_domains SET name = ?2, description = ?3, updated_at = ?4 WHERE id = ?1",
@@ -82,8 +90,9 @@ impl Database {
         Ok(())
     }
 
-    /// Deletes a domain together with its intents.
-    /// `PRAGMA foreign_keys` is OFF, so the child rows must be removed explicitly.
+    /// 在一个事务内删除领域及其意图，并解绑引用该领域的会话。
+    ///
+    /// `PRAGMA foreign_keys` 为 OFF，所以子行必须显式删除。活跃领域不允许删除。
     pub fn delete_intent_domain(&self, id: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -104,15 +113,14 @@ impl Database {
         }
 
         tx.execute("DELETE FROM intents WHERE domain_id = ?1", params![id])?;
-        // Sessions reference the domain by id and foreign keys are OFF, so the
-        // references are cleared in the same transaction as the delete.
+        // 会话按 id 引用领域，而外键是关闭的，因此引用清理必须与删除处于同一事务。
         Self::clear_intent_domain_references_on(&tx, id)?;
         tx.execute("DELETE FROM intent_domains WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
     }
 
-    /// Atomically makes `id` the single active domain.
+    /// 原子地把 `id` 设为唯一活跃领域；领域不存在或没有启用的意图时报错。
     pub fn set_active_intent_domain(&self, id: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -165,7 +173,7 @@ impl Database {
             domain_id: row.get(1)?,
             name: row.get(2)?,
             description: row.get(3)?,
-            // Malformed JSON must degrade to an empty list instead of panicking.
+            // 损坏的 JSON 退化为空列表，而不是 panic。
             examples: serde_json::from_str(&examples).unwrap_or_default(),
             workflow: row.get(5)?,
             allowed_tools: serde_json::from_str(&allowed_tools).unwrap_or_default(),
@@ -186,7 +194,8 @@ impl Database {
         })
     }
 
-    /// Intents of a domain ordered by `sort_order`, then `name`.
+    /// 取领域的全部意图，按 `sort_order` 升序、再按 `name` 升序。
+    /// 取领域的全部意图，按 `sort_order` 升序、再按 `name` 升序。
     pub fn list_intents(&self, domain_id: &str) -> Result<Vec<IntentRecord>> {
         let sql = format!(
             "SELECT {} FROM intents WHERE domain_id = ?1 ORDER BY sort_order ASC, name ASC",
@@ -199,7 +208,7 @@ impl Database {
         Ok(intents)
     }
 
-    /// Enabled intents of a domain, same ordering as [`Self::list_intents`].
+    /// 取领域内已启用的意图，排序与 [`Self::list_intents`] 一致。
     pub fn list_enabled_intents(&self, domain_id: &str) -> Result<Vec<IntentRecord>> {
         let sql = format!(
             "SELECT {} FROM intents WHERE domain_id = ?1 AND enabled = 1 \
@@ -213,12 +222,11 @@ impl Database {
         Ok(intents)
     }
 
-    /// Enabled intents across every domain.
+    /// 取所有领域内已启用的意图。
     ///
-    /// Used by the cascade router when it widens beyond the session's prior
-    /// domain. Ordered by domain, then by the domain-local display order
-    /// (`sort_order`, `name`), so each domain's slice keeps the same order as
-    /// [`Self::list_enabled_intents`].
+    /// 供级联路由在超出会话先验领域时扩大候选范围。按领域 id 升序排列，
+    /// 领域内仍按显示顺序（`sort_order`、`name`），因此每个领域的切片与
+    /// [`Self::list_enabled_intents`] 的顺序一致。
     pub fn list_all_enabled_intents(&self) -> Result<Vec<IntentRecord>> {
         let sql = format!(
             "SELECT {} FROM intents WHERE enabled = 1 \
@@ -232,6 +240,7 @@ impl Database {
         Ok(intents)
     }
 
+    /// 按 id 取意图；不存在返回 `None`。
     pub fn get_intent(&self, id: &str) -> Result<Option<IntentRecord>> {
         let sql = format!("SELECT {} FROM intents WHERE id = ?1", Self::INTENT_COLUMNS);
         let mut stmt = self.conn.prepare(&sql)?;
@@ -241,6 +250,8 @@ impl Database {
         Ok(intent)
     }
 
+    /// 插入意图。`examples` 与 `allowed_tools` 序列化为 JSON 文本；
+    /// `name` 在同一领域内唯一，冲突会返回数据库错误。
     pub fn insert_intent(&self, i: &IntentRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO intents (id, domain_id, name, description, examples, workflow,
@@ -276,13 +287,11 @@ impl Database {
         Ok(())
     }
 
-    /// Seeds a domain with its intents, activates the domain and records a
-    /// marker setting — all in one transaction. Either everything lands or
-    /// nothing does, so a crash or an error never leaves a half-seeded domain
-    /// behind (and never leaves the marker without the data it describes).
+    /// 在一个事务内播种领域：写入领域与意图、激活领域，并记录一个标记设置。
     ///
-    /// Refuses to activate a domain with no enabled intent, mirroring
-    /// [`Self::set_active_intent_domain`].
+    /// 要么全部落库，要么全部回滚，因此崩溃或报错不会留下“半播种”的领域，
+    /// 也不会出现标记已写而数据缺失的情况。领域没有启用意图时拒绝激活，
+    /// 与 [`Self::set_active_intent_domain`] 保持一致。
     pub fn seed_intent_domain_atomic(
         &self,
         domain: &IntentDomainRecord,
@@ -360,11 +369,10 @@ impl Database {
         Ok(())
     }
 
-    /// Inserts a domain and its intents in one transaction. The domain is inserted
-    /// inactive; callers activate it explicitly if they want it active.
+    /// 在一个事务内插入领域及其意图。领域一律以非活跃状态插入，
+    /// 调用方需要时再显式激活。
     ///
-    /// Either the whole batch lands or nothing does, so a rejected import never
-    /// leaves a half-written domain behind.
+    /// 整批要么全部落库，要么全部回滚，被拒绝的导入不会留下半写入的领域。
     pub fn insert_intent_domain_atomic(
         &self,
         domain: &IntentDomainRecord,
@@ -424,9 +432,9 @@ impl Database {
         Ok(())
     }
 
-    /// Updates the editable fields. The caller's `version` is ignored: the stored
-    /// version is read and incremented by one. `domain_id` is immutable, and the update
-    /// cannot disable the last enabled intent of a domain.
+    /// 更新意图的可编辑字段。调用方传入的 `version` 会被忽略：
+    /// 读取库中版本后 +1 写回。`domain_id` 不可变，且不允许停用领域内
+    /// 最后一个启用的意图。
     pub fn update_intent(&self, i: &IntentRecord) -> Result<()> {
         let row: Option<(i64, String, i64)> = self
             .conn
@@ -482,7 +490,8 @@ impl Database {
         Ok(())
     }
 
-    /// Deletes an intent. Refuses to remove the last enabled intent of a domain.
+    /// 删除意图；不允许删除领域内最后一个启用的意图。
+    /// 同一事务内会清空指向它的 `fallback_intent` 引用。
     pub fn delete_intent(&self, id: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -504,9 +513,8 @@ impl Database {
             ));
         }
 
-        // Clear inbound references in the same transaction: `fallback_intent`
-        // stores an id, and a dangling id would silently degrade to `clarify`
-        // (and fail command-layer validation on later, unrelated edits).
+        // 在同一事务内清理入站引用：`fallback_intent` 存的是 id，
+        // 悬空 id 会静默退化为 `clarify`，并在之后无关的编辑中触发命令层校验失败。
         tx.execute(
             "UPDATE intents SET fallback_intent = '' WHERE domain_id = ?1 AND fallback_intent = ?2",
             params![domain_id, id],
@@ -517,8 +525,8 @@ impl Database {
         Ok(())
     }
 
-    /// Enables or disables an intent, bumping `version` and `updated_at`.
-    /// Refuses to disable the last enabled intent of a domain.
+    /// 启用或停用意图，同时递增 `version` 并写入 `updated_at`；
+    /// 不允许停用领域内最后一个启用的意图。
     pub fn set_intent_enabled(&self, id: &str, enabled: bool, updated_at: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -548,6 +556,7 @@ impl Database {
         Ok(())
     }
 
+    /// 统计领域内已启用的意图数量。
     pub fn count_enabled_intents(&self, domain_id: &str) -> Result<i64> {
         let count = self.conn.query_row(
             "SELECT COUNT(*) FROM intents WHERE domain_id = ?1 AND enabled = 1",
@@ -558,6 +567,7 @@ impl Database {
     }
 
     #[cfg(test)]
+    /// 测试辅助：统计领域内意图总数，查询失败返回 -1。
     pub fn count_intents(&self, domain_id: &str) -> i64 {
         self.conn
             .query_row(
@@ -569,6 +579,7 @@ impl Database {
     }
 
     #[cfg(test)]
+    /// 测试辅助：统计某张表的列数，查询失败返回 -1。
     pub fn count_columns(&self, table: &str) -> i64 {
         self.conn
             .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}')"), [], |r| {
@@ -583,7 +594,7 @@ mod tests {
     use super::*;
     use crate::core::db::models::Session;
 
-    /// Fixed timestamp so tests exercise exactly what the caller supplies.
+    /// 固定时间戳，确保测试校验的正是调用方传入的值。
     const TEST_TS: &str = "2026-11-04T00:00:00Z";
 
     fn mk_domain(id: &str, name: &str) -> IntentDomainRecord {
@@ -599,7 +610,7 @@ mod tests {
         }
     }
 
-    /// Insert a minimal intent row directly; defaults fill the remaining columns.
+    /// 直接插入一条最小意图行，其余列由默认值填充。
     fn insert_enabled_intent(db: &Database, id: &str, domain_id: &str, enabled: bool) {
         db.conn
             .execute(
@@ -652,7 +663,7 @@ mod tests {
         let db = Database::new_test().unwrap();
         db.insert_intent_domain(&mk_domain("empty-domain", "空领域"))
             .unwrap();
-        // Only a disabled intent: it must not satisfy the guard.
+        // 只有一个停用意图：不得满足守卫条件。
         insert_enabled_intent(&db, "disabled-intent", "empty-domain", false);
 
         let err = db.set_active_intent_domain("empty-domain").unwrap_err();
@@ -979,7 +990,7 @@ mod tests {
     fn insert_intent_domain_atomic_inserts_inactive_domain_with_intents() {
         let db = Database::new_test().unwrap();
         let mut domain = mk_domain("imported-domain", "导入领域");
-        domain.is_active = true; // must be ignored: import never activates
+        domain.is_active = true; // 必须被忽略：导入流程从不激活领域
         let intents = vec![mk_intent("imported-intent", "imported-domain", "导入意图")];
 
         db.insert_intent_domain_atomic(&domain, &intents).unwrap();
@@ -998,7 +1009,7 @@ mod tests {
     fn insert_intent_domain_atomic_leaves_nothing_on_failure() {
         let db = Database::new_test().unwrap();
         let domain = mk_domain("rollback-domain", "回滚领域");
-        // UNIQUE(domain_id, name) rejects the second row mid-transaction.
+        // UNIQUE(domain_id, name) 会让第二行在事务中途被拒绝。
         let intents = vec![
             mk_intent("rollback-a", "rollback-domain", "重复意图"),
             mk_intent("rollback-b", "rollback-domain", "重复意图"),

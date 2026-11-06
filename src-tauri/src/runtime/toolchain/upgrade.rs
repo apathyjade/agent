@@ -1,11 +1,12 @@
-// ── Upgrade Check: Detect outdated runtime versions and suggest upgrades ──
+//! 升级检查：发现过期的运行时版本并给出升级建议。
 
 use crate::core::error::Result;
 use crate::runtime::toolchain::lifecycle;
 use crate::runtime::toolchain::registry::RuntimeRegistry;
+use crate::runtime::toolchain::version::compare_versions;
 use crate::runtime::toolchain::{RuntimeManager, RuntimeType};
 
-/// Result of a version update check for a single runtime.
+/// 单个运行时版本更新检查的结果。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionUpdate {
     pub runtime_type: RuntimeType,
@@ -14,10 +15,11 @@ pub struct VersionUpdate {
     pub reason: String,
 }
 
-/// Check for version updates across all runtimes.
-/// For each runtime, detects the current version and compares against the
-/// latest available from the registry. If the current version is EOL or in
-/// maintenance mode and a newer version exists, a VersionUpdate is emitted.
+/// 检查所有运行时的版本更新。
+///
+/// 逐个运行时检测当前版本，并与注册表中的最新可用版本比较。仅当当前版本
+/// 已 EOL 或处于维护期、且存在更新版本时才产生一条 `VersionUpdate`。
+/// 该函数会访问网络（通过注册表），但注册表带有 TTL 缓存。
 pub async fn check_updates(
     runtime_manager: &RuntimeManager,
     registry: &RuntimeRegistry,
@@ -28,10 +30,10 @@ pub async fn check_updates(
         let info = runtime_manager.detect(rt).await;
 
         if let Some(ref current) = info.version {
-            // Get lifecycle info for current version
+            // 获取当前版本的生命周期信息
             let lc = lifecycle::for_runtime(rt, current, None);
 
-            // Only suggest upgrade if current version is EOL or Maintenance
+            // 仅当当前版本已 EOL 或处于维护期时才建议升级
             if !matches!(
                 lc,
                 lifecycle::VersionLifecycle::Eol { .. }
@@ -40,14 +42,14 @@ pub async fn check_updates(
                 continue;
             }
 
-            // Fetch available versions
+            // 拉取可用版本
             let versions = registry.get_versions(rt).await;
             let versions = match versions {
                 Ok(v) => v,
-                Err(_) => continue, // Skip if we can't fetch
+                Err(_) => continue, // 拉取失败则跳过该运行时
             };
 
-            // Find newest stable version
+            // 找到最新的稳定版本
             let newest = versions
                 .iter()
                 .filter(|v| v.is_stable)
@@ -73,12 +75,4 @@ pub async fn check_updates(
     }
 
     Ok(updates)
-}
-
-/// Compare two version strings, handling non-standard formats gracefully.
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    match (semver::Version::parse(a), semver::Version::parse(b)) {
-        (Ok(va), Ok(vb)) => va.cmp(&vb),
-        _ => a.cmp(b),
-    }
 }

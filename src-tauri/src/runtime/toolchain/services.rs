@@ -1,9 +1,8 @@
-// ── Runtime Services: shared composition root ──
-//
-// The app and the CLI both build the toolchain stack through this module, so
-// install/switch/uninstall semantics cannot drift between the two frontends.
-// This module deliberately has no dependency on the app's config, database or
-// UI state; callers pass a plain `RuntimeOptions` value.
+//! 运行时服务：共享的组合根。
+//!
+//! 应用与 CLI 都通过本模块构建工具链栈，因此安装/切换/卸载语义不会在两个
+//! 前端之间出现分歧。本模块刻意不依赖应用的配置、数据库或 UI 状态；调用方
+//! 只需传入一个纯值 `RuntimeOptions`。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,18 +17,18 @@ use super::registry::RuntimeRegistry;
 use super::resolver::VersionResolver;
 use super::{InstallProgress, RuntimeInfo, RuntimeType, VersionUpdate};
 
-/// Settings needed to build the toolchain stack.
+/// 构建工具链栈所需的配置。
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeOptions {
-    /// Custom install directory. Defaults to `<data>/agent/runtimes`.
+    /// 自定义安装目录。默认为 `<data>/agent/runtimes`。
     pub install_dir: Option<PathBuf>,
-    /// Optional HTTP proxy for downloads.
+    /// 下载时可选使用的 HTTP 代理。
     pub download_proxy: Option<String>,
-    /// Persisted default version per runtime, keyed by runtime id.
+    /// 每个运行时的持久化默认版本，以运行时 id 为键。
     pub defaults: HashMap<String, String>,
 }
 
-/// Runtime manager, version registry, resolver and alias store.
+/// 运行时管理器、版本注册表、解析器与别名存储。
 #[derive(Clone)]
 pub struct RuntimeServices {
     pub manager: Arc<RuntimeManager>,
@@ -39,7 +38,7 @@ pub struct RuntimeServices {
 }
 
 impl RuntimeServices {
-    /// Build the toolchain stack from plain options.
+    /// 用纯配置构建工具链栈。
     pub fn new(options: RuntimeOptions) -> Result<Self> {
         let install_dir = resolve_install_dir(options.install_dir.as_deref());
         crate::runtime::toolchain::http_client::init_http_client(options.download_proxy.as_deref());
@@ -58,24 +57,26 @@ impl RuntimeServices {
         })
     }
 
+    /// 检测单个运行时。
     pub async fn detect(&self, rt: &RuntimeType) -> RuntimeInfo {
         self.manager.detect(rt).await
     }
 
+    /// 检测所有运行时。
     pub async fn detect_all(&self) -> Vec<RuntimeInfo> {
         self.manager.detect_all().await
     }
 
+    /// 把版本规格解析为确切版本。
     pub async fn resolve(&self, rt: &RuntimeType, spec: &str) -> Result<String> {
         self.resolver.resolve(rt, spec).await
     }
 
-    /// Install a runtime version.
+    /// 安装运行时版本。
     ///
-    /// - An external manager (fnm/nvm/uv/pyenv/rustup) is used only when one is
-    ///   active *and* a version was requested. Otherwise the built-in installer
-    ///   runs.
-    /// - `active_manager = Some("built-in")` always takes the built-in path.
+    /// - 仅当存在激活的外部管理器（fnm/nvm/uv/pyenv/rustup）**且**指定了版本
+    ///   时才走外部管理器，否则使用内置安装器。
+    /// - `active_manager = Some("built-in")` 始终使用内置路径。
     pub async fn install(
         &self,
         rt: &RuntimeType,
@@ -111,7 +112,7 @@ impl RuntimeServices {
         }
     }
 
-    /// Activate an installed version (or delegate to the active external manager).
+    /// 激活已安装版本（或委托给当前生效的外部管理器）。
     pub async fn switch(
         &self,
         rt: &RuntimeType,
@@ -127,7 +128,7 @@ impl RuntimeServices {
         Ok(self.detect(rt).await)
     }
 
-    /// Uninstall a version (or delegate to the active external manager).
+    /// 卸载某个版本（或委托给当前生效的外部管理器）。
     pub async fn uninstall(
         &self,
         rt: &RuntimeType,
@@ -143,28 +144,31 @@ impl RuntimeServices {
         Ok(self.detect(rt).await)
     }
 
+    /// 检查所有运行时的版本更新。
     pub async fn check_updates(&self) -> Result<Vec<VersionUpdate>> {
         super::upgrade::check_updates(&self.manager, &self.registry).await
     }
 
+    /// 返回当前运行时安装目录。
     pub async fn install_dir(&self) -> std::path::PathBuf {
         self.manager.get_install_dir().await
     }
 
+    /// 返回所有运行时的默认版本。
     pub async fn defaults(&self) -> HashMap<RuntimeType, String> {
         self.aliases.list_defaults().await
     }
 }
 
-/// Return the external manager id, if one is configured.
+/// 返回配置的外部管理器 id（若存在）。
 ///
-/// `"built-in"` is not an external manager; it explicitly selects the built-in
-/// installer and must not be passed to `manager_executor`.
+/// `"built-in"` 不是外部管理器；它显式选择内置安装器，不能传给
+/// `manager_executor`。
 pub fn external_manager(active_manager: Option<&str>) -> Option<&str> {
     active_manager.filter(|manager| !manager.is_empty() && *manager != "built-in")
 }
 
-/// Resolve the configured runtime directory, falling back to `<data>/agent/runtimes`.
+/// 解析配置的运行时目录，缺省为 `<data>/agent/runtimes`。
 pub fn resolve_install_dir(configured: Option<&Path>) -> PathBuf {
     match configured {
         Some(path) => path.to_path_buf(),

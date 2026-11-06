@@ -1,3 +1,8 @@
+//! 编排 agent：把目标拆成 DAG 子任务，分发给 worker，经 Critic 评审后汇总输出。
+//!
+//! 本模块只负责「编排生命周期」：阶段推进、节点调度、事件上报与结果汇总。
+//! 具体执行由 `Dispatcher` 交给 worker；质量评审由 `CriticAgent` 完成。
+
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -8,7 +13,10 @@ use crate::agent::orchestrator::dispatcher::Dispatcher;
 use crate::agent::orchestrator::task_graph::{NodeStatus, TaskGraph};
 use crate::agent::workers::WorkerKind;
 
-/// Phase of the orchestration lifecycle.
+/// 节点结果摘要的最大字符数。
+const NODE_SUMMARY_CHARS: usize = 120;
+
+/// 编排生命周期的阶段。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrchestrationPhase {
     Idle,
@@ -20,7 +28,7 @@ pub enum OrchestrationPhase {
     Done,
 }
 
-/// Event emitted during orchestration (for frontend streaming).
+/// 编排过程中发出的事件（用于前端流式展示）。
 #[derive(Debug, Clone)]
 pub enum OrchestrationEvent {
     PhaseChanged(OrchestrationPhase),
@@ -51,10 +59,11 @@ pub enum OrchestrationEvent {
     SynthesizedOutput(String),
 }
 
-/// The OrchestratorAgent manages the full orchestration lifecycle:
-/// process goals through a DAG of sub-tasks, dispatch to workers via Dispatcher,
-/// apply CriticAgent for output quality validation, emit events for frontend progress,
-/// and synthesize results into final output.
+/// 编排 agent，管理完整的编排生命周期。
+///
+/// 把目标转换成子任务 DAG，通过 `Dispatcher` 分发给 worker，使用
+/// `CriticAgent` 校验产出质量，向前端推送进度事件，最后把各节点结果
+/// 汇总为最终输出。
 pub struct OrchestratorAgent {
     dispatcher: Dispatcher,
     critic: Arc<CriticAgent>,
@@ -63,6 +72,7 @@ pub struct OrchestratorAgent {
 }
 
 impl OrchestratorAgent {
+    /// 用给定的分发器与评审器构造编排 agent，默认最多 3 轮评审。
     pub fn new(dispatcher: Dispatcher, critic: Arc<CriticAgent>) -> Self {
         Self {
             dispatcher,
@@ -72,6 +82,7 @@ impl OrchestratorAgent {
         }
     }
 
+    /// 绑定事件通道；通道被占用时记录警告并放弃本次绑定。
     pub fn set_event_tx(&self, tx: tokio::sync::mpsc::Sender<OrchestrationEvent>) {
         let mut lock = self.event_tx.try_lock();
         if let Ok(ref mut slot) = lock {
@@ -81,145 +92,61 @@ impl OrchestratorAgent {
         }
     }
 
+    /// 设置单节点的最大评审轮数。
     pub fn with_max_critique_rounds(mut self, rounds: u32) -> Self {
         self.max_critique_rounds = rounds;
         self
     }
 
+    /// 只读访问内部的分发器（用于注册 worker 或测试断言）。
     pub fn dispatcher(&self) -> &Dispatcher {
         &self.dispatcher
     }
 
+    /// 发送事件；未绑定通道时静默丢弃。
     async fn emit(&self, event: OrchestrationEvent) {
         if let Some(tx) = &*self.event_tx.lock().await {
             let _ = tx.send(event).await;
         }
     }
 
-    /// Execute a full task graph through the orchestration pipeline.
+    /// 执行完整任务图。
     ///
-    /// 1. Emit PhaseChanged::Planning
-    /// 2. Loop: get ready_nodes() → for each, call execute_node()
-    ///    - If no ready nodes and not complete → Err(AppError::Orchestrator("stalled"))
-    ///    - If any node Failed → Err with failed node details
-    /// 3. Emit synthesizing → call synthesize_results → emit SynthesizedOutput
-    /// 4. Return synthesized string
+    /// 1. 发出 `Planning` 阶段；
+    /// 2. 循环：取就绪节点并逐个执行；
+    ///    - 没有就绪节点但图未完成 → 报「停滞」错误；
+    ///    - 出现失败节点 → 带失败详情返回错误；
+    /// 3. 发出 `Synthesizing` 阶段，汇总结果并发出 `SynthesizedOutput`；
+    /// 4. 返回汇总文本。
     pub async fn execute_graph(&self, graph: &mut TaskGraph) -> Result<String> {
         self.emit(OrchestrationEvent::PhaseChanged(OrchestrationPhase::Planning))
             .await;
 
-        // Execute loop: repeatedly process ready nodes
         loop {
-            // Check for failures first
+            // 失败优先：一次性报出所有失败节点，避免逐个重试。
             if graph.has_failures() {
-                let failed_nodes: Vec<String> = graph
-                    .nodes
-                    .iter()
-                    .filter_map(|n| {
-                        if let NodeStatus::Failed(ref err) = n.status {
-                            Some(format!("{}: {}", n.id, err))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
                 return Err(AppError::Orchestrator(format!(
                     "Task graph execution failed — nodes: {}",
-                    failed_nodes.join("; ")
+                    failed_node_descriptions(graph).join("; ")
                 )));
             }
 
-            // Check if graph is complete
             if graph.is_complete() {
                 break;
             }
 
-            let ready_ids: Vec<String> = graph
-                .ready_nodes()
-                .iter()
-                .map(|n| n.id.clone())
-                .collect();
-
+            let ready_ids = ready_node_ids(graph);
             if ready_ids.is_empty() {
                 return Err(AppError::Orchestrator(
                     "Task graph stalled — no ready nodes but graph is not complete".into(),
                 ));
             }
 
-            // Process each ready node
             for node_id in &ready_ids {
-                // Borrow graph immutably to read node data
-                let (node_label, node_worker) = {
-                    let node = graph.get_node(node_id).ok_or_else(|| {
-                        AppError::Orchestrator(format!("Node '{}' not found", node_id))
-                    })?;
-                    (node.label.clone(), node.worker_kind.clone())
-                };
-
-                self.emit(OrchestrationEvent::TaskStarted {
-                    task_id: node_id.clone(),
-                    label: node_label.clone(),
-                    worker: node_worker,
-                })
-                .await;
-
-                // Mark node as Running
-                if let Some(mut_node) = graph.get_node_mut(node_id) {
-                    mut_node.status = NodeStatus::Running;
-                }
-
-                // Execute the node (immutable read of graph)
-                let start = Instant::now();
-                match self.execute_node(graph, node_id).await {
-                    Ok(content) => {
-                        let duration = start.elapsed().as_millis() as u64;
-                        // Safe UTF-8 char boundary slicing: take first 120 chars, not bytes
-                        let summary = if content.chars().count() > 120 {
-                            format!("{}…", content.chars().take(120).collect::<String>())
-                        } else {
-                            content.clone()
-                        };
-
-                        if let Some(mut_node) = graph.get_node_mut(node_id) {
-                            mut_node.status = NodeStatus::Completed;
-                            mut_node.result_summary = Some(summary.clone());
-                            mut_node.duration_ms = Some(duration);
-                        }
-
-                        self.emit(OrchestrationEvent::TaskCompleted {
-                            task_id: node_id.clone(),
-                            label: node_label,
-                            result_summary: summary,
-                            duration_ms: duration,
-                        })
-                        .await;
-                    }
-                    Err(e) => {
-                        let duration = start.elapsed().as_millis() as u64;
-                        let err_str = e.to_string();
-
-                        if let Some(mut_node) = graph.get_node_mut(node_id) {
-                            mut_node.status = NodeStatus::Failed(err_str.clone());
-                            mut_node.duration_ms = Some(duration);
-                        }
-
-                        self.emit(OrchestrationEvent::TaskFailed {
-                            task_id: node_id.clone(),
-                            label: node_label,
-                            error: err_str.clone(),
-                        })
-                        .await;
-
-                        return Err(AppError::Orchestrator(format!(
-                            "Node '{}' failed: {}",
-                            node_id, err_str
-                        )));
-                    }
-                }
+                self.run_node(graph, node_id).await?;
             }
         }
 
-        // Synthesize results
         self.emit(OrchestrationEvent::PhaseChanged(OrchestrationPhase::Synthesizing))
             .await;
 
@@ -233,22 +160,87 @@ impl OrchestratorAgent {
         Ok(synthesized)
     }
 
-    /// Execute a single node with Critic reflection loop.
+    /// 执行一个已就绪节点：标记状态、分发、回写结果并上报事件。
     ///
-    /// 1. Get node from graph, convert to SubTask
-    /// 2. Try up to max_critique_rounds times:
-    ///    - Dispatch to worker
-    ///    - quick_review from CriticAgent
-    ///    - If Revise and rounds remain: WorkerFeedback → retry
-    ///    - LLM-based review from CriticAgent
-    ///    - If Go → return content
-    ///    - If Revise and rounds remain → continue
-    ///    - If Escalate → error
-    /// 3. After max rounds → accept output (log warning)
+    /// 节点失败时先把失败状态写回图，再向上返回错误，保证调用方能看到
+    /// 失败详情。
+    async fn run_node(&self, graph: &mut TaskGraph, node_id: &str) -> Result<()> {
+        let (node_label, node_worker) = {
+            let node = graph
+                .get_node(node_id)
+                .ok_or_else(|| AppError::Orchestrator(format!("Node '{}' not found", node_id)))?;
+            (node.label.clone(), node.worker_kind.clone())
+        };
+
+        self.emit(OrchestrationEvent::TaskStarted {
+            task_id: node_id.to_string(),
+            label: node_label.clone(),
+            worker: node_worker,
+        })
+        .await;
+
+        if let Some(mut_node) = graph.get_node_mut(node_id) {
+            mut_node.status = NodeStatus::Running;
+        }
+
+        let start = Instant::now();
+        match self.execute_node(graph, node_id).await {
+            Ok(content) => {
+                let duration = start.elapsed().as_millis() as u64;
+                let summary = summarize(&content);
+
+                if let Some(mut_node) = graph.get_node_mut(node_id) {
+                    mut_node.status = NodeStatus::Completed;
+                    mut_node.result_summary = Some(summary.clone());
+                    mut_node.duration_ms = Some(duration);
+                }
+
+                self.emit(OrchestrationEvent::TaskCompleted {
+                    task_id: node_id.to_string(),
+                    label: node_label,
+                    result_summary: summary,
+                    duration_ms: duration,
+                })
+                .await;
+                Ok(())
+            }
+            Err(e) => {
+                let duration = start.elapsed().as_millis() as u64;
+                let err_str = e.to_string();
+
+                if let Some(mut_node) = graph.get_node_mut(node_id) {
+                    mut_node.status = NodeStatus::Failed(err_str.clone());
+                    mut_node.duration_ms = Some(duration);
+                }
+
+                self.emit(OrchestrationEvent::TaskFailed {
+                    task_id: node_id.to_string(),
+                    label: node_label,
+                    error: err_str.clone(),
+                })
+                .await;
+
+                Err(AppError::Orchestrator(format!(
+                    "Node '{}' failed: {}",
+                    node_id, err_str
+                )))
+            }
+        }
+    }
+
+    /// 执行单个节点，并应用 Critic 反思循环。
+    ///
+    /// 流程：
+    /// 1. 从图中取节点并转换为 `SubTask`；
+    /// 2. 最多尝试 `max_critique_rounds` 轮：
+    ///    - 分发给 worker；
+    ///    - 规则快审判定 Revise 且仍有轮次时，带反馈重试；
+    ///    - LLM 深审：Go 直接返回，Revise 且仍有轮次则继续，Escalate 报错；
+    /// 3. 轮次用尽后接受当前输出并记录警告。
     async fn execute_node(&self, graph: &TaskGraph, node_id: &str) -> Result<String> {
-        let node = graph
-            .get_node(node_id)
-            .ok_or_else(|| AppError::Orchestrator(format!("Node '{}' not found in graph", node_id)))?;
+        let node = graph.get_node(node_id).ok_or_else(|| {
+            AppError::Orchestrator(format!("Node '{}' not found in graph", node_id))
+        })?;
 
         let mut current_task = node.to_sub_task();
 
@@ -258,41 +250,29 @@ impl OrchestratorAgent {
                     .await;
             }
 
-            // Dispatch to worker (instruction already incorporates any prior feedback)
+            // 指令中已经包含上一轮追加的反馈。
             let worker_result = self.dispatcher.dispatch(&current_task).await?;
 
-            // Rule-based quick review
+            // 规则快审：成本低，能在明显问题时省掉一次 LLM 调用。
             if let Some(quick) = CriticAgent::quick_review(&current_task, &worker_result) {
                 if quick.decision == CritiqueDecision::Revise && round + 1 < self.max_critique_rounds
                 {
-                    current_task.instruction = format!(
-                        "Previous attempt had these issues:\n{}\n\nFeedback:\n{}\n\nPlease fix and retry.\n\n{}",
-                        quick.issues.join("\n"),
-                        quick.suggestions.join("\n"),
-                        node.instruction
-                    );
-                    self.emit(OrchestrationEvent::CritiqueReceived {
-                        task_id: node_id.into(),
-                        decision: CritiqueDecision::Revise,
-                        issues: quick.issues.clone(),
-                    })
-                    .await;
+                    current_task.instruction =
+                        build_retry_instruction(&node.instruction, &quick.issues, &quick.suggestions);
+                    self.emit_critique(node_id, CritiqueDecision::Revise, quick.issues.clone())
+                        .await;
                     continue;
                 }
             }
 
-            // LLM-based deep review
+            // LLM 深审。
             let critique = self
                 .critic
                 .review(&current_task, &worker_result, None)
                 .await?;
 
-            self.emit(OrchestrationEvent::CritiqueReceived {
-                task_id: node_id.into(),
-                decision: critique.decision.clone(),
-                issues: critique.issues.clone(),
-            })
-            .await;
+            self.emit_critique(node_id, critique.decision.clone(), critique.issues.clone())
+                .await;
 
             match critique.decision {
                 CritiqueDecision::Go => {
@@ -301,11 +281,10 @@ impl OrchestratorAgent {
                     return Ok(worker_result.content);
                 }
                 CritiqueDecision::Revise if round + 1 < self.max_critique_rounds => {
-                    current_task.instruction = format!(
-                        "Previous attempt had these issues:\n{}\n\nFeedback:\n{}\n\nPlease fix and retry.\n\n{}",
-                        critique.issues.join("\n"),
-                        critique.suggestions.join("\n"),
-                        node.instruction
+                    current_task.instruction = build_retry_instruction(
+                        &node.instruction,
+                        &critique.issues,
+                        &critique.suggestions,
                     );
                     continue;
                 }
@@ -317,7 +296,7 @@ impl OrchestratorAgent {
                     )));
                 }
                 _ => {
-                    // Last round or no rounds left — accept output with warning
+                    // 轮次用尽：接受当前输出，避免整条链路失败。
                     log::warn!(
                         "Node '{}' exceeded max critique rounds ({}), accepting output",
                         node_id,
@@ -328,15 +307,29 @@ impl OrchestratorAgent {
             }
         }
 
-        // Should not reach here — if we exhausted rounds without returning,
-        // accept whatever we have as a fallback.
+        // 理论上不可达：轮次耗尽仍未返回，说明没有产出可接受的输出。
         Err(AppError::Orchestrator(format!(
             "Node '{}' produced no acceptable output after {} critique rounds",
             node_id, self.max_critique_rounds
         )))
     }
 
-    /// Synthesize all completed node results into a coherent final output.
+    /// 上报一条 critic 评审结果。
+    async fn emit_critique(
+        &self,
+        node_id: &str,
+        decision: CritiqueDecision,
+        issues: Vec<String>,
+    ) {
+        self.emit(OrchestrationEvent::CritiqueReceived {
+            task_id: node_id.to_string(),
+            decision,
+            issues,
+        })
+        .await;
+    }
+
+    /// 把已完成节点的结果汇总成一段连贯的最终输出。
     async fn synthesize_results(&self, graph: &TaskGraph) -> Result<String> {
         let mut output = String::new();
         output.push_str(&format!("# Execution Results: {}\n\n", graph.goal));
@@ -381,11 +374,10 @@ impl OrchestratorAgent {
         Ok(output)
     }
 
-    /// Convenience: single goal → full pipeline.
+    /// 便捷入口：单个目标 → 完整编排流程。
     ///
-    /// Takes a natural language goal, auto-decomposes, executes, and returns the result.
-    /// Currently creates a TaskGraph with one Thinker task.
-    /// In future phases this will use LLM-based decomposition.
+    /// 接收自然语言目标，自动拆解、执行并返回结果。当前只创建一个 Thinker
+    /// 任务；后续阶段会改为基于 LLM 的拆解。
     pub async fn process_goal(&self, goal: &str, model_id: Option<&str>) -> Result<String> {
         let mut graph = TaskGraph::new("goal_1".into(), goal.into());
 
@@ -402,6 +394,48 @@ impl OrchestratorAgent {
 
         self.execute_graph(&mut graph).await
     }
+}
+
+/// 汇总失败节点的 `id: error` 描述，用于一次性报出所有失败原因。
+fn failed_node_descriptions(graph: &TaskGraph) -> Vec<String> {
+    graph
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            if let NodeStatus::Failed(ref err) = n.status {
+                Some(format!("{}: {}", n.id, err))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 返回当前所有可执行节点的 id。
+fn ready_node_ids(graph: &TaskGraph) -> Vec<String> {
+    graph.ready_nodes().iter().map(|n| n.id.clone()).collect()
+}
+
+/// 把节点输出截成摘要，超长时追加省略号（按字符截断，不会切断中文）。
+fn summarize(content: &str) -> String {
+    if content.chars().count() > NODE_SUMMARY_CHARS {
+        format!(
+            "{}…",
+            content.chars().take(NODE_SUMMARY_CHARS).collect::<String>()
+        )
+    } else {
+        content.to_string()
+    }
+}
+
+/// 把上一轮的 issues 与 suggestions 拼成重试指令，并保留原始任务描述。
+fn build_retry_instruction(original: &str, issues: &[String], suggestions: &[String]) -> String {
+    format!(
+        "Previous attempt had these issues:\n{}\n\nFeedback:\n{}\n\nPlease fix and retry.\n\n{}",
+        issues.join("\n"),
+        suggestions.join("\n"),
+        original
+    )
 }
 
 #[cfg(test)]

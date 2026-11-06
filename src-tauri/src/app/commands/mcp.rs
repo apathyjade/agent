@@ -1,3 +1,8 @@
+//! MCP（Model Context Protocol）连接管理 IPC 命令。
+//!
+//! 负责 server 的增删、连接生命周期、工具级配置与健康统计。MCP 工具会
+//! 动态注册进 `ToolRegistry`，与内置工具走同一套调用路径。
+
 use std::collections::HashMap;
 
 use tauri::State;
@@ -7,11 +12,16 @@ use crate::features::mcp::config::{ConfirmationMode, McpServerConfig, StartupPol
 use crate::features::mcp::manager::{ConnectionInfo, ConnectionStats};
 use crate::app::state::AppState;
 
+/// 列出所有 MCP 连接及其当前状态（`ready` / `degraded` / `failed` 等）。
 #[tauri::command]
 pub async fn list_mcp_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionInfo>> {
     Ok(state.mcp.list_connections().await)
 }
 
+/// 新增 MCP server：校验运行时、立即连接、成功后才写入配置。
+///
+/// `runtime` 为空或 `"auto"` 表示不指定运行时；其他取值必须能解析且通过
+/// 可用性校验，否则返回 `InvalidInput`。返回连接信息。
 #[tauri::command]
 pub async fn add_mcp_server(
     state: State<'_, AppState>,
@@ -20,7 +30,7 @@ pub async fn add_mcp_server(
     args: Vec<String>,
     runtime: Option<String>,
 ) -> Result<ConnectionInfo> {
-    // Validate runtime if provided
+    // 指定了运行时就先校验可用性。
     if let Some(ref rt_str) = runtime {
         if !rt_str.is_empty() && rt_str != "auto" {
             if let Ok(rt) = rt_str.parse::<crate::runtime::toolchain::RuntimeType>() {
@@ -44,29 +54,30 @@ pub async fn add_mcp_server(
         runtime: runtime.unwrap_or_default(),
     };
 
-    // Connect to the server
+    // 先连接；连不上就不落配置。
     state.mcp.connect(&config).await?;
 
-    // Save to config
+    // 写入配置。
     {
         let mut app_config = state.config.lock().await;
         app_config.mcp_servers.push(config);
         app_config.save()?;
     }
 
-    // Return connection info
+    // 返回连接信息。
     let infos = state.mcp.list_connections().await;
     infos.into_iter().find(|c| c.id == id).ok_or_else(|| {
         AppError::NotFound(format!("MCP connection '{}' not found after connect", id))
     })
 }
 
+/// 断开并从配置中移除 MCP server。
 #[tauri::command]
 pub async fn remove_mcp_server(state: State<'_, AppState>, id: String) -> Result<()> {
-    // Disconnect
+    // 先断开连接。
     state.mcp.disconnect(&id).await?;
 
-    // Remove from config
+    // 再从配置里删除。
     {
         let mut app_config = state.config.lock().await;
         app_config.mcp_servers.retain(|s| s.id != id);
@@ -76,6 +87,7 @@ pub async fn remove_mcp_server(state: State<'_, AppState>, id: String) -> Result
     Ok(())
 }
 
+/// 按配置连接一个已登记的 MCP server；`id` 不存在时返回 `NotFound`。
 #[tauri::command]
 pub async fn connect_mcp_server(state: State<'_, AppState>, id: String) -> Result<()> {
     let config = {
@@ -93,12 +105,13 @@ pub async fn connect_mcp_server(state: State<'_, AppState>, id: String) -> Resul
     state.mcp.connect(&config).await
 }
 
+/// 断开连接但保留配置，之后仍可 [`connect_mcp_server`]。
 #[tauri::command]
 pub async fn disconnect_mcp_server(state: State<'_, AppState>, id: String) -> Result<()> {
     state.mcp.disconnect(&id).await
 }
 
-/// Restart an MCP server: disconnect then reconnect.
+/// 重启 MCP server：先断开、等待 200ms 让进程干净退出，再重新连接。
 #[tauri::command]
 pub async fn restart_mcp_server(state: State<'_, AppState>, id: String) -> Result<()> {
     let config = {
@@ -113,22 +126,24 @@ pub async fn restart_mcp_server(state: State<'_, AppState>, id: String) -> Resul
             })?
     };
 
-    // Disconnect first, then reconnect
+    // 必须先断开，再重连。
     state.mcp.disconnect(&id).await?;
-    // Small delay to ensure clean shutdown
+    // 留一点时间确保旧进程完全退出。
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     state.mcp.connect(&config).await
 }
 
-/// Get stderr logs for a specific MCP server connection.
+/// 读取某个 MCP 连接的 stderr 日志（供排查启动失败）。
 #[tauri::command]
 pub async fn get_mcp_server_logs(state: State<'_, AppState>, id: String) -> Result<Vec<String>> {
     Ok(state.mcp.get_connection_logs(&id).await)
 }
 
-/// Update the tool-level configuration (enabled/disabled, confirmation mode)
-/// for a specific tool on a connected MCP server.
-/// Automatically hot-reloads the server so the new config takes effect.
+/// 更新某个 MCP 工具的配置（启用状态与确认模式）。
+///
+/// `confirmation` 是 `ConfirmationMode::parse` 能识别的字符串（如 `always`、
+/// `never`）。配置真正发生变化且连接处于 `ready`/`degraded` 时，会自动
+/// 热重载该 server；连接不存在时静默返回 `Ok`。
 #[tauri::command]
 pub async fn update_mcp_tool_config(
     state: State<'_, AppState>,
@@ -165,7 +180,7 @@ pub async fn update_mcp_tool_config(
         }
     };
 
-    // If tool config changed and server is connected, hot-reload
+    // 配置确实变了且 server 正在运行：热重载使其生效。
     if needs_reconnect {
         if let Some((is_active, _)) = state.mcp.get_connection_status(&connection_id).await {
             if is_active == "ready" || is_active == "degraded" {
@@ -193,7 +208,10 @@ pub async fn update_mcp_tool_config(
     Ok(())
 }
 
-/// Update the startup policy for a specific MCP server.
+/// 更新某个 MCP server 的启动策略。
+///
+/// 每个参数都是可选的：`None` 表示保持原值。`priority` 传负数表示清空为
+/// `None`（不参与启动排序）。server 不存在时静默返回 `Ok`。
 #[tauri::command]
 pub async fn update_mcp_startup_policy(
     state: State<'_, AppState>,
@@ -226,7 +244,7 @@ pub async fn update_mcp_startup_policy(
     Ok(())
 }
 
-/// Get health and usage statistics for a specific MCP connection.
+/// 读取某个 MCP 连接的健康与调用统计；连接不存在时返回 `NotFound`。
 #[tauri::command]
 pub async fn get_mcp_connection_stats(
     state: State<'_, AppState>,

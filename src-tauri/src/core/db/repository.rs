@@ -1,17 +1,30 @@
+//! 数据库连接、表结构与迁移，以及项目、绑定项目、运行时版本缓存和工作流运行记录的读写。
+//!
+//! 会话、记忆、人格、执行计划与意图相关的 `impl Database` 分别位于
+//! `session_repo`、`memory_repo`、`persona_repo`、`plan_repo` 与 `intent_repo`；
+//! 调用方统一通过 [`Database`] 使用，无需感知文件划分。
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::core::db::models::{BoundProjectModel, Project, Session, SessionSummary, MemoryRecord, Message, PersonaRecord, RuntimeVersionCache, Setting, SystemPrompt};
-use crate::core::db::models::{ExecutionPlanRecord, PlanStepRecord, WorkflowRunRecord};
+use crate::core::db::models::{BoundProjectModel, Project, RuntimeVersionCache, Session, WorkflowRunRecord};
 use crate::core::error::Result;
 
+/// SQLite 连接持有者，所有持久化操作的入口。
+///
+/// 连接由上层以 `Arc<Mutex<Database>>` 共享，因此这里的方法都只借用 `&self`：
+/// 单条语句依赖 SQLite 自身的串行化，需要多语句原子性的方法在内部显式开事务。
 pub struct Database {
     pub(crate) conn: Connection,
 }
 
 impl Database {
+    /// 打开（必要时创建）磁盘上的数据库文件，并保证表结构与迁移就绪。
+    ///
+    /// 副作用：创建父目录、建表、执行迁移。`migrate_tables` 的每一步都可重复执行，
+    /// 因此重复调用是安全的。
     pub fn new() -> Result<Self> {
         let db_path = Self::db_path();
         if let Some(parent) = db_path.parent() {
@@ -25,6 +38,8 @@ impl Database {
         Ok(Self { conn })
     }
 
+    /// 数据库文件的固定位置：`<系统数据目录>/agent/agent.db`。
+    /// 取不到系统数据目录时退化为当前目录，便于受限环境下启动。
     fn db_path() -> PathBuf {
         let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
         path.push("agent");
@@ -32,8 +47,8 @@ impl Database {
         path
     }
 
-    /// Create a temporary in-memory database for testing.
-    /// Only available in test builds.
+    /// 创建一个仅存在于内存中的测试数据库，表结构与迁移与真实库一致。
+    /// 只在测试构建中可用，测试之间互不共享数据。
     #[cfg(test)]
     pub fn new_test() -> Result<Self> {
         let conn = rusqlite::Connection::open_in_memory()?;
@@ -42,6 +57,9 @@ impl Database {
         Ok(Self { conn })
     }
 
+    /// 建立全部表、索引、FTS5 虚表与触发器（均带 `IF NOT EXISTS`，可重复执行）。
+    ///
+    /// 注意：这里刻意保持 `PRAGMA foreign_keys = OFF`，级联删除由各仓储方法显式处理。
     fn init_tables(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "
@@ -72,6 +90,7 @@ impl Database {
                 content TEXT NOT NULL,
                 tool_calls TEXT,
                 tool_call_id TEXT,
+                tool_name TEXT,
                 tokens INTEGER,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -214,9 +233,9 @@ impl Database {
             ",
         )?;
 
-        // FTS5 virtual table for full-text search on memories (content + tags)
-        // Uses external content model — indexes only, data lives in memories table.
-        // unicode61 tokenizer handles both English and CJK characters.
+        // 记忆全文检索用的 FTS5 虚表（索引 content 与 tags 两列）。
+        // 采用 external content 模式：这里只存索引，正文仍在 memories 表中。
+        // unicode61 分词器同时支持英文与中日韩文字。
         conn.execute_batch(
             "
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -245,7 +264,7 @@ impl Database {
             ",
         )?;
 
-        // Session summaries table for conversation lifecycle management
+        // 会话摘要表，用于对话生命周期管理（压缩历史消息）。
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS session_summaries (
@@ -299,8 +318,12 @@ impl Database {
         Ok(())
     }
 
+    /// 按版本逐项补齐历史库缺失的列与表，并在需要时重建 FTS 索引。
+    ///
+    /// 每一步都先探测目标列/表是否存在，因此对已是最新结构的库是空操作。
+    /// 迁移失败时错误向上传播，不会继续执行后续步骤。
     fn migrate_tables(conn: &Connection) -> Result<()> {
-        // Migration v1: rename provider column (old schema)
+        // 迁移 v1：重命名 provider 列（旧结构）。
         let has_provider = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='provider'",
             [],
@@ -330,7 +353,7 @@ impl Database {
             )?;
         }
 
-        // Migration v3: add trigger_type and step_progress to workflow_runs
+        // 迁移 v3：为 workflow_runs 增加 trigger_type 与 step_progress 列。
         let has_trigger_type = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='trigger_type'",
             [],
@@ -344,7 +367,7 @@ impl Database {
             )?;
         }
 
-        // Migration v4: rename sessersations → sessions, sessersation_id → session_id
+        // 迁移 v4：把 sessersations 改名为 sessions、sessersation_id 改名为 session_id。
         let has_old_table = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessersations'",
             [],
@@ -381,7 +404,7 @@ impl Database {
             )?;
         }
 
-        // Migration v6: add title_source and archived columns to sessions table
+        // 迁移 v6：为 sessions 增加 title_source 与 archived 列。
         let has_title_source = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='title_source'",
             [],
@@ -395,7 +418,7 @@ impl Database {
             )?;
         }
 
-        // Migration v7: add persona_id column to sessions table
+        // 迁移 v7：为 sessions 增加 persona_id 列。
         let has_persona_id = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='persona_id'",
             [],
@@ -408,7 +431,7 @@ impl Database {
             )?;
         }
 
-        // Migration v8: add config column to sessions table
+        // 迁移 v8：为 sessions 增加 config 列。
         let has_config = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='config'",
             [],
@@ -421,7 +444,7 @@ impl Database {
             )?;
         }
 
-        // Migration v9: add mode, execution_status, active_plan_id to sessions
+        // 迁移 v9：为 sessions 增加 mode、execution_status 与 active_plan_id 列。
         let has_mode = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='mode'",
             [],
@@ -436,7 +459,7 @@ impl Database {
             )?;
         }
 
-        // Migration v10: add project_id column to sessions table
+        // 迁移 v10：为 sessions 增加 project_id 列。
         let has_project_id = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='project_id'",
             [],
@@ -449,9 +472,9 @@ impl Database {
             )?;
         }
 
-        // Migration v11: add session intent-domain state to sessions.
-        // `intent_domain_id` is the last domain the session belonged to (a prior,
-        // not a constraint); `intent_domain_mode` is "auto" | "pinned".
+        // 迁移 v11：为 sessions 增加会话级意图领域状态。
+        // `intent_domain_id` 是会话最近所属的领域（仅作为路由先验，不是约束）；
+        // `intent_domain_mode` 的合法值为 "auto" 或 "pinned"。
         let has_intent_domain_id = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='intent_domain_id'",
             [],
@@ -465,9 +488,20 @@ impl Database {
             )?;
         }
 
-        // Migration v5: rebuild FTS5 index if existing memories haven't been indexed yet.
-        // The FTS table was just created in init_tables (or already existed from a prior run).
-        // Check if the FTS index is empty while the memories table has rows.
+        // 迁移 v12：为 messages 增加工具名，避免历史里的工具结果只能叫 "tool"。
+        let has_tool_name = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='tool_name'",
+            [],
+            |row| row.get::<_, i32>(0),
+        ).unwrap_or(0);
+
+        if has_tool_name == 0 {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN tool_name TEXT;")?;
+        }
+
+        // 迁移 v5：为尚未建立索引的历史记忆重建 FTS5 索引。
+        // FTS 表刚在 init_tables 中创建（或上次运行就已存在），
+        // 因此这里只需判断“memories 有数据而 FTS 索引为空”的情况。
         let mem_count: i32 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
             .unwrap_or(0);
@@ -483,288 +517,9 @@ impl Database {
         Ok(())
     }
 
-    /// Inserts a session. `is_active` now marks the *default* domain for new
-    /// sessions: when the caller does not supply `intent_domain_id`, it is
-    /// initialized from the active domain (if any). This affects the column
-    /// value only, nothing else.
-    pub fn create_session(&self, sess: &Session) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO sessions (id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, COALESCE(?15, (SELECT id FROM intent_domains WHERE is_active = 1 LIMIT 1)), ?16)",
-            params![sess.id, sess.title, sess.model_id, sess.system_prompt, sess.persona_id, sess.config, sess.title_source, sess.archived as i32, sess.created_at, sess.updated_at, sess.mode, sess.execution_status, sess.active_plan_id, sess.project_id, sess.intent_domain_id, sess.intent_domain_mode],
-        )?;
-        Ok(())
-    }
+    // ── 工作流运行记录 ──
 
-    pub fn list_sessions(&self) -> Result<Vec<Session>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode FROM sessions ORDER BY updated_at DESC",
-        )?;
-        let sessions = stmt.query_map([], |row| {
-            Ok(Session {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                model_id: row.get(2)?,
-                system_prompt: row.get(3)?,
-                persona_id: row.get(4)?,
-                config: row.get(5)?,
-                title_source: row.get(6)?,
-                archived: row.get::<_, i32>(7)? != 0,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-                mode: row.get(10)?,
-                execution_status: row.get(11)?,
-                active_plan_id: row.get(12)?,
-                project_id: row.get(13)?,
-                intent_domain_id: row.get(14)?,
-                intent_domain_mode: row.get(15)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(sessions)
-    }
-
-    pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode FROM sessions WHERE id = ?1",
-        )?;
-        let sess = stmt.query_row(params![id], |row| {
-            Ok(Session {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                model_id: row.get(2)?,
-                system_prompt: row.get(3)?,
-                persona_id: row.get(4)?,
-                config: row.get(5)?,
-                title_source: row.get(6)?,
-                archived: row.get::<_, i32>(7)? != 0,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-                mode: row.get(10)?,
-                execution_status: row.get(11)?,
-                active_plan_id: row.get(12)?,
-                project_id: row.get(13)?,
-                intent_domain_id: row.get(14)?,
-                intent_domain_mode: row.get(15)?,
-            })
-        }).optional()?;
-        Ok(sess)
-    }
-
-    pub fn delete_session(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM session_summaries WHERE session_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("request_ctx:{}", id)])?;
-        Ok(())
-    }
-
-    pub fn update_session_title(&self, id: &str, title: &str) -> Result<()> {
-        self.conn.execute("UPDATE sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2", params![title, id])?;
-        Ok(())
-    }
-
-    pub fn update_session_model(&self, id: &str, model_id: &str) -> Result<()> {
-        self.conn.execute("UPDATE sessions SET model_id = ?1, updated_at = datetime('now') WHERE id = ?2", params![model_id, id])?;
-        Ok(())
-    }
-
-    pub fn update_session_system_prompt(&self, id: &str, system_prompt: &str) -> Result<()> {
-        self.conn.execute("UPDATE sessions SET system_prompt = ?1, updated_at = datetime('now') WHERE id = ?2", params![system_prompt, id])?;
-        Ok(())
-    }
-
-    pub fn update_session_config(&self, id: &str, config: &str) -> Result<()> {
-        self.conn.execute("UPDATE sessions SET config = ?1, updated_at = datetime('now') WHERE id = ?2", params![config, id])?;
-        Ok(())
-    }
-
-    /// Sets the session's intent domain state. Only these two columns change;
-    /// `updated_at` is intentionally left alone so routing writes do not
-    /// reorder the session list.
-    pub fn set_session_intent_domain(
-        &self,
-        session_id: &str,
-        domain_id: Option<&str>,
-        mode: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET intent_domain_id = ?1, intent_domain_mode = ?2 WHERE id = ?3",
-            params![domain_id, mode, session_id],
-        )?;
-        Ok(())
-    }
-
-    pub(crate) fn clear_intent_domain_references_on(conn: &Connection, domain_id: &str) -> Result<()> {
-        // Foreign keys are OFF in this project, so session references are
-        // cleared explicitly. Mode falls back to `auto`.
-        conn.execute(
-            "UPDATE sessions SET intent_domain_id = NULL, intent_domain_mode = 'auto' WHERE intent_domain_id = ?1",
-            params![domain_id],
-        )?;
-        Ok(())
-    }
-
-    /// Detaches every session that referenced `domain_id`: the domain goes
-    /// back to "no prior" and `auto` mode.
-    pub fn clear_intent_domain_references(&self, domain_id: &str) -> Result<()> {
-        Self::clear_intent_domain_references_on(&self.conn, domain_id)
-    }
-
-    pub fn clear_messages(&self, session_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])?;
-        self.conn.execute("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1", params![session_id])?;
-        Ok(())
-    }
-
-    // ── Session Summaries CRUD ──
-
-    pub fn insert_summary(&self, summary: &SessionSummary) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO session_summaries (id, session_id, message_start_id, message_end_id, summary, key_points, original_token_count, summary_token_count, model_used, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![summary.id, summary.session_id, summary.message_start_id, summary.message_end_id, summary.summary, summary.key_points, summary.original_token_count, summary.summary_token_count, summary.model_used, summary.created_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_session_summaries(&self, session_id: &str) -> Result<Vec<SessionSummary>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, message_start_id, message_end_id, summary, key_points, original_token_count, summary_token_count, model_used, created_at
-             FROM session_summaries WHERE session_id = ?1 ORDER BY created_at ASC",
-        )?;
-        let summaries = stmt.query_map(params![session_id], |row| {
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                message_start_id: row.get(2)?,
-                message_end_id: row.get(3)?,
-                summary: row.get(4)?,
-                key_points: row.get(5)?,
-                original_token_count: row.get(6)?,
-                summary_token_count: row.get(7)?,
-                model_used: row.get(8)?,
-                created_at: row.get(9)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(summaries)
-    }
-
-    pub fn get_latest_summary_end_id(&self, session_id: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT message_end_id FROM session_summaries WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1",
-        )?;
-        let id = stmt.query_row(params![session_id], |row| row.get(0)).optional()?;
-        Ok(id)
-    }
-
-    /// Query sessions eligible for archival (not archived + old)
-    pub fn list_archivable_sessions(&self, archive_after_days: u32) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM sessions WHERE archived = 0 AND updated_at < datetime('now', ?1)",
-        )?;
-        let since = format!("-{} days", archive_after_days);
-        let ids = stmt.query_map(params![since], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(ids)
-    }
-
-    pub fn set_session_archived(&self, id: &str, archived: bool) -> Result<()> {
-        self.conn.execute("UPDATE sessions SET archived = ?1 WHERE id = ?2", params![archived as i32, id])?;
-        Ok(())
-    }
-
-    pub fn update_session_title_with_source(&self, id: &str, title: &str, source: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET title = ?1, title_source = ?2, updated_at = datetime('now') WHERE id = ?3",
-            params![title, source, id],
-        )?;
-        Ok(())
-    }
-
-    pub fn insert_message(&self, msg: &Message) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, tool_calls, tool_call_id, tokens, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![msg.id, msg.session_id, msg.role, msg.content, msg.tool_calls, msg.tool_call_id, msg.tokens, msg.created_at],
-        )?;
-        self.conn.execute("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1", params![msg.session_id])?;
-        Ok(())
-    }
-
-    pub fn get_messages(&self, session_id: &str) -> Result<Vec<Message>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id, tokens, created_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
-        )?;
-        let messages = stmt.query_map(params![session_id], |row| {
-            Ok(Message { id: row.get(0)?, session_id: row.get(1)?, role: row.get(2)?, content: row.get(3)?, tool_calls: row.get(4)?, tool_call_id: row.get(5)?, tokens: row.get(6)?, created_at: row.get(7)? })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(messages)
-    }
-
-    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2", params![key, value])?;
-        Ok(())
-    }
-
-    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
-        let value = stmt.query_row(params![key], |row| row.get(0)).optional()?;
-        Ok(value)
-    }
-
-    pub fn get_all_settings(&self) -> Result<Vec<Setting>> {
-        let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
-        let settings = stmt.query_map([], |row| Ok(Setting { key: row.get(0)?, value: row.get(1)? }))?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(settings)
-    }
-
-    pub fn create_system_prompt(&self, prompt: &SystemPrompt) -> Result<()> {
-        if prompt.is_default {
-            self.conn.execute("UPDATE system_prompts SET is_default = 0", [])?;
-        }
-        self.conn.execute(
-            "INSERT INTO system_prompts (id, name, content, is_default, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![prompt.id, prompt.name, prompt.content, prompt.is_default as i32, prompt.created_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_system_prompts(&self) -> Result<Vec<SystemPrompt>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, content, is_default, created_at FROM system_prompts ORDER BY created_at DESC")?;
-        let prompts = stmt.query_map([], |row| {
-            Ok(SystemPrompt { id: row.get(0)?, name: row.get(1)?, content: row.get(2)?, is_default: row.get::<_, i32>(3)? != 0, created_at: row.get(4)? })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(prompts)
-    }
-
-    pub fn get_system_prompt(&self, id: &str) -> Result<Option<SystemPrompt>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, content, is_default, created_at FROM system_prompts WHERE id = ?1")?;
-        let prompt = stmt.query_row(params![id], |row| {
-            Ok(SystemPrompt { id: row.get(0)?, name: row.get(1)?, content: row.get(2)?, is_default: row.get::<_, i32>(3)? != 0, created_at: row.get(4)? })
-        }).optional()?;
-        Ok(prompt)
-    }
-
-    pub fn delete_system_prompt(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM system_prompts WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    pub fn set_default_system_prompt(&self, id: &str) -> Result<()> {
-        self.conn.execute("UPDATE system_prompts SET is_default = 0", [])?;
-        self.conn.execute("UPDATE system_prompts SET is_default = 1 WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    pub fn get_default_system_prompt(&self) -> Result<Option<SystemPrompt>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, content, is_default, created_at FROM system_prompts WHERE is_default = 1 LIMIT 1")?;
-        let prompt = stmt.query_row([], |row| {
-            Ok(SystemPrompt { id: row.get(0)?, name: row.get(1)?, content: row.get(2)?, is_default: row.get::<_, i32>(3)? != 0, created_at: row.get(4)? })
-        }).optional()?;
-        Ok(prompt)
-    }
-
-    // ── Workflow Runs ──
-
+    /// 插入一条工作流运行记录；不做去重，`id` 冲突会返回数据库错误。
     pub fn insert_workflow_run(&self, run: &WorkflowRunRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO workflow_runs (id, workflow_name, status, step_results, step_progress, error, trigger_type, started_at, finished_at)
@@ -774,6 +529,11 @@ impl Database {
         Ok(())
     }
 
+    /// 更新运行状态、步骤结果与错误信息。
+    ///
+    /// `step_results` 会被序列化为 JSON，序列化失败时写入空字符串而不是报错。
+    /// `status == "running"` 时 `finished_at` 置 NULL，否则写入当前时间，
+    /// 因此同一方法既能表示“开始”也能表示“结束”。
     pub fn update_workflow_run_status(
         &self,
         id: &str,
@@ -795,6 +555,7 @@ impl Database {
         Ok(())
     }
 
+    /// 按 `started_at` 倒序列出最近的运行记录，`limit` 为硬上限。
     pub fn list_workflow_runs(&self, limit: i64) -> Result<Vec<WorkflowRunRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, workflow_name, status, step_results, step_progress, error, trigger_type, started_at, finished_at
@@ -816,6 +577,7 @@ impl Database {
         Ok(runs)
     }
 
+    /// 按 id 取运行记录；不存在时返回 `None`（不报错）。
     pub fn get_workflow_run(&self, id: &str) -> Result<Option<WorkflowRunRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, workflow_name, status, step_results, step_progress, error, trigger_type, started_at, finished_at
@@ -837,8 +599,9 @@ impl Database {
         Ok(run)
     }
 
-    // ── Runtime Version Cache ──
+    // ── 运行时版本缓存 ──
 
+    /// 取某运行时类型的全部缓存版本，按 `version` 字符串倒序（字典序，不做语义化版本比较）。
     pub fn get_cached_versions(&self, rt: &str) -> Result<Vec<RuntimeVersionCache>> {
         let mut stmt = self.conn.prepare(
             "SELECT runtime_type, version, display_name, url, lts, is_stable, release_date, file_size, fetched_at
@@ -864,6 +627,7 @@ impl Database {
         Ok(entries)
     }
 
+    /// 以 (`runtime_type`, `version`) 为键写入或覆盖缓存条目；自增的 `id` 列不参与。
     pub fn upsert_version_cache(&self, entry: &RuntimeVersionCache) -> Result<()> {
         self.conn.execute(
             "INSERT INTO runtime_version_cache (runtime_type, version, display_name, url, lts, is_stable, release_date, file_size, fetched_at)
@@ -891,14 +655,19 @@ impl Database {
         Ok(())
     }
 
+    /// 清空某运行时类型的版本缓存；返回后该类型没有任何缓存条目。
     pub fn clear_version_cache(&self, rt: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM runtime_version_cache WHERE runtime_type = ?1", params![rt])?;
         Ok(())
     }
 
-    // ── Bound Projects ──
+    // ── 绑定项目 ──
 
+    /// 绑定一个本地项目目录并返回新记录。
+    ///
+    /// `path` 在库中唯一，重复绑定会返回数据库错误；新记录默认 `auto_sync = true`，
+    /// `last_scan` 与 `requirements` 为 NULL。
     pub fn add_bound_project(&self, path: &str, name: &str) -> Result<BoundProjectModel> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -919,6 +688,7 @@ impl Database {
         })
     }
 
+    /// 列出全部绑定项目，按 `updated_at` 倒序。
     pub fn list_bound_projects(&self) -> Result<Vec<BoundProjectModel>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, name, auto_sync, last_scan, requirements, created_at, updated_at
@@ -941,12 +711,14 @@ impl Database {
         Ok(projects)
     }
 
+    /// 解除绑定；记录不存在时静默成功。
     pub fn remove_bound_project(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM bound_projects WHERE id = ?1", params![id])?;
         Ok(())
     }
 
+    /// 按 id 取绑定项目；不存在返回 `None`。
     pub fn get_bound_project(&self, id: &str) -> Result<Option<BoundProjectModel>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, name, auto_sync, last_scan, requirements, created_at, updated_at
@@ -969,6 +741,8 @@ impl Database {
         Ok(project)
     }
 
+    /// 覆盖除 `id`/`created_at` 外的字段，并把 `updated_at` 刷新为当前时间。
+    /// 记录不存在时静默成功（不报错）。
     pub fn update_bound_project(&self, project: &BoundProjectModel) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -986,8 +760,9 @@ impl Database {
         Ok(())
     }
 
-    // ── Projects CRUD ──
+    // ── 项目增删改查 ──
 
+    /// 插入项目记录；`id` 冲突会返回数据库错误。
     pub fn create_project(&self, project: &Project) -> Result<()> {
         self.conn.execute(
             "INSERT INTO projects (id, name, path, created_at, updated_at)
@@ -997,6 +772,7 @@ impl Database {
         Ok(())
     }
 
+    /// 列出全部项目，按 `updated_at` 倒序。
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, path, created_at, updated_at
@@ -1014,6 +790,7 @@ impl Database {
         Ok(projects)
     }
 
+    /// 按 id 取项目；不存在返回 `None`。
     pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, path, created_at, updated_at
@@ -1031,11 +808,13 @@ impl Database {
         Ok(project)
     }
 
+    /// 删除项目记录。不会级联处理会话，调用方应先执行 [`Self::set_sessions_project_null`]。
     pub fn delete_project(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
         Ok(())
     }
 
+    /// 把归属该项目的会话的 `project_id` 置 NULL（外键关闭，必须显式解绑）。
     pub fn set_sessions_project_null(&self, project_id: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
@@ -1044,6 +823,7 @@ impl Database {
         Ok(())
     }
 
+    /// 取归属某项目的会话，按 `updated_at` 倒序。
     pub fn get_sessions_by_project(&self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode
@@ -1070,482 +850,6 @@ impl Database {
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
-    }
-
-    // ── Memories CRUD ──
-
-    pub fn insert_memory(&self, mem: &MemoryRecord) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO memories (id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                mem.id, mem.content, mem.memory_type, mem.scope, mem.source,
-                mem.relevance, mem.tags, mem.created_at, mem.updated_at,
-                mem.last_accessed_at, mem.access_count,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_memory(&self, id: &str) -> Result<Option<MemoryRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
-             FROM memories WHERE id = ?1",
-        )?;
-        let mem = stmt.query_row(params![id], |row| {
-            Ok(MemoryRecord {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                memory_type: row.get(2)?,
-                scope: row.get(3)?,
-                source: row.get(4)?,
-                relevance: row.get(5)?,
-                tags: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                last_accessed_at: row.get(9)?,
-                access_count: row.get(10)?,
-            })
-        }).optional()?;
-        Ok(mem)
-    }
-
-    pub fn list_memories(&self) -> Result<Vec<MemoryRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
-             FROM memories ORDER BY relevance DESC, last_accessed_at DESC",
-        )?;
-        let memories = stmt.query_map([], |row| {
-            Ok(MemoryRecord {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                memory_type: row.get(2)?,
-                scope: row.get(3)?,
-                source: row.get(4)?,
-                relevance: row.get(5)?,
-                tags: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                last_accessed_at: row.get(9)?,
-                access_count: row.get(10)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(memories)
-    }
-
-    /// Sanitize user input for safe use in FTS5 MATCH queries.
-    /// Removes FTS5 operator characters and reserved keywords to prevent syntax errors.
-    fn sanitize_fts_query(input: &str) -> String {
-        let cleaned: String = input
-            .chars()
-            .filter(|c| !matches!(c, '"' | '(' | ')' | '*' | '^' | '~' | ':' | '+' | '-'))
-            .collect();
-
-        let tokens: Vec<&str> = cleaned
-            .split_whitespace()
-            .filter(|t| {
-                if t.is_empty() {
-                    return false;
-                }
-                // Filter out FTS5 reserved keywords (case-insensitive)
-                !matches!(
-                    t.to_uppercase().as_str(),
-                    "AND" | "OR" | "NOT" | "NEAR"
-                )
-            })
-            .collect();
-
-        if tokens.is_empty() {
-            return String::new();
-        }
-
-        tokens.join(" AND ")
-    }
-
-    /// Search memories by FTS5 full-text match on content and tags.
-    pub fn search_memories(&self, query: &str, memory_type: Option<&str>, scope: Option<&str>) -> Result<Vec<MemoryRecord>> {
-        let fts_query = Self::sanitize_fts_query(query);
-
-        if fts_query.is_empty() {
-            // Fallback: return all memories (no FTS filtering) with optional type/scope filters
-            let mut sql = String::from(
-                "SELECT id, content, memory_type, scope, source, relevance, tags, created_at, updated_at, last_accessed_at, access_count
-                 FROM memories WHERE 1=1"
-            );
-            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-            if let Some(t) = memory_type {
-                sql.push_str(" AND memory_type = ?1");
-                param_values.push(Box::new(t.to_string()));
-            }
-            if let Some(s) = scope {
-                let idx = if param_values.is_empty() { 1 } else { 2 };
-                sql.push_str(&format!(" AND scope LIKE ?{}", idx));
-                param_values.push(Box::new(format!("{}%", s)));
-            }
-
-            sql.push_str(" ORDER BY relevance DESC, last_accessed_at DESC");
-
-            let mut stmt = self.conn.prepare(&sql)?;
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-            let memories = stmt.query_map(params_refs.as_slice(), Self::map_memory_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            return Ok(memories);
-        }
-
-        // FTS5 full-text search: content + tags columns are indexed
-        let mut sql = String::from(
-            "SELECT m.id, m.content, m.memory_type, m.scope, m.source, m.relevance, m.tags, m.created_at, m.updated_at, m.last_accessed_at, m.access_count
-             FROM memories m
-             JOIN memories_fts fts ON m.rowid = fts.rowid
-             WHERE memories_fts MATCH ?1"
-        );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(fts_query)];
-
-        if let Some(t) = memory_type {
-            sql.push_str(" AND m.memory_type = ?2");
-            param_values.push(Box::new(t.to_string()));
-        }
-        if let Some(s) = scope {
-            let idx = param_values.len() + 1;
-            sql.push_str(&format!(" AND m.scope LIKE ?{}", idx));
-            param_values.push(Box::new(format!("{}%", s)));
-        }
-
-        sql.push_str(" ORDER BY m.relevance DESC, m.last_accessed_at DESC");
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-        let memories = stmt.query_map(params_refs.as_slice(), Self::map_memory_row)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(memories)
-    }
-
-    pub fn update_memory(&self, mem: &MemoryRecord) -> Result<()> {
-        self.conn.execute(
-            "UPDATE memories SET content = ?2, memory_type = ?3, scope = ?4, source = ?5, relevance = ?6, tags = ?7, updated_at = ?8
-             WHERE id = ?1",
-            params![
-                mem.id, mem.content, mem.memory_type, mem.scope, mem.source,
-                mem.relevance, mem.tags, mem.updated_at,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn delete_memory(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    /// Record that a memory was accessed (bumps last_accessed_at and access_count).
-    pub fn touch_memory(&self, id: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE memories SET last_accessed_at = datetime('now'), access_count = access_count + 1 WHERE id = ?1",
-            params![id],
-        )?;
-        Ok(())
-    }
-
-    /// Retrieve memories relevant to a context string using FTS5 full-text search.
-    /// The entire context is sanitized and passed as a single FTS5 MATCH query.
-    pub fn retrieve_relevant(&self, context: &str, limit: i64) -> Result<Vec<MemoryRecord>> {
-        if context.trim().is_empty() {
-            return Ok(vec![]);
-        }
-
-        let fts_query = Self::sanitize_fts_query(context);
-        if fts_query.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let sql = format!(
-            "SELECT m.id, m.content, m.memory_type, m.scope, m.source, m.relevance, m.tags, m.created_at, m.updated_at, m.last_accessed_at, m.access_count
-             FROM memories m
-             JOIN memories_fts fts ON m.rowid = fts.rowid
-             WHERE memories_fts MATCH ?1
-               AND m.scope = 'global'
-             ORDER BY m.relevance DESC, m.access_count DESC, m.last_accessed_at DESC
-             LIMIT ?2"
-        );
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let memories = stmt.query_map(params![fts_query, limit], Self::map_memory_row)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(memories)
-    }
-
-    /// Helper to map a SQL row to a MemoryRecord (shared by search/retrieve paths).
-    fn map_memory_row(row: &rusqlite::Row) -> rusqlite::Result<MemoryRecord> {
-        Ok(MemoryRecord {
-            id: row.get(0)?,
-            content: row.get(1)?,
-            memory_type: row.get(2)?,
-            scope: row.get(3)?,
-            source: row.get(4)?,
-            relevance: row.get(5)?,
-            tags: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
-            last_accessed_at: row.get(9)?,
-            access_count: row.get(10)?,
-        })
-    }
-
-    fn map_persona_row(row: &rusqlite::Row) -> rusqlite::Result<PersonaRecord> {
-        Ok(PersonaRecord {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            title: row.get(2)?,
-            emoji: row.get(3)?,
-            description: row.get(4)?,
-            system_prompt: row.get(5)?,
-            temperature: row.get(6)?,
-            response_style: row.get(7)?,
-            model_provider: row.get(8)?,
-            model_name: row.get(9)?,
-            is_default: row.get(10)?,
-            created_at: row.get(11)?,
-            updated_at: row.get(12)?,
-        })
-    }
-
-    // ── Persona CRUD ──
-
-    pub fn insert_persona(&self, p: &PersonaRecord) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO personas (id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.created_at, p.updated_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_personas(&self) -> Result<Vec<PersonaRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
-             FROM personas ORDER BY name ASC"
-        )?;
-        let personas = stmt.query_map([], Self::map_persona_row)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(personas)
-    }
-
-    pub fn get_persona(&self, id: &str) -> Result<Option<PersonaRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
-             FROM personas WHERE id = ?1"
-        )?;
-        let p = stmt.query_row(params![id], Self::map_persona_row).optional()?;
-        Ok(p)
-    }
-
-    pub fn get_persona_by_name(&self, name: &str) -> Result<Option<PersonaRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
-             FROM personas WHERE name = ?1"
-        )?;
-        let p = stmt.query_row(params![name], Self::map_persona_row).optional()?;
-        Ok(p)
-    }
-
-    pub fn get_default_persona(&self) -> Result<Option<PersonaRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, title, emoji, description, system_prompt, temperature, response_style, model_provider, model_name, is_default, created_at, updated_at
-             FROM personas WHERE is_default = 1 LIMIT 1"
-        )?;
-        let p = stmt.query_row([], Self::map_persona_row).optional()?;
-        Ok(p)
-    }
-
-    pub fn update_persona(&self, p: &PersonaRecord) -> Result<()> {
-        self.conn.execute(
-            "UPDATE personas SET name=?2, title=?3, emoji=?4, description=?5, system_prompt=?6, temperature=?7, response_style=?8, model_provider=?9, model_name=?10, is_default=?11, updated_at=?12
-             WHERE id=?1",
-            params![p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.updated_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn delete_persona(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM personas WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    pub fn clear_persona_default(&self) -> Result<()> {
-        self.conn.execute("UPDATE personas SET is_default = 0 WHERE is_default = 1", [])?;
-        Ok(())
-    }
-
-    // ── Persona-Memory relations ──
-
-    pub fn link_memory_to_persona(&self, persona_id: &str, memory_id: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO persona_memories (persona_id, memory_id) VALUES (?1, ?2)",
-            params![persona_id, memory_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn unlink_memory_from_persona(&self, persona_id: &str, memory_id: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM persona_memories WHERE persona_id = ?1 AND memory_id = ?2",
-            params![persona_id, memory_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_persona_memory_ids(&self, persona_id: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT memory_id FROM persona_memories WHERE persona_id = ?1"
-        )?;
-        let ids = stmt.query_map(params![persona_id], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(ids)
-    }
-
-    // ── Persona-Project bindings ──
-
-    pub fn bind_persona_to_project(&self, persona_id: &str, project_path: &str, auto_select: bool) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO persona_projects (persona_id, project_path, auto_select) VALUES (?1, ?2, ?3)",
-            params![persona_id, project_path, auto_select],
-        )?;
-        Ok(())
-    }
-
-    pub fn unbind_persona_from_project(&self, persona_id: &str, project_path: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM persona_projects WHERE persona_id = ?1 AND project_path = ?2",
-            params![persona_id, project_path],
-        )?;
-        Ok(())
-    }
-
-    /// Update session execution_status (used by ExecutionRuntime via conn access)
-    pub fn update_session_execution_status(&self, session_id: &str, status_json: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET execution_status = ?1 WHERE id = ?2",
-            params![status_json, session_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn update_session_execution(&self, session_id: &str, mode: &str, status_json: &str, active_plan_id: Option<&str>) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET mode = ?1, execution_status = ?2, active_plan_id = ?3 WHERE id = ?4",
-            params![mode, status_json, active_plan_id, session_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_personas_for_project(&self, project_path: &str) -> Result<Vec<PersonaRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.name, p.title, p.emoji, p.description, p.system_prompt, p.temperature, p.response_style, p.model_provider, p.model_name, p.is_default, p.created_at, p.updated_at
-             FROM personas p
-             JOIN persona_projects pp ON p.id = pp.persona_id
-             WHERE pp.project_path = ?1
-             ORDER BY pp.auto_select DESC, p.name ASC"
-        )?;
-        let personas = stmt.query_map(params![project_path], Self::map_persona_row)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(personas)
-    }
-
-    // ── Execution Plans CRUD ──
-
-    pub fn insert_execution_plan(&self, plan: &ExecutionPlanRecord) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO execution_plans (id, session_id, source, goal, plan_json, status, created_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![plan.id, plan.session_id, plan.source, plan.goal, plan.plan_json, plan.status, plan.created_at, plan.finished_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn update_execution_plan_status(&self, id: &str, status: &str, finished_at: Option<&str>) -> Result<()> {
-        self.conn.execute(
-            "UPDATE execution_plans SET status = ?2, finished_at = ?3 WHERE id = ?1",
-            params![id, status, finished_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_execution_plan(&self, id: &str) -> Result<Option<ExecutionPlanRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, source, goal, plan_json, status, created_at, finished_at
-             FROM execution_plans WHERE id = ?1",
-        )?;
-        let plan = stmt.query_row(params![id], |row| {
-            Ok(ExecutionPlanRecord {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                source: row.get(2)?,
-                goal: row.get(3)?,
-                plan_json: row.get(4)?,
-                status: row.get(5)?,
-                created_at: row.get(6)?,
-                finished_at: row.get(7)?,
-            })
-        }).optional()?;
-        Ok(plan)
-    }
-
-    pub fn list_execution_plans(&self, session_id: &str) -> Result<Vec<ExecutionPlanRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, source, goal, plan_json, status, created_at, finished_at
-             FROM execution_plans WHERE session_id = ?1 ORDER BY created_at DESC",
-        )?;
-        let plans = stmt.query_map(params![session_id], |row| {
-            Ok(ExecutionPlanRecord {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                source: row.get(2)?,
-                goal: row.get(3)?,
-                plan_json: row.get(4)?,
-                status: row.get(5)?,
-                created_at: row.get(6)?,
-                finished_at: row.get(7)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(plans)
-    }
-
-    pub fn upsert_plan_step(&self, step: &PlanStepRecord) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO execution_plan_steps (id, plan_id, step_index, label, step_type, status, result_json, error, started_at, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(id) DO UPDATE SET
-                status = excluded.status,
-                result_json = excluded.result_json,
-                error = excluded.error,
-                duration_ms = excluded.duration_ms",
-            params![step.id, step.plan_id, step.step_index, step.label, step.step_type,
-                    step.status, step.result_json, step.error, step.started_at, step.duration_ms],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_plan_steps(&self, plan_id: &str) -> Result<Vec<PlanStepRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, plan_id, step_index, label, step_type, status, result_json, error, started_at, duration_ms
-             FROM execution_plan_steps WHERE plan_id = ?1 ORDER BY step_index ASC",
-        )?;
-        let steps = stmt.query_map(params![plan_id], |row| {
-            Ok(PlanStepRecord {
-                id: row.get(0)?,
-                plan_id: row.get(1)?,
-                step_index: row.get(2)?,
-                label: row.get(3)?,
-                step_type: row.get(4)?,
-                status: row.get(5)?,
-                result_json: row.get(6)?,
-                error: row.get(7)?,
-                started_at: row.get(8)?,
-                duration_ms: row.get(9)?,
-            })
-        })?.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(steps)
     }
 }
 
@@ -1578,8 +882,8 @@ mod tests {
         }
     }
 
-    /// Insert a domain with one enabled intent and make it the active
-    /// (= default for new sessions) domain.
+    /// 插入一个领域和一个启用意图，并把该领域设为活跃领域
+    /// （即新会话的默认领域）。
     fn seed_active_domain(db: &Database, domain_id: &str) {
         db.conn
             .execute(
@@ -1601,8 +905,8 @@ mod tests {
     #[test]
     fn migrating_old_sessions_table_adds_intent_domain_columns_with_defaults() {
         let conn = Connection::open_in_memory().unwrap();
-        // init_tables is the pre-v11 schema; migrating an already-populated
-        // database must not lose or fail on existing rows.
+        // init_tables 对应 v11 之前的表结构；迁移一个已有数据的库
+        // 不能丢数据，也不能在既有行上报错。
         Database::init_tables(&conn).unwrap();
         conn.execute(
             "INSERT INTO sessions (id, title, model_id, created_at, updated_at)
@@ -1612,7 +916,7 @@ mod tests {
         .unwrap();
 
         Database::migrate_tables(&conn).unwrap();
-        // Migration v11 is guarded, so a second run must be a no-op.
+        // v11 迁移有存在性判断，因此第二次执行必须是空操作。
         Database::migrate_tables(&conn).unwrap();
 
         let columns: i64 = conn

@@ -1,36 +1,35 @@
-//! Static registry of agents supported by the `skills` CLI.
+//! `skills` CLI 支持的 agent 静态注册表。
 //!
-//! The table mirrors the CLI's supported-agents documentation
-//! (<https://github.com/vercel-labs/skills/blob/main/docs/agents.md>) so the
-//! install dialog and the `--agent` flag agree on ids, display names and
-//! install locations. Keeping it static means no network access at runtime;
-//! long-tail agents are handled by the caller's free-form id input.
+//! 表格与 CLI 的 supported-agents 文档保持一致
+//! （<https://github.com/vercel-labs/skills/blob/main/docs/agents.md>），
+//! 使安装对话框与 `--agent` 参数对 id、显示名和安装路径的认知一致。静态
+//! 表意味着运行时不需要网络；长尾 agent 由调用方以自由文本 id 补充。
 
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-/// An agent the `skills` CLI can install into.
+/// `skills` CLI 可以安装到的 agent。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentOption {
-    /// Value accepted by the CLI's `--agent` flag.
+    /// CLI `--agent` 参数接受的值。
     pub id: String,
-    /// Human-readable name shown in the UI.
+    /// 界面显示名称。
     pub name: String,
-    /// Project-scoped install path, relative to the workspace root.
+    /// 项目级安装路径，相对工作区根目录。
     pub project_path: String,
-    /// User-scoped install path, relative to the home directory.
+    /// 用户级安装路径，相对用户主目录。
     pub global_path: Option<String>,
 }
 
-/// Every supported agent, in the order the CLI documents them.
+/// 全部支持的 agent，顺序与 CLI 文档一致。
 pub fn all() -> &'static [AgentOption] {
     static AGENTS: OnceLock<Vec<AgentOption>> = OnceLock::new();
 
     AGENTS.get_or_init(build_table).as_slice()
 }
 
-/// Build the registry. Every row is `(id, display name, project path, global path)`.
+/// 构建注册表。每行是 `(id, 显示名, 项目路径, 全局路径)`。
 fn build_table() -> Vec<AgentOption> {
     const ROWS: &[(&str, &str, &str, Option<&str>)] = &[
         (

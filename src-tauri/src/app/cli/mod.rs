@@ -1,16 +1,13 @@
-// ── CLI entry point ──
-//
-// `agent` without a subcommand starts the desktop app. Local toolchain
-// management is a separate concern: `agent toolchain ...` (with `runtime` as a
-// compatibility alias) manages Node/Python/... on this machine. The command
-// handlers live in `cli::toolchain` and share `RuntimeServices` with the Tauri
-// commands.
+//! CLI 入口。
+//!
+//! 不带子命令的 `agent` 启动桌面应用。本机工具链管理是另一件事：
+//! `agent toolchain ...`（兼容别名 `runtime`）用于管理本机的 Node/Python
+//! 等运行时。命令处理在 `cli::toolchain`，与 Tauri 命令共享同一个
+//! `RuntimeServices`。
 
 pub mod toolchain;
 
 use clap::{Parser, Subcommand};
-
-use crate::core::error::Result;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,18 +30,4 @@ pub enum Command {
         #[command(subcommand)]
         action: toolchain::ToolchainAction,
     },
-}
-
-/// Dispatch a parsed CLI. Without a subcommand this launches the desktop app.
-pub fn run(cli: Cli) -> Result<()> {
-    match cli.command {
-        Some(Command::Toolchain { action }) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(toolchain::execute(action))
-        }
-        None => {
-            crate::run();
-            Ok(())
-        }
-    }
 }

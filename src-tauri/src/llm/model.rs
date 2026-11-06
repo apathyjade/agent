@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+/// 支持的模型供应商。序列化名为小写字符串，与配置文件中的 `provider` 字段一致。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelProvider {
@@ -54,6 +55,10 @@ impl std::str::FromStr for ModelProvider {
     }
 }
 
+/// 一个已配置模型的完整信息。
+///
+/// `id` 是配置内的唯一键（用于注册表查找），`name` 是发给供应商的模型名，
+/// `display_name` 只用于界面展示。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub id: String,
@@ -69,6 +74,7 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    /// 该供应商的内置 API 地址；`Custom` 没有默认值，返回空串。
     pub fn default_base_url(&self) -> String {
         match self.provider {
             ModelProvider::OpenAI => "https://api.openai.com/v1/chat/completions".to_string(),
@@ -92,12 +98,16 @@ impl ModelConfig {
         }
     }
 
+    /// 实际生效的地址：用户配置的 `base_url` 优先，否则回退到内置默认值。
     pub fn effective_base_url(&self) -> String {
         self.base_url
             .clone()
             .unwrap_or_else(|| self.default_base_url())
     }
 
+    /// 该供应商是否说 OpenAI 风格的 Chat Completions 协议。
+    ///
+    /// 注意 Anthropic 是唯一不兼容的例外。
     pub fn is_compatible_with_openai_api(&self) -> bool {
         matches!(
             self.provider,
@@ -115,7 +125,7 @@ impl ModelConfig {
     }
 }
 
-/// Default model: first `is_default && enabled`, else first `enabled`.
+/// 默认模型：第一个 `is_default && enabled`，否则第一个 `enabled`。
 pub fn default_model(models: &[ModelConfig]) -> Option<&ModelConfig> {
     models
         .iter()
