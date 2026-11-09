@@ -13,6 +13,13 @@ pub struct Dispatcher {
     workers: HashMap<WorkerKind, Box<dyn WorkerAgent>>,
 }
 
+impl Default for Dispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+    
+}
+
 impl Dispatcher {
     /// 创建一个没有注册任何 worker 的分发器。
     pub fn new() -> Self {

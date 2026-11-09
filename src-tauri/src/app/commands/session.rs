@@ -981,9 +981,7 @@ pub(crate) fn resolve_model_id(
     let fallback = candidates
         .iter()
         .flatten()
-        .map(|c| c.trim())
-        .filter(|c| !c.is_empty())
-        .next_back()
+        .map(|c| c.trim()).rfind(|c| !c.is_empty())
         .unwrap_or("")
         .to_string();
 
