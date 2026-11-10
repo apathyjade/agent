@@ -207,14 +207,10 @@ fn build_intent_router(
 ) -> Arc<IntentRouter> {
     let router_config = RouterConfig {
         enabled: intent.enabled,
-        embedding_floor: intent.embedding_floor,
-        embedding_margin: intent.embedding_margin,
-        prior_boost: intent.prior_boost,
         llm_rerank_enabled: intent.llm_rerank_enabled,
         llm_timeout_ms: intent.llm_timeout_ms,
         probe_enabled: intent.probe_enabled,
         probe_timeout_ms: intent.probe_timeout_ms,
-        second_rerank_min_budget_ms: intent.second_rerank_min_budget_ms,
         routing_budget_ms: intent.routing_budget_ms,
     };
     let reranker = Arc::new(LlmReranker::new(

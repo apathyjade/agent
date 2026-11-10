@@ -79,11 +79,11 @@ describe('intent api', () => {
     });
   });
 
-  it('setSessionIntentDomain sends null for auto mode', async () => {
+  it('setSessionIntentDomain sends null for the generic (unbound) mode', async () => {
     invokeMock.mockResolvedValue({
       domain_id: null,
       domain_name: null,
-      mode: 'auto',
+      mode: 'none',
     });
 
     const result = await setSessionIntentDomain('session-1', null);
@@ -92,7 +92,7 @@ describe('intent api', () => {
       sessionId: 'session-1',
       domainId: null,
     });
-    expect(result.mode).toBe('auto');
+    expect(result.mode).toBe('none');
   });
 
   it('setSessionIntentDomain sends a domain id for pinned mode', async () => {

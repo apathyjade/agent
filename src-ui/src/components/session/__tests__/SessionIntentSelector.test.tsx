@@ -40,7 +40,7 @@ describe('SessionIntentSelector', () => {
       currentSession: null,
       intentDomainId: null,
       intentDomainName: null,
-      intentDomainMode: 'auto',
+      intentDomainMode: 'none',
     });
     listIntentDomainsMock.mockResolvedValue([]);
     setSessionIntentDomainMock.mockResolvedValue({
@@ -56,10 +56,10 @@ describe('SessionIntentSelector', () => {
     expect(listIntentDomainsMock).not.toHaveBeenCalled();
   });
 
-  it('lists domains and defaults to auto', async () => {
+  it('lists domains and defaults to the generic option', async () => {
     useStore.setState({
       currentSession: { id: 'session-1', title: '测试', model_id: 'm1', created_at: '', updated_at: '' },
-      intentDomainMode: 'auto',
+      intentDomainMode: 'none',
     });
     listIntentDomainsMock.mockResolvedValue([
       makeDomain({ id: 'domain-1', name: '程序开发' }),
@@ -73,16 +73,17 @@ describe('SessionIntentSelector', () => {
     expect((select as HTMLSelectElement).value).toBe('');
     expect(screen.getByText('程序开发')).toBeTruthy();
     expect(screen.getByText('写作')).toBeTruthy();
-    // Mode badge shows 自动 in auto mode.
-    const badges = screen.getAllByText('自动');
-    expect(badges.length).toBeGreaterThanOrEqual(1);
+    // 无绑定时显示「通用（不绑定）」而不是旧的「自动」。
+    expect(screen.queryByText('自动')).toBeNull();
+    expect(screen.getByText('通用（不绑定）')).toBeTruthy();
+    expect(screen.getByText('通用')).toBeTruthy();
   });
 
   it('selecting a domain calls the command with the right payload', async () => {
     const user = userEvent.setup();
     useStore.setState({
       currentSession: { id: 'session-1', title: '测试', model_id: 'm1', created_at: '', updated_at: '' },
-      intentDomainMode: 'auto',
+      intentDomainMode: 'none',
     });
     listIntentDomainsMock.mockResolvedValue([
       makeDomain({ id: 'domain-1', name: '程序开发' }),
@@ -99,7 +100,7 @@ describe('SessionIntentSelector', () => {
     );
   });
 
-  it('selecting auto sends null to the command', async () => {
+  it('selecting the generic option sends null to the command', async () => {
     const user = userEvent.setup();
     useStore.setState({
       currentSession: { id: 'session-1', title: '测试', model_id: 'm1', created_at: '', updated_at: '' },
@@ -112,7 +113,7 @@ describe('SessionIntentSelector', () => {
     setSessionIntentDomainMock.mockResolvedValue({
       domain_id: null,
       domain_name: null,
-      mode: 'auto',
+      mode: 'none',
     });
 
     render(<SessionIntentSelector />);

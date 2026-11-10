@@ -17,7 +17,12 @@ export type { Toast } from './uiSlice';
 
 // Cross-slice method for streaming (spans messages + UI state)
 export interface StreamSlice {
-  sendMessageStream: (content: string, toolsEnabled?: boolean, activePersonaId?: string) => Promise<void>;
+  sendMessageStream: (
+    content: string,
+    toolsEnabled?: boolean,
+    activePersonaId?: string,
+    planId?: string,
+  ) => Promise<void>;
 }
 
 export type AppState = UISlice & SessionSlice & ModelSlice & SkillSlice & McpSlice & MemorySlice & PersonaSlice & RuntimeSlice & WorkflowSlice & LifecycleSlice & StreamSlice & {
@@ -68,7 +73,12 @@ export const useStore = create<AppState>()((set, get, store) => ({
   },
 
   // sendMessageStream spans both conversation and UI state
-  sendMessageStream: async (content: string, toolsEnabled?: boolean, activePersonaId?: string) => {
+  sendMessageStream: async (
+    content: string,
+    toolsEnabled?: boolean,
+    activePersonaId?: string,
+    planId?: string,
+  ) => {
     const { currentSession } = get();
     if (!currentSession) return;
 
@@ -88,6 +98,8 @@ export const useStore = create<AppState>()((set, get, store) => ({
       streamingContent: '',
       activeToolCalls: [],
       currentTurnIntent: null,
+      // 普通聊天开启新一轮时清掉上一条已结束的计划展示；确认的计划保留。
+      ...(planId ? {} : { activePlan: null, executionStatus: { type: 'idle' as const }, planProgress: null }),
     });
 
     try {
@@ -168,6 +180,7 @@ export const useStore = create<AppState>()((set, get, store) => ({
         },
         toolsEnabled,
         activePersonaId,
+        planId,
       );
     } catch (err) {
       set({ error: String(err), loading: false, isStreaming: false });

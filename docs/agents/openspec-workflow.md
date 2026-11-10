@@ -56,3 +56,4 @@ change 产物在 `openspec/changes/<name>/` 下，是工具工作目录。有长
 | `fix-intent-routing-timeout` | ✅ complete | 提高分类超时并迁移旧默认值，修复路由退化到闲聊 |
 | `fix-provider-key-restore` | ✅ complete | 启动时从钥匙串恢复模型 API Key |
 | `fix-rerank-none-outcome` | ✅ complete | 区分 rerank 明确无匹配与调用不可用 |
+| `intent-decomposition-orchestration` | 📦 archived | 意图拆解与会话级编排 |

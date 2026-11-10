@@ -30,10 +30,25 @@ pub enum SessionMode {
 /// （`sessions.mode`、`active_plan_id`、`execution_status`）。
 /// `Interactive` 用于聊天轮次：计划仍会被持久化，但不触碰会话状态，
 /// 会话因此保持普通的 `chat` 模式。
+/// `Planned` 用于用户确认后的会话级计划：持久化计划、写入
+/// `active_plan_id` 与 `execution_status`，但**不改** `sessions.mode`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanRunMode {
     Autonomous,
     Interactive,
+    Planned,
+}
+
+impl PlanRunMode {
+    /// 是否接管 `sessions.mode`（只有自主模式会把它改成 `autonomous`）。
+    pub fn writes_session_mode(self) -> bool {
+        matches!(self, PlanRunMode::Autonomous)
+    }
+
+    /// 是否写会话执行状态（`active_plan_id` 与 `execution_status`）。
+    pub fn writes_session_state(self) -> bool {
+        !matches!(self, PlanRunMode::Interactive)
+    }
 }
 
 
@@ -68,6 +83,9 @@ pub enum ExecStep {
         allowed_tools: Option<Vec<String>>,
         #[serde(default)]
         temperature: Option<f32>,
+        /// 该步骤独有的提示词附录；执行时合并进步骤 agent 的 system prompt。
+        #[serde(default)]
+        system_prompt_appendix: Option<String>,
     },
     LlmCall {
         prompt: String,
@@ -208,6 +226,15 @@ pub struct PlanStep {
     pub started_at: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// 产生该步骤的意图 id；计划由 planner 生成（而非拆解）时为空。
+    #[serde(default)]
+    pub intent_id: Option<String>,
+    /// 拆解时该意图的置信度。
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    /// 置信度低于意图阈值；只影响展示，不放宽任何配方。
+    #[serde(default)]
+    pub uncertain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -448,5 +475,91 @@ impl ExecutionHandle {
     /// 解除暂停。
     pub fn resume(&self) {
         self.pause_flag.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 历史计划（没有 intent 元数据与提示词附录）必须仍能反序列化。
+    #[test]
+    fn legacy_plan_step_deserializes_with_defaults() {
+        let legacy = r#"{
+            "id": "step-1",
+            "label": "Step 1",
+            "execution": {
+                "type": "agent_task",
+                "instruction": "do the thing",
+                "model_id": "m"
+            },
+            "status": "pending"
+        }"#;
+
+        let step: PlanStep = serde_json::from_str(legacy).expect("legacy plan step");
+        assert!(step.intent_id.is_none());
+        assert!(step.confidence.is_none());
+        assert!(!step.uncertain);
+
+        match step.execution {
+            ExecStep::AgentTask {
+                system_prompt_appendix,
+                ..
+            } => assert!(system_prompt_appendix.is_none()),
+            other => panic!("expected agent task, got {other:?}"),
+        }
+    }
+
+    /// 新字段必须随计划一起持久化，才能在确认卡上展示。
+    #[test]
+    fn plan_step_round_trips_intent_metadata() {
+        let step = PlanStep {
+            id: "step-1".to_string(),
+            label: "实现功能".to_string(),
+            execution: ExecStep::AgentTask {
+                instruction: "实现 CSV 导出".to_string(),
+                model_id: Some("model-a".to_string()),
+                max_iterations: Some(5),
+                allowed_tools: Some(vec!["read".to_string()]),
+                temperature: None,
+                system_prompt_appendix: Some("be strict".to_string()),
+            },
+            status: StepStatus::Pending,
+            result: None,
+            error: None,
+            started_at: None,
+            duration_ms: None,
+            intent_id: Some("builtin.software_dev.implement".to_string()),
+            confidence: Some(0.82),
+            uncertain: true,
+        };
+
+        let json = serde_json::to_string(&step).expect("serialize");
+        let restored: PlanStep = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(
+            restored.intent_id.as_deref(),
+            Some("builtin.software_dev.implement")
+        );
+        assert_eq!(restored.confidence, Some(0.82));
+        assert!(restored.uncertain);
+        match restored.execution {
+            ExecStep::AgentTask {
+                system_prompt_appendix,
+                ..
+            } => assert_eq!(system_prompt_appendix.as_deref(), Some("be strict")),
+            other => panic!("expected agent task, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_run_mode_exposes_its_session_writes() {
+        assert!(PlanRunMode::Autonomous.writes_session_mode());
+        assert!(!PlanRunMode::Interactive.writes_session_mode());
+        assert!(!PlanRunMode::Planned.writes_session_mode());
+
+        assert!(!PlanRunMode::Interactive.writes_session_state());
+        assert!(PlanRunMode::Autonomous.writes_session_state());
+        assert!(PlanRunMode::Planned.writes_session_state());
     }
 }

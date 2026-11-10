@@ -217,6 +217,9 @@ fn parse_plan_steps(steps_array: &[serde_json::Value], goal: &str) -> Vec<PlanSt
             error: None,
             started_at: None,
             duration_ms: None,
+            intent_id: None,
+            confidence: None,
+            uncertain: false,
         });
     }
 
@@ -268,6 +271,7 @@ fn parse_step_execution(
             max_iterations: Some(15),
             allowed_tools: None,
             temperature: None,
+            system_prompt_appendix: None,
         },
         "llm_call" => ExecStep::LlmCall {
             prompt: params
@@ -298,6 +302,7 @@ fn parse_step_execution(
             max_iterations: Some(10),
             allowed_tools: None,
             temperature: None,
+            system_prompt_appendix: None,
         },
     }
 }
@@ -310,6 +315,7 @@ fn agent_task_step(instruction: &str, max_iterations: Option<usize>) -> ExecStep
         max_iterations,
         allowed_tools: None,
         temperature: None,
+        system_prompt_appendix: None,
     }
 }
 

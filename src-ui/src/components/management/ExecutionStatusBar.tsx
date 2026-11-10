@@ -19,7 +19,6 @@ function getStatusInfo(status: ExecStatus) {
 }
 
 export function ExecutionStatusBar() {
-  const sessionMode = useStore((s) => s.sessionMode);
   const executionStatus = useStore((s) => s.executionStatus);
   const activePlan = useStore((s) => s.activePlan);
   const planProgress = useStore((s) => s.planProgress);
@@ -28,7 +27,8 @@ export function ExecutionStatusBar() {
   const resumeExecution = useStore((s) => s.resumeExecution);
   const cancelExecution = useStore((s) => s.cancelExecution);
 
-  if (sessionMode !== 'autonomous' || !activePlan) return null;
+  // 计划执行的唯一判据是「有 activePlan」；会话 mode 保持 chat，不能再用 autonomous。
+  if (!activePlan) return null;
 
   const info = getStatusInfo(executionStatus);
   if (!info.label) return null;

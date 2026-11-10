@@ -150,15 +150,17 @@ impl ExecutionRuntime {
         let plan_id = plan.id.clone();
         let session_id = plan.session_id.clone();
         let total_steps = plan.steps.len();
-        let writes_session_state = mode == PlanRunMode::Autonomous;
+        let writes_session_state = mode.writes_session_state();
+        let writes_session_mode = mode.writes_session_mode();
 
         self.log_run_start(&plan, total_steps);
-        // 两种模式都持久化计划记录，作为历史留存。
+        // 三种模式都持久化计划记录，作为历史留存。
         self.persist_plan(&plan).await;
 
-        // 仅自主模式更新会话状态；聊天轮次不得改动会话状态。
+        // 自主模式接管 `sessions.mode`；会话级计划只写活跃计划与执行状态。
         if writes_session_state {
-            self.mark_session_running(&session_id, &plan_id).await;
+            self.mark_session_running(&session_id, &plan_id, writes_session_mode)
+                .await;
         }
 
         let mut completed: Vec<CompletedStep> = Vec::new();
@@ -438,7 +440,7 @@ impl ExecutionRuntime {
         };
 
         let db = self.db.lock().await;
-        if let Err(e) = db.insert_execution_plan(&record) {
+        if let Err(e) = db.upsert_execution_plan(&record) {
             log::error!(
                 "持久化执行计划失败，计划历史将丢失: plan_id={}, error={}",
                 plan.id,
@@ -447,20 +449,29 @@ impl ExecutionRuntime {
         }
     }
 
-    /// 把会话标记为「自主执行中」，仅自主模式调用。
-    async fn mark_session_running(&self, session_id: &str, plan_id: &str) {
+    /// 把会话标记为「执行中」。
+    ///
+    /// `writes_mode` 为 true 时是自主模式：同时把 `sessions.mode` 改成
+    /// `autonomous`；为 false 时是会话级计划（[`PlanRunMode::Planned`]）：
+    /// 只写 `active_plan_id` 与 `execution_status`，会话仍是 `chat`。
+    async fn mark_session_running(&self, session_id: &str, plan_id: &str, writes_mode: bool) {
         let status_json = serialize_session_status(&ExecStatus::Running {
             step_index: 0,
             started_at: Utc::now().to_rfc3339(),
         });
 
         let db = self.db.lock().await;
-        if let Err(e) = db.update_session_execution(
-            session_id,
-            SESSION_MODE_AUTONOMOUS,
-            &status_json,
-            Some(plan_id),
-        ) {
+        let result = if writes_mode {
+            db.update_session_execution(
+                session_id,
+                SESSION_MODE_AUTONOMOUS,
+                &status_json,
+                Some(plan_id),
+            )
+        } else {
+            db.update_session_active_plan(session_id, &status_json, Some(plan_id))
+        };
+        if let Err(e) = result {
             log::error!(
                 "更新会话执行状态失败，会话状态可能与实际执行不同步: session_id={}, plan_id={}, error={}",
                 session_id,
@@ -758,6 +769,9 @@ mod tests {
                     error: None,
                     started_at: None,
                     duration_ms: None,
+                    intent_id: None,
+                    confidence: None,
+                    uncertain: false,
                 })
                 .collect(),
             status: PlanStatus::Pending,
@@ -913,6 +927,57 @@ mod tests {
             .starts_with("You are an autonomous agent"));
     }
 
+    #[tokio::test]
+    async fn planned_mode_writes_active_plan_but_keeps_chat_mode() {
+        let (runtime, db) = test_runtime();
+        insert_session(&db, "s1").await;
+
+        let plan = build_plan("s1", vec![condition_step()]);
+        let plan_id = plan.id.clone();
+        let (tx, _rx) = mpsc::channel(32);
+        let (cf, pf) = flags();
+        runtime
+            .run(plan, tx, cf, pf, PlanRunMode::Planned)
+            .await
+            .expect("planned run should succeed");
+
+        let db = db.lock().await;
+        let session = db.get_session("s1").unwrap().expect("session");
+        assert_eq!(session.mode, "chat", "会话级计划不得把会话改成 autonomous");
+        assert_eq!(session.active_plan_id.as_deref(), Some(plan_id.as_str()));
+        assert!(session.execution_status.contains("completed"));
+    }
+
+    #[tokio::test]
+    async fn step_level_appendix_is_merged_into_the_agent_prompt() {
+        let (runtime, _db) = test_runtime();
+        let runtime = runtime.with_system_prompt(Some("BASE PROMPT".to_string()));
+
+        let messages = runtime.agent_task_messages_with("do it", Some("STEP APPENDIX"));
+
+        let system = messages.iter().find_map(|m| match m {
+            Message::System { content } => Some(content.clone()),
+            _ => None,
+        });
+        let system = system.expect("system message");
+        assert!(system.contains("BASE PROMPT"));
+        assert!(system.contains("STEP APPENDIX"));
+    }
+
+    #[tokio::test]
+    async fn a_blank_step_appendix_keeps_the_base_prompt() {
+        let (runtime, _db) = test_runtime();
+        let runtime = runtime.with_system_prompt(Some("BASE PROMPT".to_string()));
+
+        let messages = runtime.agent_task_messages_with("do it", Some("   "));
+
+        let system = messages.iter().find_map(|m| match m {
+            Message::System { content } => Some(content.clone()),
+            _ => None,
+        });
+        assert_eq!(system.as_deref(), Some("BASE PROMPT"));
+    }
+
     #[test]
     fn policy_defaults_apply_when_step_omits_them() {
         let (runtime, _db) = test_runtime();
@@ -981,8 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn status_as_str_matches_serde_values() {
-        // 落库字符串必须与序列化取值一致，否则历史数据无法反序列化。
+    fn status_as_str_matches_serde_values() {        // 落库字符串必须与序列化取值一致，否则历史数据无法反序列化。
         for status in [
             PlanStatus::Pending,
             PlanStatus::Running,

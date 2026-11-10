@@ -5,7 +5,9 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::core::db::models::{Message, Session, SessionSummary, Setting, SystemPrompt};
+use crate::core::db::models::{
+    normalize_intent_domain_mode, Message, Session, SessionSummary, Setting, SystemPrompt,
+};
 use crate::core::db::repository::Database;
 use crate::core::error::Result;
 
@@ -29,6 +31,8 @@ impl Database {
             "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode FROM sessions ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map([], |row| {
+            let intent_domain_id: Option<String> = row.get(14)?;
+            let stored_mode: String = row.get(15)?;
             Ok(Session {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -44,8 +48,11 @@ impl Database {
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
                 project_id: row.get(13)?,
-                intent_domain_id: row.get(14)?,
-                intent_domain_mode: row.get(15)?,
+                intent_domain_mode: normalize_intent_domain_mode(
+                    intent_domain_id.as_deref(),
+                    &stored_mode,
+                ),
+                intent_domain_id,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
@@ -57,6 +64,8 @@ impl Database {
             "SELECT id, title, model_id, system_prompt, persona_id, config, title_source, archived, created_at, updated_at, mode, execution_status, active_plan_id, project_id, intent_domain_id, intent_domain_mode FROM sessions WHERE id = ?1",
         )?;
         let sess = stmt.query_row(params![id], |row| {
+            let intent_domain_id: Option<String> = row.get(14)?;
+            let stored_mode: String = row.get(15)?;
             Ok(Session {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -72,8 +81,11 @@ impl Database {
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
                 project_id: row.get(13)?,
-                intent_domain_id: row.get(14)?,
-                intent_domain_mode: row.get(15)?,
+                intent_domain_mode: normalize_intent_domain_mode(
+                    intent_domain_id.as_deref(),
+                    &stored_mode,
+                ),
+                intent_domain_id,
             })
         }).optional()?;
         Ok(sess)
@@ -130,20 +142,19 @@ impl Database {
         Ok(())
     }
 
-    /// 在给定连接或事务上解绑引用 `domain_id` 的会话：领域置 NULL，模式回落 `auto`。
+    /// 在给定连接或事务上解绑引用 `domain_id` 的会话：领域置 NULL，模式回落 `none`。
     ///
     /// 项目内 `PRAGMA foreign_keys` 为 OFF，领域删除时必须显式调用本方法；
     /// 传入事务连接可与删除操作保持原子。
     pub(crate) fn clear_intent_domain_references_on(conn: &Connection, domain_id: &str) -> Result<()> {
-        // 本项目关闭了外键，因此会话引用必须显式清理；模式回落到 `auto`。
         conn.execute(
-            "UPDATE sessions SET intent_domain_id = NULL, intent_domain_mode = 'auto' WHERE intent_domain_id = ?1",
+            "UPDATE sessions SET intent_domain_id = NULL, intent_domain_mode = 'none' WHERE intent_domain_id = ?1",
             params![domain_id],
         )?;
         Ok(())
     }
 
-    /// 解绑所有引用 `domain_id` 的会话：领域回到“无先验”，模式回到 `auto`。
+    /// 解绑所有引用 `domain_id` 的会话：领域置空，模式回落 `none`。
     pub fn clear_intent_domain_references(&self, domain_id: &str) -> Result<()> {
         Self::clear_intent_domain_references_on(&self.conn, domain_id)
     }
@@ -340,6 +351,55 @@ impl Database {
             "UPDATE sessions SET mode = ?1, execution_status = ?2, active_plan_id = ?3 WHERE id = ?4",
             params![mode, status_json, active_plan_id, session_id],
         )?;
+        Ok(())
+    }
+
+    /// 只更新执行状态与活跃计划 id，**不改** `sessions.mode`。
+    ///
+    /// 会话级计划（`PlanRunMode::Planned`）用它：会话仍是 `chat`，但执行状态
+    /// 与 `active_plan_id` 需要对外可见。
+    pub fn update_session_active_plan(
+        &self,
+        session_id: &str,
+        status_json: &str,
+        active_plan_id: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET execution_status = ?1, active_plan_id = ?2 WHERE id = ?3",
+            params![status_json, active_plan_id, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// 只覆盖会话指向的活跃计划 id（拆解缓存写入），不动执行状态。
+    pub fn set_session_active_plan(
+        &self,
+        session_id: &str,
+        active_plan_id: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET active_plan_id = ?1 WHERE id = ?2",
+            params![active_plan_id, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// 清空单个会话的活跃计划（拆解缓存失效），计划历史记录保留。
+    pub fn clear_session_active_plan(&self, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET active_plan_id = NULL WHERE id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// 清空**所有**会话的活跃计划（意图库任何增删改后的全量失效）。
+    ///
+    /// 只解除会话指向，`execution_plans` / `execution_plan_steps` 的历史记录
+    /// 不受影响。
+    pub fn clear_all_active_plans(&self) -> Result<()> {
+        self.conn
+            .execute("UPDATE sessions SET active_plan_id = NULL", [])?;
         Ok(())
     }
 }

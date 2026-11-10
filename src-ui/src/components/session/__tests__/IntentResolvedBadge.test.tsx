@@ -4,7 +4,18 @@ import {
   IntentResolvedBadge,
   IntentUncertaintyNotice,
 } from '../IntentResolvedBadge';
-import type { IntentResolvedEvent } from '../../../api/intent';
+import type { DecomposedIntentInfo, IntentResolvedEvent } from '../../../api/intent';
+
+function intentItem(overrides: Partial<DecomposedIntentInfo> = {}): DecomposedIntentInfo {
+  return {
+    intent_id: 'intent-1',
+    intent_name: '实现功能',
+    instruction: '实现 CSV 导出',
+    confidence: 0.82,
+    uncertain: false,
+    ...overrides,
+  };
+}
 
 function makeIntentResolved(
   overrides: Partial<IntentResolvedEvent> = {},
@@ -13,8 +24,7 @@ function makeIntentResolved(
     session_id: 'session-1',
     domain_id: 'domain-1',
     domain_name: '程序开发',
-    intent_id: 'intent-1',
-    intent_name: '实现功能',
+    intents: [intentItem()],
     confidence: 0.82,
     uncertain: false,
     source: 'llm',
@@ -35,6 +45,26 @@ describe('IntentResolvedBadge', () => {
     expect(badge.textContent).toContain('实现功能');
   });
 
+  it('renders the intent count and every name for a list', () => {
+    render(
+      <IntentResolvedBadge
+        intent={makeIntentResolved({
+          intents: [
+            intentItem({ intent_id: 'i1', intent_name: '实现功能' }),
+            intentItem({ intent_id: 'i2', intent_name: '修复缺陷' }),
+            intentItem({ intent_id: 'i3', intent_name: '编写测试' }),
+          ],
+        })}
+      />,
+    );
+
+    const badge = screen.getByTestId('intent-resolved-badge');
+    expect(badge.textContent).toContain('3 个意图');
+    expect(badge.textContent).toContain('实现功能');
+    expect(badge.textContent).toContain('修复缺陷');
+    expect(badge.textContent).toContain('编写测试');
+  });
+
   it('shows confidence and source in the title', () => {
     render(
       <IntentResolvedBadge
@@ -50,13 +80,24 @@ describe('IntentResolvedBadge', () => {
   it('renders possible intent label when uncertain', () => {
     render(
       <IntentResolvedBadge
-        intent={makeIntentResolved({ uncertain: true, intent_name: '实现功能' })}
+        intent={makeIntentResolved({
+          uncertain: true,
+          intents: [intentItem({ uncertain: true, intent_name: '实现功能' })],
+        })}
       />,
     );
 
     const badge = screen.getByTestId('intent-resolved-badge');
     expect(badge.textContent).toContain('可能：实现功能');
     expect(badge.textContent).not.toContain('/');
+  });
+
+  it('renders nothing when there are zero intents', () => {
+    const { container } = render(
+      <IntentResolvedBadge intent={makeIntentResolved({ intents: [] })} />,
+    );
+
+    expect(container.firstChild).toBeNull();
   });
 
   it('shows top candidates in the title', () => {
@@ -105,7 +146,10 @@ describe('IntentUncertaintyNotice', () => {
   it('renders a non-blocking notice when the current intent is uncertain', () => {
     render(
       <IntentUncertaintyNotice
-        intent={makeIntentResolved({ uncertain: true, intent_name: '实现功能' })}
+        intent={makeIntentResolved({
+          uncertain: true,
+          intents: [intentItem({ uncertain: true, intent_name: '实现功能' })],
+        })}
       />,
     );
 

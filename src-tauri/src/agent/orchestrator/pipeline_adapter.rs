@@ -132,6 +132,9 @@ impl PipelineAdapter {
             error: None,
             started_at: None,
             duration_ms: None,
+            intent_id: None,
+            confidence: None,
+            uncertain: false,
         }
     }
 

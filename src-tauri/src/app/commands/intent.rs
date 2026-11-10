@@ -107,7 +107,7 @@ impl From<IntentRecord> for IntentInfo {
 pub struct SessionIntentState {
     pub domain_id: Option<String>,
     pub domain_name: Option<String>,
-    /// `auto`（id 只是路由先验）或 `pinned`（用户显式选择）。
+    /// `pinned`（硬绑定领域）或 `none`（未绑定，走普通聊天）。
     pub mode: String,
 }
 
@@ -362,10 +362,21 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// 写入后重建进程内意图索引。旧快照会继续服务，直到 `warm_up` 原子替换它。
+/// 写入后重建进程内意图索引，并全量失效拆解缓存。旧快照会继续服务，直到
+/// `warm_up` 原子替换它。
+///
+/// 意图的任何增删改（含启停、导入、删域）都会改到执行配方；缓存的拆解结果
+/// 引用的是旧配方，必须清空所有会话的 `active_plan_id`。计划历史记录保留。
 fn refresh_intent_index(state: &AppState) {
     let router = state.intent_router.clone();
+    let db = state.db.clone();
     tauri::async_runtime::spawn(async move {
+        {
+            let db = db.lock().await;
+            if let Err(error) = db.clear_all_active_plans() {
+                log::error!("failed to invalidate the decomposition cache: {error}");
+            }
+        }
         router.mark_dirty().await;
         router.warm_up().await;
     });
@@ -389,14 +400,14 @@ fn not_found_session(id: &str) -> AppError {
 ///
 /// 这两个字符串会落库，也会经 IPC 回传前端，**取值不可更改**。`session.rs`
 /// 里的路由逻辑同样使用它们，避免各处重复字面量。
-pub(crate) const MODE_AUTO: &str = "auto";
 pub(crate) const MODE_PINNED: &str = "pinned";
+/// 无领域绑定：会话退化为普通聊天，拆解时没有候选。
+pub(crate) const MODE_NONE: &str = "none";
 
-/// 前端请求的绑定模式。`None` 表示「自动」，而不是「不要领域」：
-/// 已存储的 id 会继续作为路由先验保留。
+/// 前端请求的绑定模式。`None` 表示「清空领域绑定」，而不是保留先验。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionIntentMode {
-    Auto,
+    None,
     Pinned,
 }
 
@@ -404,13 +415,13 @@ impl SessionIntentMode {
     fn from_domain_id(domain_id: Option<&str>) -> Self {
         match domain_id {
             Some(_) => Self::Pinned,
-            None => Self::Auto,
+            None => Self::None,
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => MODE_AUTO,
+            Self::None => MODE_NONE,
             Self::Pinned => MODE_PINNED,
         }
     }
@@ -421,8 +432,6 @@ impl SessionIntentMode {
 pub(crate) struct SessionIntentFacts<'a> {
     pub session_id: &'a str,
     pub session_exists: bool,
-    /// 当前已存储的先验；切回 `auto` 时原样复用。
-    pub stored_domain_id: Option<&'a str>,
     /// **请求的**领域行是否存在。
     pub domain_exists: bool,
     /// **请求的**领域中已启用的意图数量。
@@ -433,7 +442,7 @@ pub(crate) struct SessionIntentFacts<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionIntentDecision<'a> {
     pub mode: SessionIntentMode,
-    /// `None` 会抹掉先验，所以 `auto` 返回已存储的 id 而不是 `None`。
+    /// `None` 会清空领域绑定。
     pub domain_id: Option<&'a str>,
 }
 
@@ -442,7 +451,7 @@ pub(crate) struct SessionIntentDecision<'a> {
 /// - 会话不存在 → `NotFound`；
 /// - `pinned` 要求领域存在且至少有一个启用意图，与
 ///   `set_active_intent_domain` 的不变量一致；
-/// - `auto` 永远成功，并保留已存储领域作为先验。
+/// - `none` 永远成功，并清空已存储的领域绑定。
 pub(crate) fn decide_session_intent_change<'a>(
     facts: SessionIntentFacts<'a>,
     mode: SessionIntentMode,
@@ -453,9 +462,9 @@ pub(crate) fn decide_session_intent_change<'a>(
     }
 
     match mode {
-        SessionIntentMode::Auto => Ok(SessionIntentDecision {
+        SessionIntentMode::None => Ok(SessionIntentDecision {
             mode,
-            domain_id: facts.stored_domain_id,
+            domain_id: None,
         }),
         SessionIntentMode::Pinned => {
             let domain_id = requested_domain_id.ok_or_else(|| {
@@ -475,6 +484,17 @@ pub(crate) fn decide_session_intent_change<'a>(
             })
         }
     }
+}
+
+/// 删除领域前的业务保护：内置领域与当前活跃领域都不可删除。
+pub(crate) fn ensure_domain_deletable(domain: &IntentDomainRecord) -> Result<()> {
+    if domain.source == "builtin" {
+        return Err(AppError::InvalidInput("内置领域不可删除".to_string()));
+    }
+    if domain.is_active {
+        return Err(AppError::InvalidInput("不能删除当前活跃领域".to_string()));
+    }
+    Ok(())
 }
 
 /// 把已存储的列投影成传输状态。
@@ -593,11 +613,20 @@ pub async fn update_intent_domain(
 }
 
 /// 删除领域及其意图；成功后重建内存索引。
+///
+/// 内置领域（`source = 'builtin'`）与当前活跃领域不可删除：前者是产品基线，
+/// 后者被新会话默认继承。
 #[tauri::command]
 pub async fn delete_intent_domain(state: State<'_, AppState>, id: String) -> Result<()> {
     let result = {
         let db = state.db.lock().await;
-        db.delete_intent_domain(&id)
+        match db.get_intent_domain(&id)? {
+            Some(domain) => {
+                ensure_domain_deletable(&domain)?;
+                db.delete_intent_domain(&id)
+            }
+            None => Err(not_found_domain(&id)),
+        }
     };
     if result.is_ok() {
         refresh_intent_index(state.inner());
@@ -634,7 +663,7 @@ pub async fn get_session_intent_state(
 ///
 /// `domain_id` 的语义：
 /// - `Some(id)` → `pinned`，要求领域存在且至少有一个启用意图；
-/// - `None` → 切回 `auto`，**不清空**已存储的领域，它继续作为路由先验。
+/// - `None` → `none`，**清空**已存储的领域绑定，会话退化为普通聊天。
 ///
 /// 返回写入后的绑定状态。
 #[tauri::command]
@@ -661,9 +690,6 @@ pub async fn set_session_intent_domain(
         SessionIntentFacts {
             session_id: &session_id,
             session_exists: session.is_some(),
-            stored_domain_id: session
-                .as_ref()
-                .and_then(|record| record.intent_domain_id.as_deref()),
             domain_exists,
             enabled_intent_count,
         },
@@ -672,6 +698,8 @@ pub async fn set_session_intent_domain(
     )?;
 
     db.set_session_intent_domain(&session_id, decision.domain_id, decision.mode.as_str())?;
+    // 切换领域后候选集合变了：该会话的拆解结果必须失效（计划历史保留）。
+    db.clear_session_active_plan(&session_id)?;
     let domain_name = domain_name_for(&db, decision.domain_id)?;
     Ok(session_intent_state_from(
         decision.domain_id,
@@ -1196,11 +1224,10 @@ mod tests {
 
     // ── 会话领域绑定 ──
 
-    fn facts<'a>(session_exists: bool, stored: Option<&'a str>) -> SessionIntentFacts<'a> {
+    fn facts(session_exists: bool) -> SessionIntentFacts<'static> {
         SessionIntentFacts {
             session_id: "session-a",
             session_exists,
-            stored_domain_id: stored,
             domain_exists: true,
             enabled_intent_count: 2,
         }
@@ -1208,12 +1235,11 @@ mod tests {
 
     #[test]
     fn missing_session_is_rejected_as_not_found() {
-        let mut facts = facts(false, None);
+        let mut facts = facts(false);
         facts.domain_exists = false;
         facts.enabled_intent_count = 0;
 
-        let err =
-            decide_session_intent_change(facts, SessionIntentMode::Auto, None).unwrap_err();
+        let err = decide_session_intent_change(facts, SessionIntentMode::None, None).unwrap_err();
         match err {
             AppError::NotFound(message) => {
                 assert!(message.contains("session-a"), "错误必须点名会话：{message}");
@@ -1223,35 +1249,22 @@ mod tests {
     }
 
     #[test]
-    fn auto_keeps_the_stored_domain_as_prior() {
+    fn none_mode_clears_the_stored_binding() {
         let decision = decide_session_intent_change(
-            facts(true, Some("domain-a")),
-            SessionIntentMode::Auto,
+            facts(true),
+            SessionIntentMode::None,
             None,
         )
         .unwrap();
 
-        assert_eq!(decision.mode, SessionIntentMode::Auto);
-        assert_eq!(
-            decision.domain_id,
-            Some("domain-a"),
-            "切到自动不得清空先验"
-        );
-    }
-
-    #[test]
-    fn auto_without_a_prior_stays_empty() {
-        let decision =
-            decide_session_intent_change(facts(true, None), SessionIntentMode::Auto, None).unwrap();
-
-        assert_eq!(decision.mode, SessionIntentMode::Auto);
-        assert_eq!(decision.domain_id, None);
+        assert_eq!(decision.mode, SessionIntentMode::None);
+        assert_eq!(decision.domain_id, None, "无领域模式必须清空绑定");
     }
 
     #[test]
     fn pinned_accepts_a_domain_with_enabled_intents() {
         let decision = decide_session_intent_change(
-            facts(true, Some("domain-old")),
+            facts(true),
             SessionIntentMode::Pinned,
             Some("domain-b"),
         )
@@ -1261,13 +1274,13 @@ mod tests {
         assert_eq!(
             decision.domain_id,
             Some("domain-b"),
-            "pinned 必须写入用户选择的领域，而不是先验"
+            "pinned 必须写入用户选择的领域"
         );
     }
 
     #[test]
     fn pinned_unknown_domain_is_rejected_as_not_found() {
-        let mut facts = facts(true, None);
+        let mut facts = facts(true);
         facts.domain_exists = false;
 
         let err = decide_session_intent_change(
@@ -1286,7 +1299,7 @@ mod tests {
 
     #[test]
     fn pinned_domain_without_enabled_intents_is_rejected() {
-        let mut facts = facts(true, None);
+        let mut facts = facts(true);
         facts.enabled_intent_count = 0;
 
         let err = decide_session_intent_change(
@@ -1306,7 +1319,7 @@ mod tests {
     #[test]
     fn pinned_without_a_domain_id_is_rejected() {
         let err = decide_session_intent_change(
-            facts(true, None),
+            facts(true),
             SessionIntentMode::Pinned,
             None,
         )
@@ -1318,14 +1331,50 @@ mod tests {
         );
     }
 
+    fn domain_record(source: &str, is_active: bool) -> IntentDomainRecord {
+        IntentDomainRecord {
+            id: "domain-a".to_string(),
+            name: "领域 A".to_string(),
+            description: String::new(),
+            is_active,
+            source: source.to_string(),
+            version: 1,
+            created_at: "2026-11-05T00:00:00Z".to_string(),
+            updated_at: "2026-11-05T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn builtin_domain_cannot_be_deleted() {
+        let err = ensure_domain_deletable(&domain_record("builtin", false)).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(_)),
+            "内置领域必须拒绝删除，实际：{err:?}"
+        );
+    }
+
+    #[test]
+    fn active_domain_cannot_be_deleted() {
+        let err = ensure_domain_deletable(&domain_record("user", true)).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(_)),
+            "活跃领域必须拒绝删除，实际：{err:?}"
+        );
+    }
+
+    #[test]
+    fn plain_user_domain_can_be_deleted() {
+        assert!(ensure_domain_deletable(&domain_record("user", false)).is_ok());
+    }
+
     #[test]
     fn state_serializes_snake_case_and_tolerates_a_deleted_domain() {
-        let state = session_intent_state_from(Some("domain-a"), None, MODE_AUTO);
+        let state = session_intent_state_from(Some("domain-a"), None, MODE_NONE);
         let json = serde_json::to_value(&state).unwrap();
 
         assert_eq!(json["domain_id"], "domain-a", "已删除领域仍要回传 id");
         assert!(json["domain_name"].is_null(), "已删除领域没有名称，且不得报错");
-        assert_eq!(json["mode"], "auto");
+        assert_eq!(json["mode"], "none");
         assert!(json.get("domainName").is_none(), "DTO 必须是 snake_case");
     }
 }

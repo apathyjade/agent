@@ -66,6 +66,7 @@ impl ExecutionRuntime {
                 max_iterations,
                 allowed_tools,
                 temperature,
+                system_prompt_appendix,
             } => {
                 self.execute_agent_task(
                     instruction,
@@ -73,6 +74,7 @@ impl ExecutionRuntime {
                     *max_iterations,
                     allowed_tools,
                     *temperature,
+                    system_prompt_appendix.as_deref(),
                     cancel_flag,
                 )
                 .await
@@ -307,6 +309,7 @@ impl ExecutionRuntime {
         max_iterations: Option<usize>,
         allowed_tools: &Option<Vec<String>>,
         _temperature: Option<f32>,
+        system_prompt_appendix: Option<&str>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
         let effective_allowed_tools = self.effective_allowed_tools(allowed_tools);
@@ -320,12 +323,14 @@ impl ExecutionRuntime {
             effective_max_iterations,
             &effective_allowed_tools,
             _temperature,
+            system_prompt_appendix,
             cancel_flag,
         )
         .await
     }
 
     /// 执行 AgentTask，失败时自动重试一次（重试会带上上一次的错误上下文）。
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_agent(
         &self,
         instruction: &str,
@@ -334,6 +339,7 @@ impl ExecutionRuntime {
         max_iterations: Option<usize>,
         allowed_tools: &Option<Vec<String>>,
         _temperature: Option<f32>,
+        system_prompt_appendix: Option<&str>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
         // 采样参数暂时保留，ProviderBox 尚未暴露对应接口。
@@ -371,7 +377,7 @@ impl ExecutionRuntime {
                 instruction.to_string()
             };
 
-            let messages = self.agent_task_messages(&final_instruction);
+            let messages = self.agent_task_messages_with(&final_instruction, system_prompt_appendix);
 
             let agent = ToolLoop::new(self.providers.clone(), self.tools.clone());
             let agent = if let Some(max_iter) = max_iterations {
@@ -416,15 +422,33 @@ impl ExecutionRuntime {
     ///
     /// 抽成独立方法是为了让测试能在没有可用 provider 的情况下断言系统提示词；
     /// 覆盖值为空时回落到内置提示词。
+    #[cfg(test)]
     pub(super) fn agent_task_messages(&self, instruction: &str) -> Vec<Message> {
-        let system_msg = self
+        self.agent_task_messages_with(instruction, None)
+    }
+
+    /// 构造带步骤级提示词附录的 agent 消息列表。
+    ///
+    /// 附录来自意图的 `system_prompt_appendix`：它是**步骤级**配方，必须合并进
+    /// 这一步 agent 的 system prompt，而不是只停留在运行级提示词里。
+    pub(super) fn agent_task_messages_with(
+        &self,
+        instruction: &str,
+        appendix: Option<&str>,
+    ) -> Vec<Message> {
+        let base = self
             .system_prompt
             .as_deref()
             .filter(|prompt| !prompt.trim().is_empty())
             .unwrap_or(DEFAULT_AGENT_TASK_SYSTEM_PROMPT);
 
+        let system_msg = match appendix.map(str::trim).filter(|text| !text.is_empty()) {
+            Some(appendix) => format!("{base}\n\n{appendix}"),
+            None => base.to_string(),
+        };
+
         vec![
-            Message::system(system_msg.to_string()),
+            Message::system(system_msg),
             Message::user(instruction.to_string()),
         ]
     }

@@ -12,6 +12,7 @@ import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 import { ExecutionStatusBar } from '../management/ExecutionStatusBar';
 import { PlanTimeline } from './PlanTimeline';
+import { PlanConfirmDialog } from './PlanConfirmDialog';
 import { SessionIntentSelector } from './SessionIntentSelector';
 import { IntentResolvedBadge, IntentUncertaintyNotice } from './IntentResolvedBadge';
 import { ToolApprovalDialog } from './ToolApprovalDialog';
@@ -94,12 +95,22 @@ export function ChatArea() {
   const streamingContent = useStore((s) => s.streamingContent);
   const activeToolCalls = useStore((s) => s.activeToolCalls);
   const currentPhase = useStore((s) => s.currentPhase);
-  const sendMessageStream = useStore((s) => s.sendMessageStream);
   const personas = useStore((s) => s.personas);
   const setError = useStore((s) => s.setError);
   const summaries = useStore((s) => s.summaries);
   const fetchSummaries = useStore((s) => s.fetchSummaries);
   const currentTurnIntent = useStore((s) => s.currentTurnIntent);
+
+  // 拆解确认卡（受控）
+  const planConfirmOpen = useStore((s) => s.planConfirmOpen);
+  const planId = useStore((s) => s.planId);
+  const planIntents = useStore((s) => s.planIntents);
+  const planConfirmLoading = useStore((s) => s.planConfirmLoading);
+  const confirmPlan = useStore((s) => s.confirmPlan);
+  const cancelPlanConfirmation = useStore((s) => s.cancelPlanConfirmation);
+  const replanPlan = useStore((s) => s.replanPlan);
+  const removePlanIntent = useStore((s) => s.removePlanIntent);
+  const updatePlanIntent = useStore((s) => s.updatePlanIntent);
 
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -174,10 +185,15 @@ export function ChatArea() {
     async (content: string) => {
       setIsNearBottom(true);
       setShowScrollButton(false);
-      const pid = useStore.getState().activePersonaId;
-      await sendMessageStream(content, undefined, pid ?? undefined);
+      const state = useStore.getState();
+      const pid = state.activePersonaId;
+      // 先拆解：有意图则弹确认卡（消息暂不发送），零意图直接走普通聊天。
+      const outcome = await state.requestPlan(content);
+      if (outcome === 'chat') {
+        await state.sendMessageStream(content, undefined, pid ?? undefined);
+      }
     },
-    [sendMessageStream],
+    [],
   );
 
   const handleRetry = useCallback(() => setError(null), [setError]);
@@ -387,6 +403,19 @@ export function ChatArea() {
 
       {/* Tool approval gate */}
       <ToolApprovalDialog />
+
+      {/* 拆解结果确认卡 */}
+      <PlanConfirmDialog
+        open={planConfirmOpen}
+        planId={planId}
+        intents={planIntents}
+        loading={planConfirmLoading}
+        onConfirm={confirmPlan}
+        onCancel={cancelPlanConfirmation}
+        onReplan={replanPlan}
+        onRemoveIntent={removePlanIntent}
+        onUpdateInstruction={updatePlanIntent}
+      />
 
       {/* Input area */}
       <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 flex-shrink-0 transition-colors">

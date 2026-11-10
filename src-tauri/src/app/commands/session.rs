@@ -8,9 +8,12 @@
 //! 边界：本模块负责「一个回合」的编排，具体推理在 `agent::fast_loop` 与
 //! `agent::orchestrator`；本模块不实现工具、不直接调用 LLM provider。
 
+use std::sync::Arc;
+
 use chrono::Utc;
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::agent::fast_loop::ToolLoop;
@@ -19,14 +22,16 @@ use crate::agent::orchestrator::plan_types::{
 };
 use crate::agent::orchestrator::planner::LlmPlanner;
 use crate::agent::orchestrator::runtime::ExecutionRuntime;
-use crate::app::commands::intent::{MODE_AUTO, MODE_PINNED};
+use crate::app::commands::intent::{MODE_NONE, MODE_PINNED};
 use crate::app::commands::{StreamChunk, ToolCallEvent};
 use crate::app::state::AppState;
 use crate::core::db::models::{Message as DbMessage, Session as DbSession};
+use crate::core::db::repository::Database;
 use crate::core::error::{AppError, Result};
 use crate::features::persona::{PersonaInfo, PersonaResolution};
 use crate::llm::intent::{
-    DecisionSource, ExecutionPolicy, IntentResult, PathSelection, RouteContext, RouteDecision,
+    DecisionEvidence, DecisionSource, Decomposition, ExecutionPolicy, IntentCandidate, PathSelection,
+    RouteContext,
 };
 use rig::completion::Message;
 
@@ -219,10 +224,10 @@ const ROUTE_HISTORY_LIMIT: usize = 6;
 
 /// 新建会话。
 ///
-/// `persona_id` / `project_id` 为 `None` 时表示不绑定。`intent_domain_mode`
-/// 固定从 `auto` 起步——领域先验由首轮路由学习，而不是创建时指定。
-/// 返回值是**落库后重新读取**的行：`create_session` 会在 SQL 里继承默认
-/// 领域，内存中的结构体拿不到这个值。
+/// `persona_id` / `project_id` 为 `None` 时表示不绑定。会话创建时即绑定当前
+/// 活跃领域（`is_active = 1`）并标记为 `pinned`；没有活跃领域时退化为
+/// `none`（无领域）。返回值是**落库后重新读取**的行：`create_session` 会在
+/// SQL 里补齐默认领域，内存中的结构体拿不到这个值。
 #[tauri::command]
 pub async fn create_session(
     state: State<'_, AppState>,
@@ -232,6 +237,9 @@ pub async fn create_session(
     persona_id: Option<String>,
     project_id: Option<String>,
 ) -> Result<DbSession> {
+    let db = state.db.lock().await;
+    let (intent_domain_id, intent_domain_mode) = initial_intent_binding(&db)?;
+
     let now = Utc::now().to_rfc3339();
     let sess = DbSession {
         id: Uuid::new_v4().to_string(),
@@ -248,17 +256,25 @@ pub async fn create_session(
         execution_status: r#"{"type":"idle"}"#.to_string(),
         active_plan_id: None,
         project_id,
-        intent_domain_id: None,
-        intent_domain_mode: MODE_AUTO.to_string(),
+        intent_domain_id,
+        intent_domain_mode: intent_domain_mode.to_string(),
     };
 
-    let db = state.db.lock().await;
     db.create_session(&sess)?;
     // `create_session` 在 SQL 里解析继承来的默认领域，内存里的值会是 `None`。
     // 重新读一次，让调用方（会话头部选择器）拿到真实的领域状态。
     let stored = db.get_session(&sess.id)?.unwrap_or(sess);
 
     Ok(stored)
+}
+
+/// 新会话的初始领域绑定：绑定当前 active 领域并标记 `pinned`；
+/// 没有 active 领域时清空绑定并标记 `none`。
+pub(crate) fn initial_intent_binding(db: &Database) -> Result<(Option<String>, &'static str)> {
+    match db.get_active_intent_domain()? {
+        Some(domain) => Ok((Some(domain.id), MODE_PINNED)),
+        None => Ok((None, MODE_NONE)),
+    }
 }
 
 /// 列出会话，默认不含已归档。
@@ -401,6 +417,7 @@ pub async fn send_message(
         &content,
         tools_enabled,
         active_persona_id,
+        None,
     )
     .await?;
 
@@ -451,9 +468,20 @@ pub async fn send_message_stream(
     content: String,
     tools_enabled: Option<bool>,
     active_persona_id: Option<String>,
+    plan_id: Option<String>,
 ) -> Result<String> {
     // 路由真正完成时才 emit `intent_resolved`；不要在工作开始前就先播报
     // 一个「分类中」的阶段。
+
+    // 先校验计划再落用户消息：不可执行的计划不应留下孤儿用户消息。
+    if let Some(plan_id) = plan_id.as_deref() {
+        let db = state.db.lock().await;
+        crate::app::commands::intent_plan::load_confirmable_plan(
+            &db,
+            &session_id,
+            plan_id,
+        )?;
+    }
 
     // 两个入口共用同一个解析器：流式与非流式的路由、配方、模型与上下文
     // 不可能出现差异。
@@ -463,6 +491,7 @@ pub async fn send_message_stream(
         &content,
         tools_enabled,
         active_persona_id,
+        plan_id.as_deref(),
     )
     .await?;
 
@@ -478,18 +507,35 @@ pub async fn send_message_stream(
         let _ = db.set_setting(&format!("request_ctx:{}", session_id), &messages_json);
     }
 
-    let full_content = match turn.path {
-        PathSelection::Deep => {
-            emit_execution_log(
-                &app_handle,
-                "info",
-                "planner",
-                format!("路由到深度执行: intent={} ({})", turn.route.chosen.id, turn.route.chosen.name),
-            );
-            emit_phase(&app_handle, "deep_think");
-            execute_deep_streaming(state.inner(), &app_handle, &turn).await?
+    let full_content = if let Some(plan_id) = plan_id.as_deref() {
+        emit_execution_log(
+            &app_handle,
+            "info",
+            "planner",
+            format!("执行已确认的计划: {plan_id}"),
+        );
+        execute_planned_turn(state.inner(), &app_handle, &turn, plan_id).await?
+    } else {
+        match turn.path {
+            PathSelection::Deep => {
+                let intent_label = turn
+                    .policy
+                    .first()
+                    .map(|item| format!("{} ({})", item.intent.id, item.intent.name))
+                    .unwrap_or_else(|| "无意图".to_string());
+                emit_execution_log(
+                    &app_handle,
+                    "info",
+                    "planner",
+                    format!("路由到深度执行: intent={intent_label}"),
+                );
+                emit_phase(&app_handle, "deep_think");
+                execute_deep_streaming(state.inner(), &app_handle, &turn).await?
+            }
+            PathSelection::Fast => {
+                execute_fast_streaming(state.inner(), &app_handle, &turn).await?
+            }
         }
-        PathSelection::Fast => execute_fast_streaming(state.inner(), &app_handle, &turn).await?,
     };
 
     let db = state.db.lock().await;
@@ -552,7 +598,8 @@ pub async fn get_request_context(
 pub(crate) struct PreparedTurn {
     pub session: DbSession,
     pub messages: Vec<DbMessage>,
-    pub route: RouteDecision,
+    /// 由拆解结果投影出的多意图执行策略（承载本轮全部意图）。
+    pub policy: ExecutionPolicy,
     pub path: PathSelection,
     pub tools_enabled: bool,
     pub allowed_tools: Option<Vec<String>>,
@@ -564,19 +611,21 @@ pub(crate) struct PreparedTurn {
     pub persona_block: Option<String>,
     /// 本轮的 memory 上下文；每回合只注入一次。
     pub memory_prompt: Option<String>,
-    /// 组装好的 fast 路径消息（system/persona/appendix/memory/history）。
+    /// 组装好的 fast 路径消息（system/persona/intents/memory/history）。
     pub fast_messages: Vec<Message>,
     /// 原始用户输入，planner 需要它作为目标。
     pub user_content: String,
 }
 
 impl PreparedTurn {
-    /// 意图附录按既有 system 块的形式渲染（若配置了）。
-    fn intent_appendix(&self) -> Option<String> {
-        intent_appendix(&self.route.chosen)
+    /// 意图上下文块：已选意图的名称、说明与各自的提示词附录。
+    ///
+    /// 后续消息走普通对话，但必须携带会话级意图上下文（design §2.4）。
+    fn intent_context_block(&self) -> Option<String> {
+        intent_context_block(&self.policy)
     }
 
-    /// 会话系统提示词 + 人设 + 意图附录。
+    /// 会话系统提示词 + 人设 + 意图上下文。
     ///
     /// planner 接口没有独立的 system-prompt 参数，所以这段内容作为 planner
     /// 上下文的首段传入。
@@ -585,17 +634,17 @@ impl PreparedTurn {
         if let Some(persona) = &self.persona_block {
             parts.push(persona.clone());
         }
-        if let Some(appendix) = self.intent_appendix() {
-            parts.push(appendix);
+        if let Some(intent) = self.intent_context_block() {
+            parts.push(intent);
         }
         parts.join("\n\n")
     }
 
-    /// 会话系统提示词 + 意图附录；人设只给 planner 用。
+    /// 会话系统提示词 + 意图上下文；人设只给 planner 用。
     fn agent_task_system_prompt(&self) -> String {
         let mut parts = vec![self.session_system_prompt.clone()];
-        if let Some(appendix) = self.intent_appendix() {
-            parts.push(appendix);
+        if let Some(intent) = self.intent_context_block() {
+            parts.push(intent);
         }
         parts.join("\n\n")
     }
@@ -611,63 +660,104 @@ impl PreparedTurn {
     }
 }
 
-/// 解析一个回合：把用户消息落库、路由、套用意图配方并组装提示词。
+/// 把多意图策略渲染成注入 system prompt 的上下文块。
 ///
-/// 只做编排，每一步都委托给下面按阶段拆分的 helper——这样「路由」与
-/// 「组装」的边界在代码里就是可见的，改动某一阶段不会牵连其他阶段。
+/// 零意图返回 `None`：普通聊天不需要任何意图说明。
+pub(crate) fn intent_context_block(policy: &ExecutionPolicy) -> Option<String> {
+    if policy.intents.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec!["[Selected intents]".to_string()];
+    for item in &policy.intents {
+        let description = item.intent.description.trim();
+        if description.is_empty() {
+            lines.push(format!("- {} ({})", item.intent.name, item.intent.id));
+        } else {
+            lines.push(format!(
+                "- {} ({}): {}",
+                item.intent.name, item.intent.id, description
+            ));
+        }
+        if let Some(appendix) = item
+            .intent
+            .config
+            .system_prompt_appendix
+            .as_deref()
+            .map(str::trim)
+            .filter(|appendix| !appendix.is_empty())
+        {
+            lines.push(format!("  {}", appendix));
+        }
+    }
+
+    Some(lines.join("\n"))
+}
+
+/// 解析一个回合：把用户消息落库、沿用或生成拆解结果、套用意图配方并组装提示词。
+///
+/// `plan_id` 为 `Some` 时，用户已确认该计划：本轮不发起拆解调用，意图上下文
+/// 直接来自该计划。`None` 时优先读会话挂载的拆解结果（缓存），只有都没有才
+/// 发起一次新的拆解。
 pub(crate) async fn prepare_turn(
     state: &AppState,
     session_id: &str,
     content: &str,
     tools_enabled: Option<bool>,
     active_persona_id: Option<String>,
+    plan_id: Option<&str>,
 ) -> Result<PreparedTurn> {
     let inputs = load_turn_inputs(state, session_id, content).await?;
-    let route = route_turn(state, session_id, &inputs, content).await;
+    let (decomposition, origin) =
+        resolve_turn_intents(state, session_id, &inputs, content, plan_id).await?;
+    let policy = ExecutionPolicy::from_decomposition(&decomposition);
 
     let session_system_prompt = resolve_system_prompt(&inputs.session);
     let (persona_block, persona_model) =
         resolve_persona_context(state, &inputs.session, content, active_persona_id).await;
+    // 已确认的计划由编排链路执行；后续消息沿用缓存意图时走普通对话，只有首条
+    // 消息的新拆解才允许离开 fast 路径。
+    let path = turn_path(&policy, origin, plan_id.is_some());
     let (model_id, skipped_models) =
-        resolve_turn_model(state, &inputs.session, &route, persona_model.as_deref()).await;
+        resolve_turn_model(state, &inputs.session, &policy, persona_model.as_deref()).await;
     report_skipped_models(state, &skipped_models);
 
-    let allowed_tools = resolve_allowed_tools(state, &inputs.session, &route);
+    let allowed_tools = resolve_allowed_tools(state, &inputs.session, &policy);
     let memory_prompt = load_memory_prompt(state, content).await;
     let fast_messages = assemble_fast_messages(
         &session_system_prompt,
         persona_block.as_deref(),
-        &route,
+        &policy,
         memory_prompt.as_deref(),
         &inputs.messages,
     );
     let fast_messages =
         compress_context_if_needed(state, session_id, &model_id, fast_messages).await?;
 
-    let policy = build_execution_policy(&route, allowed_tools, model_id);
+    let max_iterations = policy.first().and_then(|item| item.intent.config.max_iterations);
 
     Ok(PreparedTurn {
         session: inputs.session,
         messages: inputs.messages,
-        path: policy.path,
+        policy,
+        path,
         tools_enabled: tools_enabled.unwrap_or(true),
-        allowed_tools: policy.allowed_tools,
-        model_id: policy.model_id,
-        max_iterations: policy.max_iterations,
+        allowed_tools,
+        model_id,
+        max_iterations,
         session_system_prompt,
         persona_block,
         memory_prompt,
         fast_messages,
-        route,
         user_content: content.to_string(),
     })
 }
 
 /// 一个回合的原始输入：会话、包含本轮用户消息的历史、以及用户消息 id。
-struct TurnInputs {
-    session: DbSession,
-    messages: Vec<DbMessage>,
-    user_message_id: String,
+pub(crate) struct TurnInputs {
+    pub session: DbSession,
+    pub messages: Vec<DbMessage>,
+    pub user_message_id: String,
 }
 
 /// 读出会话与完整消息列表，并把本轮用户消息先落库。
@@ -707,65 +797,187 @@ async fn load_turn_inputs(
     })
 }
 
-/// 用会话持久化的领域先验路由本轮消息，并把命中领域写回为下一轮先验。
+/// 解析本轮沿用的拆解结果。
 ///
-/// 写回失败只记日志：路由本身已经成功，不该因为一次先验更新失败就让整条
-/// 消息发送失败。
-async fn route_turn(
+/// 优先级：
+/// 1. `plan_id`（用户已确认的计划）→ 只读该计划，不发起拆解调用；
+/// 2. 会话挂载的 `active_plan_id`（拆解缓存）→ 只读，不重新拆解；
+/// 3. 都没有 → 发起一次新的拆解（每会话至多一次）。
+async fn resolve_turn_intents(
     state: &AppState,
     session_id: &str,
     inputs: &TurnInputs,
     content: &str,
-) -> RouteDecision {
-    let pinned = inputs.session.intent_domain_mode == MODE_PINNED;
+    plan_id: Option<&str>,
+) -> Result<(Decomposition, IntentOrigin)> {
+    let resolved = resolve_decomposition(
+        state.intent_router.as_ref(),
+        &state.db,
+        session_id,
+        &inputs.session,
+        &inputs.messages,
+        Some(&inputs.user_message_id),
+        content,
+        plan_id,
+    )
+    .await?;
+    emit_intent_resolved(state, session_id, &resolved.decomposition);
+    Ok((resolved.decomposition, resolved.origin))
+}
+
+/// 本轮意图上下文的来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntentOrigin {
+    /// 用户确认的计划（本轮执行计划，不走普通聊天）。
+    Plan,
+    /// 会话挂载的拆解缓存：后续消息沿用，走普通对话。
+    Cached,
+    /// 首条消息的新拆解。
+    Fresh,
+}
+
+/// 解析结果及其来源。
+pub(crate) struct ResolvedIntent {
+    pub decomposition: Decomposition,
+    pub origin: IntentOrigin,
+}
+
+/// 本轮走哪条执行路径。
+///
+/// 计划执行与后续消息（缓存意图）一律是普通对话；只有首条消息的新拆解可以
+/// 因 deep 意图进入深度路径。
+pub(crate) fn turn_path(
+    policy: &ExecutionPolicy,
+    origin: IntentOrigin,
+    has_plan: bool,
+) -> PathSelection {
+    if has_plan || origin == IntentOrigin::Cached {
+        PathSelection::Fast
+    } else {
+        policy.path
+    }
+}
+
+/// 解析本轮要沿用的拆解结果（不依赖 `AppState`，便于单测）。
+///
+/// 优先级：
+/// 1. `plan_id`（用户已确认的计划）→ 只读该计划，不发起拆解调用；读不到时
+///    直接报错，绝不静默退化为零意图（那会掩盖掉计划数据损坏）；
+/// 2. 会话挂载的 `active_plan_id`（拆解缓存）→ 只读，不重新拆解；计划不可
+///    用时才落到重新拆解，0 步的合法空计划照常复用；
+/// 3. 都没有 → 发起一次新的拆解（每会话至多一次）。
+pub(crate) async fn resolve_decomposition(
+    router: &crate::llm::intent::router::IntentRouter,
+    db: &Arc<Mutex<Database>>,
+    session_id: &str,
+    session: &DbSession,
+    messages: &[DbMessage],
+    user_message_id: Option<&str>,
+    content: &str,
+    plan_id: Option<&str>,
+) -> Result<ResolvedIntent> {
+    if let Some(plan_id) = plan_id {
+        let decomposition = {
+            let db = db.lock().await;
+            crate::app::commands::intent_plan::decomposition_from_plan(
+                &db, session_id, plan_id,
+            )
+        };
+        let Some(decomposition) = decomposition else {
+            return Err(AppError::NotFound(format!(
+                "confirmed plan '{plan_id}' is not readable for session '{session_id}'"
+            )));
+        };
+        return Ok(ResolvedIntent {
+            decomposition,
+            origin: IntentOrigin::Plan,
+        });
+    }
+
+    if let Some(cached_id) = session.active_plan_id.as_deref() {
+        let decomposition = {
+            let db = db.lock().await;
+            crate::app::commands::intent_plan::decomposition_from_plan(
+                &db, session_id, cached_id,
+            )
+        };
+        // `Some` 恒可用，即使为空（0 步计划 = 合法的零意图会话）；只有计划
+        // 不可用（`None`）才继续往下重新拆解。
+        if let Some(decomposition) = decomposition {
+            return Ok(ResolvedIntent {
+                decomposition,
+                origin: IntentOrigin::Cached,
+            });
+        }
+    }
+
+    let decomposition =
+        decompose_with_session(router, db, session_id, session, messages, user_message_id, content)
+            .await;
+    Ok(ResolvedIntent {
+        decomposition,
+        origin: IntentOrigin::Fresh,
+    })
+}
+
+/// 用会话绑定的领域拆解一条消息。领域是硬过滤：无绑定时候选为空，直接走
+/// 普通聊天兜底。
+pub(crate) async fn decompose_with_session(
+    router: &crate::llm::intent::router::IntentRouter,
+    db: &Arc<Mutex<Database>>,
+    session_id: &str,
+    session: &DbSession,
+    messages: &[DbMessage],
+    user_message_id: Option<&str>,
+    content: &str,
+) -> Decomposition {
+    let pinned = session.intent_domain_mode == MODE_PINNED && session.intent_domain_id.is_some();
     let project_root: Option<std::path::PathBuf> = {
-        let db = state.db.lock().await;
-        inputs
-            .session
+        let db = db.lock().await;
+        session
             .project_id
             .as_deref()
             .and_then(|id| db.get_project(id).ok().flatten())
             .map(|project| std::path::PathBuf::from(project.path))
     };
-    let recent_messages = recent_history(&inputs.messages, &inputs.user_message_id);
-    let route = state
-        .intent_router
-        .route(RouteContext {
+    let recent_messages: Vec<DbMessage> = match user_message_id {
+        Some(id) => recent_history(messages, id),
+        None => tail_history(messages),
+    };
+    router
+        .decompose(RouteContext {
             session_id,
             content,
             recent_messages: &recent_messages,
-            prior_domain: inputs.session.intent_domain_id.as_deref(),
+            prior_domain: session.intent_domain_id.as_deref(),
             pinned,
             project_root: project_root.as_deref(),
         })
-        .await;
+        .await
+}
 
-    if let PriorWriteBack::Persist { domain_id } = prior_write_back(
-        &inputs.session.intent_domain_mode,
-        &route.chosen.domain_id,
-        &route.chosen.domain_name,
-    ) {
-        let db = state.db.lock().await;
-        if let Err(error) = db.set_session_intent_domain(session_id, Some(&domain_id), MODE_AUTO) {
-            log::warn!(
-                "failed to persist intent domain prior for session '{}': {}",
-                session_id,
-                error
-            );
-        }
-    }
-
-    emit_intent_resolved(state, session_id, &route);
-    route
+/// 零意图拆解结果：普通聊天兜底，不执行任何领域意图。
+pub(crate) fn zero_decomposition() -> Decomposition {
+    Decomposition::zero_intent(
+        DecisionSource::Fallback,
+        Vec::<IntentCandidate>::new(),
+        DecisionEvidence::default(),
+    )
 }
 
 /// 路由只需要最近几条历史，且要排除本轮用户输入（它单独作为 `content`）。
 fn recent_history(messages: &[DbMessage], user_message_id: &str) -> Vec<DbMessage> {
-    let mut recent: Vec<DbMessage> = messages
+    let recent: Vec<DbMessage> = messages
         .iter()
         .filter(|message| message.id != user_message_id)
         .cloned()
         .collect();
+    tail_history(&recent)
+}
+
+/// 只保留最后 [`ROUTE_HISTORY_LIMIT`] 条历史。
+fn tail_history(messages: &[DbMessage]) -> Vec<DbMessage> {
+    let mut recent = messages.to_vec();
     if recent.len() > ROUTE_HISTORY_LIMIT {
         recent = recent.split_off(recent.len() - ROUTE_HISTORY_LIMIT);
     }
@@ -812,17 +1024,23 @@ async fn resolve_persona_context(
 
 /// 模型优先级：意图 > 人设 > 会话，跳过未注册的候选。
 ///
+/// 多意图时取第一个意图的模型：它们是同一份计划里的步骤，模型在计划组装时
+/// 已经落到每一步上。
+///
 /// 返回最终模型 id 与被跳过的候选列表（由调用方记日志）。
 async fn resolve_turn_model(
     state: &AppState,
     session: &DbSession,
-    route: &RouteDecision,
+    policy: &ExecutionPolicy,
     persona_model: Option<&str>,
 ) -> (String, Vec<String>) {
     let providers = state.providers.lock().await;
     let default_model = providers.default_model_id().to_string();
+    let intent_model = policy
+        .first()
+        .and_then(|item| item.intent.config.model_id.as_deref());
     let resolution = resolve_model_id(
-        route.chosen.config.model_id.as_deref(),
+        intent_model,
         persona_model,
         &session.model_id,
         Some(default_model.as_str()).filter(|id| !id.is_empty()),
@@ -847,22 +1065,33 @@ fn report_skipped_models(state: &AppState, skipped_models: &[String]) {
     }
 }
 
-/// 工具白名单：会话配置与意图白名单取交集。
-fn resolve_allowed_tools(
-    state: &AppState,
-    session: &DbSession,
-    route: &RouteDecision,
-) -> Option<Vec<String>> {
-    let session_allowed_tools: Option<Vec<String>> = session.config.as_ref().and_then(|c| {
+/// 会话配置里的工具白名单；`config` 缺失或结构不对时返回 `None`（不限制）。
+pub(crate) fn session_enabled_tools(session: &DbSession) -> Option<Vec<String>> {
+    session.config.as_ref().and_then(|c| {
         serde_json::from_str::<serde_json::Value>(c)
             .ok()
             .and_then(|v| v.get("enabled_tools").cloned())
             .and_then(|v| serde_json::from_value(v).ok())
-    });
-    state.intent_router.resolve_tools(
-        session_allowed_tools,
-        route.chosen.config.enabled_tools.as_ref(),
-    )
+    })
+}
+
+/// 工具白名单：会话配置与各已选意图白名单的并集取交集。
+///
+/// 没有意图时退回会话白名单本身；存在意图时不允许借「多意图」放宽任何一项。
+fn resolve_allowed_tools(
+    state: &AppState,
+    session: &DbSession,
+    policy: &ExecutionPolicy,
+) -> Option<Vec<String>> {
+    let session_allowed_tools = session_enabled_tools(session);
+    let intent_tools: Vec<Option<Vec<String>>> = policy
+        .intents
+        .iter()
+        .map(|item| item.intent.config.enabled_tools.clone())
+        .collect();
+    state
+        .intent_router
+        .resolve_union_tools(session_allowed_tools, &intent_tools)
 }
 
 /// 本轮记忆上下文；召回失败时静默降级为「无记忆」。
@@ -875,11 +1104,11 @@ async fn load_memory_prompt(state: &AppState, content: &str) -> Option<String> {
         .flatten()
 }
 
-/// 组装 fast 路径消息：系统提示词、人设、意图附录、记忆、历史。
+/// 组装 fast 路径消息：系统提示词、人设、意图上下文、记忆、历史。
 fn assemble_fast_messages(
     system_prompt: &str,
     persona: Option<&str>,
-    route: &RouteDecision,
+    policy: &ExecutionPolicy,
     memory: Option<&str>,
     messages: &[DbMessage],
 ) -> Vec<Message> {
@@ -888,8 +1117,8 @@ fn assemble_fast_messages(
     if let Some(persona) = persona {
         fast_messages.push(Message::system(persona.to_string()));
     }
-    if let Some(appendix) = intent_appendix(&route.chosen) {
-        fast_messages.push(Message::system(appendix));
+    if let Some(intent) = intent_context_block(policy) {
+        fast_messages.push(Message::system(intent));
     }
     if let Some(memory) = memory {
         fast_messages.push(Message::system(memory.to_string()));
@@ -988,31 +1217,6 @@ pub(crate) fn resolve_model_id(
     ModelResolution {
         model_id: fallback,
         skipped,
-    }
-}
-
-// ── 领域先验回写 ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PriorWriteBack {
-    Persist { domain_id: String },
-    Skip,
-}
-
-/// 判断本次路由结果是否要成为会话的下一轮先验。
-///
-/// 只有 `auto` 会话才学习领域：`pinned` 会话的领域由用户决定，不能被路由
-/// 覆盖；合成结果（`domain_name` 为空）表示没有选中任何领域。
-pub(crate) fn prior_write_back(mode: &str, domain_id: &str, domain_name: &str) -> PriorWriteBack {
-    let is_auto = mode != MODE_PINNED;
-    let has_real_domain = !domain_id.trim().is_empty() && !domain_name.trim().is_empty();
-
-    if is_auto && has_real_domain {
-        PriorWriteBack::Persist {
-            domain_id: domain_id.to_string(),
-        }
-    } else {
-        PriorWriteBack::Skip
     }
 }
 
@@ -1478,6 +1682,201 @@ async fn run_deep_turn(
     }
 }
 
+/// 以 `Planned` 模式顺序执行一个已确认的会话计划。
+///
+/// 计划在确认前已落库为 `pending`；这里只接受 `pending` 计划（`cancelled`
+/// 或已在执行的计划会被拒绝），因此「确认前无副作用」由状态机保证。
+///
+/// 执行结果按步骤顺序落成 assistant 消息，最终综合结果（各步骤文本按顺序
+/// 用空行拼接）作为结束 chunk 推给前端。
+async fn execute_planned_turn(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    turn: &PreparedTurn,
+    plan_id: &str,
+) -> Result<String> {
+    let plan = {
+        let db = state.db.lock().await;
+        crate::app::commands::intent_plan::load_confirmable_plan(&db, &turn.session.id, plan_id)?
+    };
+    let total_steps = plan.steps.len();
+
+    emit_execution_log(
+        app_handle,
+        "info",
+        "planner",
+        format!("计划已确认，开始执行: {total_steps} 步"),
+    );
+
+    let handle = ExecutionHandle::new(turn.session.id.clone(), plan.id.clone());
+    let cancel_flag = handle.cancel_flag.clone();
+    let pause_flag = handle.pause_flag.clone();
+    state
+        .active_executions
+        .lock()
+        .await
+        .insert(turn.session.id.clone(), handle);
+
+    let runtime = ExecutionRuntime::new(
+        state.providers.clone(),
+        state.tools.clone(),
+        state.db.clone(),
+    )
+    .with_app_handle(app_handle.clone())
+    // 步骤级白名单是权威来源；运行级只保留工具总开关。
+    .with_tool_policy(None, turn.tools_enabled)
+    .with_system_prompt(Some(turn.agent_task_system_prompt()))
+    .with_max_iterations(turn.max_iterations);
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<PlanProgressEvent>(32);
+    let forwarder = spawn_progress_forwarder(app_handle, event_rx, true);
+
+    let result = runtime
+        .run(
+            plan,
+            event_tx,
+            cancel_flag,
+            pause_flag,
+            PlanRunMode::Planned,
+        )
+        .await;
+
+    if let Some(forwarder) = forwarder {
+        let _ = forwarder.await;
+    }
+    state
+        .active_executions
+        .lock()
+        .await
+        .remove(&turn.session.id);
+
+    match result {
+        Ok(outcome) => {
+            let text = persist_plan_outcome(state, &turn.session.id, &outcome.completed, None).await;
+            emit_done(app_handle, text.clone(), "completed");
+            Ok(text)
+        }
+        Err(failure) => {
+            emit_execution_log(
+                app_handle,
+                "error",
+                "execution",
+                format!(
+                    "执行在第「{}」步失败: {}",
+                    failure.failed_step, failure.message
+                ),
+            );
+            let reason = format!(
+                "执行在第「{}」步失败：{}",
+                failure.failed_step, failure.message
+            );
+            let text =
+                persist_plan_outcome(state, &turn.session.id, &failure.completed, Some(&reason))
+                    .await;
+            emit_done(app_handle, text.clone(), "failed");
+            Ok(text)
+        }
+    }
+}
+
+/// 把已完成步骤的结果按顺序落成 assistant 消息，返回最终综合文本。
+///
+/// `combined_result()` 就是各步骤文本按空行拼接，因此逐条落库后历史里就包含
+/// 完整轨迹与最终综合结果；只有失败原因这类额外文本才单独补一条消息。
+async fn persist_plan_outcome(
+    state: &AppState,
+    session_id: &str,
+    completed: &[CompletedStep],
+    failure_reason: Option<&str>,
+) -> String {
+    let final_text = plan_outcome_text(completed, failure_reason);
+    let contents = plan_result_contents(completed, failure_reason);
+
+    let base = Utc::now();
+    let messages: Vec<DbMessage> = contents
+        .into_iter()
+        .enumerate()
+        .map(|(index, content)| DbMessage {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            role: "assistant".to_string(),
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            tokens: None,
+            created_at: (base + chrono::Duration::microseconds(index as i64)).to_rfc3339(),
+        })
+        .collect();
+
+    {
+        let db = state.db.lock().await;
+        for row in &messages {
+            if let Err(error) = db.insert_message(row) {
+                log::error!(
+                    "failed to persist plan result for session '{}': {}",
+                    session_id,
+                    error
+                );
+            }
+        }
+    }
+
+    final_text
+}
+
+/// 计划执行结果要落成哪些 assistant 消息（按顺序）。
+///
+/// 每个已完成步骤一条，保持历史里的完整轨迹；失败时补一条说明失败的最终
+/// 消息；全部成功但没有任何文本产出时补一条步骤摘要。
+pub(crate) fn plan_result_contents(
+    completed: &[CompletedStep],
+    failure_reason: Option<&str>,
+) -> Vec<String> {
+    let mut contents: Vec<String> = completed.iter().filter_map(completed_step_text).collect();
+
+    match failure_reason {
+        Some(reason) => contents.push(reason.to_string()),
+        None if contents.is_empty() => contents.push(format!(
+            "计划已执行完成（{} 步），但没有产生文本结果。",
+            completed.len()
+        )),
+        None => {}
+    }
+
+    contents
+}
+
+/// 计划执行结果流式输出的最终文本。
+pub(crate) fn plan_outcome_text(
+    completed: &[CompletedStep],
+    failure_reason: Option<&str>,
+) -> String {
+    let combined = completed
+        .iter()
+        .filter_map(completed_step_text)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    match failure_reason {
+        Some(reason) if combined.is_empty() => reason.to_string(),
+        Some(reason) => format!("{combined}\n\n> {reason}"),
+        None if combined.is_empty() => {
+            format!("计划已执行完成（{} 步），但没有产生文本结果。", completed.len())
+        }
+        None => combined,
+    }
+}
+
+/// 单个步骤结果的文本形态；与 [`PlanOutcome::combined_result`] 的口径一致。
+fn completed_step_text(step: &CompletedStep) -> Option<String> {
+    match &step.result {
+        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
+    }
+}
+
 /// 让 planner 生成一个深度执行计划。
 ///
 /// 失败时按 [`deep_failure_action`] 判定：规划阶段还没执行任何步骤，因此
@@ -1579,34 +1978,6 @@ fn step_summary(result: &serde_json::Value) -> String {
 
 // ── 零散共享辅助 ──────────────────────────────────────────────────────────
 
-/// 把路由结果投影成执行配方。
-///
-/// `uncertain` 被刻意忽略：它只影响告诉用户什么，不影响这个回合被允许做
-/// 什么。
-fn build_execution_policy(
-    route: &RouteDecision,
-    allowed_tools: Option<Vec<String>>,
-    model_id: String,
-) -> ExecutionPolicy {
-    ExecutionPolicy {
-        path: route.chosen.path,
-        allowed_tools,
-        model_id,
-        system_prompt_appendix: route.chosen.config.system_prompt_appendix.clone(),
-        max_iterations: route.chosen.config.max_iterations,
-    }
-}
-
-/// 意图附录：`[Intent: id (name)]` 前缀 + 配置的补充提示词。
-fn intent_appendix(intent: &IntentResult) -> Option<String> {
-    intent
-        .config
-        .system_prompt_appendix
-        .as_ref()
-        .filter(|appendix| !appendix.trim().is_empty())
-        .map(|appendix| format!("[Intent: {} ({})]\n{}", intent.id, intent.name, appendix))
-}
-
 /// 从人设解析结果中取出人设本体；未命中时返回 `None`。
 fn persona_info(resolution: &PersonaResolution) -> Option<&PersonaInfo> {
     match resolution {
@@ -1646,38 +2017,67 @@ fn emit_execution_log(
 }
 
 #[derive(Serialize, Clone)]
+struct IntentResolvedItem {
+    intent_id: String,
+    intent_name: String,
+    instruction: String,
+    confidence: f32,
+    uncertain: bool,
+}
+
+#[derive(Serialize, Clone)]
 struct IntentResolvedEvent {
     session_id: String,
     domain_id: String,
     domain_name: String,
-    intent_id: String,
-    intent_name: String,
+    /// 本次拆解得到的意图列表；空 = 零意图。
+    intents: Vec<IntentResolvedItem>,
     confidence: f32,
     uncertain: bool,
     source: DecisionSource,
-    candidates: Vec<crate::llm::intent::IntentCandidate>,
+    candidates: Vec<IntentCandidate>,
     elapsed_ms: u64,
     llm_calls: usize,
     probe_used: bool,
 }
 
-/// 把本回合的路由决策 emit 给前端（用于意图徽标）。
-fn emit_intent_resolved(state: &AppState, session_id: &str, route: &RouteDecision) {
-    let event = IntentResolvedEvent {
-        session_id: session_id.to_string(),
-        domain_id: route.chosen.domain_id.clone(),
-        domain_name: route.chosen.domain_name.clone(),
-        intent_id: route.chosen.id.clone(),
-        intent_name: route.chosen.name.clone(),
-        confidence: route.confidence,
-        uncertain: route.uncertain,
-        source: route.source,
-        candidates: route.candidates.clone(),
-        elapsed_ms: route.evidence.elapsed_ms,
-        llm_calls: route.evidence.llm_calls,
-        probe_used: route.evidence.probe_used,
-    };
+/// 把本回合的拆解结果 emit 给前端（用于意图徽标）。
+pub(crate) fn emit_intent_resolved(state: &AppState, session_id: &str, decomposition: &Decomposition) {
+    let event = build_intent_resolved_event(session_id, decomposition);
     let _ = state.app_handle.emit("intent_resolved", event);
+}
+
+/// 构造 `intent_resolved` 的事件 payload（与 emit 分离以便单测）。
+fn build_intent_resolved_event(
+    session_id: &str,
+    decomposition: &Decomposition,
+) -> IntentResolvedEvent {
+    let intents: Vec<IntentResolvedItem> = decomposition
+        .intents
+        .iter()
+        .map(|item| IntentResolvedItem {
+            intent_id: item.intent.id.clone(),
+            intent_name: item.intent.name.clone(),
+            instruction: item.instruction.clone(),
+            confidence: item.confidence,
+            uncertain: item.uncertain,
+        })
+        .collect();
+    let first = decomposition.intents.first();
+
+    IntentResolvedEvent {
+        session_id: session_id.to_string(),
+        domain_id: first.map(|item| item.intent.domain_id.clone()).unwrap_or_default(),
+        domain_name: first.map(|item| item.intent.domain_name.clone()).unwrap_or_default(),
+        intents,
+        confidence: decomposition.confidence,
+        uncertain: decomposition.uncertain,
+        source: decomposition.source,
+        candidates: decomposition.candidates.clone(),
+        elapsed_ms: decomposition.evidence.elapsed_ms,
+        llm_calls: decomposition.evidence.llm_calls,
+        probe_used: decomposition.evidence.probe_used,
+    }
 }
 
 /// 异步触发回合后的生命周期钩子：自动标题与自动摘要。
@@ -1791,21 +2191,25 @@ mod tests {
     }
 
     #[test]
-    fn prior_write_back_persists_for_auto_with_a_real_domain() {
-        assert_eq!(
-            prior_write_back("auto", "domain-a", "程序开发"),
-            PriorWriteBack::Persist {
-                domain_id: "domain-a".to_string()
-            }
-        );
+    fn initial_binding_pins_the_active_domain() {
+        let db = Database::new_test().expect("in-memory db");
+        crate::features::intent_management::seeds::seed_builtin_intents(&db)
+            .expect("seed builtin domain");
+
+        let (domain_id, mode) = initial_intent_binding(&db).expect("resolve binding");
+
+        assert_eq!(domain_id.as_deref(), Some("builtin.software_dev"));
+        assert_eq!(mode, MODE_PINNED);
     }
 
     #[test]
-    fn prior_write_back_skips_pinned_sessions() {
-        assert_eq!(
-            prior_write_back("pinned", "domain-a", "程序开发"),
-            PriorWriteBack::Skip
-        );
+    fn initial_binding_is_none_without_an_active_domain() {
+        let db = Database::new_test().expect("in-memory db");
+
+        let (domain_id, mode) = initial_intent_binding(&db).expect("resolve binding");
+
+        assert!(domain_id.is_none());
+        assert_eq!(mode, MODE_NONE);
     }
 
     #[test]
@@ -1816,16 +2220,6 @@ mod tests {
     #[test]
     fn tool_status_is_completed_when_tool_succeeds() {
         assert_eq!(tool_status(false), "completed");
-    }
-
-    #[test]
-    fn prior_write_back_skips_the_synthetic_result() {
-        // 合成意图复用了内置领域 id，但不上报领域名：没有任何领域行被选中，
-        // 因此不能写回先验。
-        assert_eq!(
-            prior_write_back("auto", "builtin.software_dev", ""),
-            PriorWriteBack::Skip
-        );
     }
 
     #[test]
@@ -1873,96 +2267,138 @@ mod tests {
         assert_eq!(deep_failure_action(true), DeepFailureAction::ReturnPartial);
     }
 
-    fn route_decision(uncertain: bool) -> RouteDecision {
-        RouteDecision {
-            chosen: IntentResult {
-                id: "test.intent".to_string(),
-                name: "实现功能".to_string(),
-                domain_id: "test.domain".to_string(),
-                domain_name: "程序开发".to_string(),
-                config: crate::llm::intent::IntentConfig {
-                    system_prompt_appendix: Some("be strict".to_string()),
-                    enabled_tools: Some(vec!["file_system".to_string()]),
-                    model_id: Some("model-a".to_string()),
-                    max_iterations: Some(7),
-                    auto_escalate: false,
-                },
-                path: PathSelection::Deep,
-                confidence: 0.4,
+    fn intent_result(id: &str, path: PathSelection) -> IntentResult {
+        IntentResult {
+            id: id.to_string(),
+            name: "实现功能".to_string(),
+            description: "实现一个功能并补齐验证".to_string(),
+            domain_id: "test.domain".to_string(),
+            domain_name: "程序开发".to_string(),
+            config: crate::llm::intent::IntentConfig {
+                system_prompt_appendix: Some("be strict".to_string()),
+                enabled_tools: Some(vec!["file_system".to_string()]),
+                model_id: Some("model-a".to_string()),
+                max_iterations: Some(7),
+                auto_escalate: false,
             },
+            path,
             confidence: 0.4,
-            uncertain,
-            source: DecisionSource::Llm,
-            candidates: vec![crate::llm::intent::IntentCandidate {
+        }
+    }
+
+    fn decomposition_of(intents: Vec<DecomposedIntent>) -> Decomposition {
+        Decomposition::from_intents(
+            intents,
+            DecisionSource::Llm,
+            vec![IntentCandidate {
                 intent_id: "test.intent".to_string(),
                 name: "实现功能".to_string(),
                 domain_id: "test.domain".to_string(),
                 score: 0.4,
                 signal: DecisionSource::Llm,
             }],
-            evidence: crate::llm::intent::DecisionEvidence {
+            DecisionEvidence {
                 llm_calls: 1,
                 elapsed_ms: 12,
                 ..Default::default()
             },
-        }
+        )
     }
 
     #[test]
-    fn execution_policy_projects_the_chosen_intent() {
-        let decision = route_decision(false);
-        let policy = build_execution_policy(
-            &decision,
-            Some(vec!["file_system".to_string()]),
-            "model-a".to_string(),
-        );
+    fn execution_policy_carries_every_intent_and_its_recipe() {
+        let decomposition = decomposition_of(vec![
+            DecomposedIntent::new(intent_result("test.intent", PathSelection::Deep), "do it", 0.4, false),
+            DecomposedIntent::new(intent_result("test.other", PathSelection::Fast), "do more", 0.9, false),
+        ]);
 
+        let policy = ExecutionPolicy::from_decomposition(&decomposition);
+
+        assert_eq!(policy.intents.len(), 2);
         assert_eq!(policy.path, PathSelection::Deep);
-        assert_eq!(policy.model_id, "model-a");
-        assert_eq!(policy.max_iterations, Some(7));
+        assert_eq!(policy.intents[0].instruction, "do it");
         assert_eq!(
-            policy.system_prompt_appendix.as_deref(),
+            policy.intents[0].intent.config.model_id.as_deref(),
+            Some("model-a")
+        );
+        assert_eq!(policy.intents[0].intent.config.max_iterations, Some(7));
+        assert_eq!(
+            policy.intents[0].intent.config.system_prompt_appendix.as_deref(),
             Some("be strict")
         );
+    }
+
+    #[test]
+    fn uncertainty_does_not_change_the_intent_recipe() {
+        let certain = ExecutionPolicy::from_decomposition(&decomposition_of(vec![
+            DecomposedIntent::new(intent_result("test.intent", PathSelection::Fast), "do it", 0.9, false),
+        ]));
+        let uncertain = ExecutionPolicy::from_decomposition(&decomposition_of(vec![
+            DecomposedIntent::new(intent_result("test.intent", PathSelection::Fast), "do it", 0.1, true),
+        ]));
+
         assert_eq!(
-            policy.allowed_tools,
-            Some(vec!["file_system".to_string()])
+            certain.intents[0].intent.config.enabled_tools,
+            uncertain.intents[0].intent.config.enabled_tools
+        );
+        assert_eq!(
+            certain.intents[0].intent.config.model_id,
+            uncertain.intents[0].intent.config.model_id
         );
     }
 
     #[test]
-    fn uncertainty_does_not_change_the_tool_policy() {
-        let tools = Some(vec!["file_system".to_string()]);
-        let certain =
-            build_execution_policy(&route_decision(false), tools.clone(), "m".to_string());
-        let uncertain = build_execution_policy(&route_decision(true), tools, "m".to_string());
+    fn intent_resolved_event_exposes_the_intent_list_and_drops_widened() {
+        let decomposition = decomposition_of(vec![
+            DecomposedIntent::new(intent_result("test.intent", PathSelection::Fast), "do it", 0.4, true),
+            DecomposedIntent::new(
+                intent_result("test.other", PathSelection::Fast),
+                "do more",
+                0.9,
+                false,
+            ),
+        ]);
 
-        assert_eq!(certain.allowed_tools, uncertain.allowed_tools);
+        let value = serde_json::to_value(build_intent_resolved_event("session", &decomposition))
+            .expect("event serializes");
+
+        assert_eq!(value["intents"].as_array().map(Vec::len), Some(2));
+        assert_eq!(value["intents"][0]["intent_id"], "test.intent");
+        assert_eq!(value["intents"][0]["instruction"], "do it");
+        assert_eq!(value["intents"][0]["uncertain"], true);
+        let confidence = value["intents"][1]["confidence"].as_f64().expect("confidence");
+        assert!((confidence as f32 - 0.9).abs() < 1e-6);
+        assert_eq!(value["uncertain"], true);
+        assert!(value.get("widened").is_none());
     }
 
     #[test]
-    fn intent_resolved_event_exposes_uncertainty_and_drops_widened() {
-        let decision = route_decision(true);
-        let event = IntentResolvedEvent {
-            session_id: "session".to_string(),
-            domain_id: decision.chosen.domain_id.clone(),
-            domain_name: decision.chosen.domain_name.clone(),
-            intent_id: decision.chosen.id.clone(),
-            intent_name: decision.chosen.name.clone(),
-            confidence: decision.confidence,
-            uncertain: decision.uncertain,
-            source: decision.source,
-            candidates: decision.candidates.clone(),
-            elapsed_ms: decision.evidence.elapsed_ms,
-            llm_calls: decision.evidence.llm_calls,
-            probe_used: decision.evidence.probe_used,
-        };
+    fn intent_context_block_injects_names_descriptions_and_appendices() {
+        let mut first = intent_result("test.intent", PathSelection::Fast);
+        first.description = "实现一个功能".to_string();
+        let mut second = intent_result("test.other", PathSelection::Fast);
+        second.description = String::new();
+        second.config.system_prompt_appendix = None;
 
-        let value = serde_json::to_value(event).expect("event serializes");
+        let policy = ExecutionPolicy::from_decomposition(&decomposition_of(vec![
+            DecomposedIntent::new(first, "do it", 0.9, false),
+            DecomposedIntent::new(second, "do more", 0.9, false),
+        ]));
 
-        assert_eq!(value["uncertain"], true);
-        assert!(value.get("widened").is_none());
-        assert_eq!(value["candidates"][0]["intent_id"], "test.intent");
+        let block = intent_context_block(&policy).expect("non-empty policy has a context block");
+
+        assert!(block.contains("实现一个功能"));
+        assert!(block.contains("test.intent"));
+        assert!(block.contains("be strict"));
+        assert!(block.contains("test.other"));
+    }
+
+    #[test]
+    fn zero_intent_policy_has_no_context_block() {
+        let policy = ExecutionPolicy::from_decomposition(&zero_decomposition());
+        assert!(intent_context_block(&policy).is_none());
+        assert!(policy.is_empty());
+        assert_eq!(policy.path, PathSelection::Fast);
     }
     // ── task 6：transcript 落库与历史还原 ────────────────────────────────
 
@@ -2062,6 +2498,466 @@ mod tests {
         orphan.tool_name = Some("calculator".to_string());
 
         assert!(history_messages(&[orphan]).is_empty());
+    }
+
+    // ── 拆解缓存与计划执行结果 ────────────────────────────────────────────
+
+    use crate::core::db::models::{IntentDomainRecord, IntentRecord};
+    use crate::llm::intent::classifier::{DecomposeOutcome, IntentDecomposer};
+    use crate::llm::intent::router::IntentRouter;
+    use crate::llm::intent::{DecomposedIntent, IntentResult, RouterConfig};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingDecomposer {
+        calls: AtomicUsize,
+    }
+
+    impl CountingDecomposer {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl IntentDecomposer for CountingDecomposer {
+        async fn decompose(
+            &self,
+            _message: &str,
+            _recent_messages: &[crate::core::db::models::Message],
+            _candidates: &[IntentRecord],
+        ) -> DecomposeOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            DecomposeOutcome::Unavailable
+        }
+    }
+
+    fn test_session() -> DbSession {
+        DbSession {
+            id: "session-1".to_string(),
+            title: "session".to_string(),
+            model_id: "test-model".to_string(),
+            system_prompt: None,
+            persona_id: None,
+            config: None,
+            title_source: "manual".to_string(),
+            archived: false,
+            created_at: "2026-11-09T00:00:00Z".to_string(),
+            updated_at: "2026-11-09T00:00:00Z".to_string(),
+            mode: "chat".to_string(),
+            execution_status: String::new(),
+            active_plan_id: None,
+            project_id: None,
+            intent_domain_id: Some("test.domain".to_string()),
+            intent_domain_mode: MODE_PINNED.to_string(),
+        }
+    }
+
+    fn seed_domain(db: &Database) {
+        db.insert_intent_domain(&IntentDomainRecord {
+            id: "test.domain".to_string(),
+            name: "test.domain".to_string(),
+            description: String::new(),
+            is_active: false,
+            source: "user".to_string(),
+            version: 1,
+            created_at: "2026-11-09T00:00:00Z".to_string(),
+            updated_at: "2026-11-09T00:00:00Z".to_string(),
+        })
+        .expect("insert domain");
+        db.insert_intent(&IntentRecord {
+            id: "test.intent".to_string(),
+            domain_id: "test.domain".to_string(),
+            name: "实现功能".to_string(),
+            description: "实现一个功能".to_string(),
+            examples: vec!["实现".to_string()],
+            workflow: String::new(),
+            allowed_tools: vec!["read".to_string()],
+            default_agent: String::new(),
+            scope: "global".to_string(),
+            enabled: true,
+            version: 1,
+            confidence_threshold: 0.5,
+            fallback_intent: String::new(),
+            path: "fast".to_string(),
+            auto_escalate: false,
+            system_prompt_appendix: String::new(),
+            model_id: String::new(),
+            max_iterations: None,
+            sort_order: 0,
+            created_at: "2026-11-09T00:00:00Z".to_string(),
+            updated_at: "2026-11-09T00:00:00Z".to_string(),
+        })
+        .expect("insert intent");
+    }
+
+    fn plan_with_intent(session_id: &str, intent_id: &str) -> crate::agent::orchestrator::plan_types::ExecutionPlan {
+        use crate::agent::orchestrator::plan_types::{
+            ExecStep, ExecutionPlan, PlanSource, PlanStatus, PlanStep, StepStatus,
+        };
+
+        ExecutionPlan {
+            id: "plan-1".to_string(),
+            session_id: session_id.to_string(),
+            source: PlanSource::Dynamic {
+                goal: "继续任务".to_string(),
+                generated_by: "test".to_string(),
+            },
+            steps: vec![PlanStep {
+                id: "step-1".to_string(),
+                label: "实现功能".to_string(),
+                execution: ExecStep::AgentTask {
+                    instruction: "继续实现".to_string(),
+                    model_id: Some("model-a".to_string()),
+                    max_iterations: Some(5),
+                    allowed_tools: Some(vec!["read".to_string()]),
+                    temperature: None,
+                    system_prompt_appendix: Some("be strict".to_string()),
+                },
+                status: StepStatus::Pending,
+                result: None,
+                error: None,
+                started_at: None,
+                duration_ms: None,
+                intent_id: Some(intent_id.to_string()),
+                confidence: Some(0.9),
+                uncertain: false,
+            }],
+            status: PlanStatus::Pending,
+            created_at: "2026-11-09T00:00:00Z".to_string(),
+            finished_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_decomposition_is_reused_without_a_model_call() {
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+
+        let mut session = test_session();
+        let plan = plan_with_intent("session-1", "test.intent");
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+            crate::app::commands::intent_plan::persist_pending_plan(&guard, &plan)
+                .expect("persist plan");
+            guard
+                .set_session_active_plan("session-1", Some(&plan.id))
+                .expect("mount plan");
+        }
+        session.active_plan_id = Some(plan.id.clone());
+
+        let resolved =
+            resolve_decomposition(&router, &db, "session-1", &session, &[], None, "继续", None)
+                .await
+                .expect("resolve cached decomposition");
+
+        assert_eq!(resolved.origin, IntentOrigin::Cached);
+        assert_eq!(resolved.decomposition.intents.len(), 1);
+        assert_eq!(resolved.decomposition.intents[0].instruction, "继续实现");
+        assert_eq!(decomposer.calls(), 0, "后续消息不得重新拆解");
+    }
+
+    #[tokio::test]
+    async fn without_a_cache_the_first_message_decomposes_once() {
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+        }
+
+        let session = test_session();
+        let resolved =
+            resolve_decomposition(&router, &db, "session-1", &session, &[], None, "你好", None)
+                .await
+                .expect("resolve fresh decomposition");
+
+        assert_eq!(resolved.origin, IntentOrigin::Fresh);
+        assert!(resolved.decomposition.is_empty());
+        assert_eq!(decomposer.calls(), 1);
+    }
+
+    fn plan_without_steps(session_id: &str) -> crate::agent::orchestrator::plan_types::ExecutionPlan {
+        use crate::agent::orchestrator::plan_types::{ExecutionPlan, PlanSource, PlanStatus};
+
+        ExecutionPlan {
+            id: "plan-empty".to_string(),
+            session_id: session_id.to_string(),
+            source: PlanSource::Dynamic {
+                goal: "零意图会话".to_string(),
+                generated_by: "test".to_string(),
+            },
+            steps: Vec::new(),
+            status: PlanStatus::Pending,
+            created_at: "2026-11-09T00:00:00Z".to_string(),
+            finished_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_step_cached_plan_is_reused_without_decomposing() {
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+
+        let mut session = test_session();
+        let plan = plan_without_steps("session-1");
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+            crate::app::commands::intent_plan::persist_pending_plan(&guard, &plan)
+                .expect("persist empty plan");
+            guard
+                .set_session_active_plan("session-1", Some(&plan.id))
+                .expect("mount plan");
+        }
+        session.active_plan_id = Some(plan.id.clone());
+
+        let resolved =
+            resolve_decomposition(&router, &db, "session-1", &session, &[], None, "继续", None)
+                .await
+                .expect("resolve zero-intent cache");
+
+        assert_eq!(resolved.origin, IntentOrigin::Cached);
+        assert!(resolved.decomposition.is_empty(), "0 步计划就是零意图");
+        assert_eq!(
+            decomposer.calls(),
+            0,
+            "合法的 0 步计划也必须复用缓存，不得重新拆解"
+        );
+        let policy = ExecutionPolicy::from_decomposition(&resolved.decomposition);
+        assert_eq!(
+            turn_path(&policy, resolved.origin, false),
+            PathSelection::Fast,
+            "零意图会话照常走普通聊天"
+        );
+    }
+
+    /// 零意图的第一条消息落 0 步缓存后，后续消息必须完全不再发起拆解调用。
+    #[tokio::test]
+    async fn zero_intent_cache_stops_later_messages_from_decomposing() {
+        use crate::llm::intent::{DecisionEvidence, DecisionSource, Decomposition};
+
+        /// 0 步计划不会触发 deep 展开，这个替身只要不被调用即可。
+        struct NoExpand;
+
+        #[async_trait::async_trait]
+        impl crate::app::commands::intent_plan::DeepExpander for NoExpand {
+            async fn expand(
+                &self,
+                _instruction: &str,
+                _session_id: &str,
+                _model_id: Option<&str>,
+                _allowed_tools: Option<&[String]>,
+                _tools_enabled: bool,
+            ) -> std::result::Result<crate::agent::orchestrator::plan_types::ExecutionPlan, String>
+            {
+                Err("deep expansion is not expected for a zero-intent cache".to_string())
+            }
+        }
+
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+            guard.create_session(&test_session()).expect("create session");
+        }
+
+        // 模拟 `decompose_message`：合法零意图落一条 0 步计划并挂到会话。
+        let zero = Decomposition::zero_intent(
+            DecisionSource::Fallback,
+            Vec::new(),
+            DecisionEvidence::default(),
+        );
+        let cached = crate::app::commands::intent_plan::cache_decomposition_plan(
+            &db,
+            "session-1",
+            &zero,
+            None,
+            &NoExpand,
+        )
+        .await
+        .expect("cache zero intent")
+        .expect("合法零意图必须落缓存");
+
+        let session = {
+            let guard = db.lock().await;
+            guard.get_session("session-1").unwrap().expect("session")
+        };
+        assert_eq!(session.active_plan_id.as_deref(), Some(cached.id.as_str()));
+
+        for round in 1..=2 {
+            let resolved =
+                resolve_decomposition(&router, &db, "session-1", &session, &[], None, "继续", None)
+                    .await
+                    .expect("resolve cached zero intent");
+            assert_eq!(resolved.origin, IntentOrigin::Cached, "第 {round} 条消息");
+            assert!(resolved.decomposition.is_empty());
+        }
+
+        assert_eq!(
+            decomposer.calls(),
+            0,
+            "零意图会话的后续消息不得再发起拆解调用"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_cached_plan_falls_back_to_a_fresh_decomposition() {
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+        }
+
+        let mut session = test_session();
+        // 指向一个不存在的计划：必须视为缓存不可用，而不是零意图。
+        session.active_plan_id = Some("missing-plan".to_string());
+
+        let resolved =
+            resolve_decomposition(&router, &db, "session-1", &session, &[], None, "继续", None)
+                .await
+                .expect("resolve with missing cache");
+
+        assert_eq!(resolved.origin, IntentOrigin::Fresh);
+        assert_eq!(decomposer.calls(), 1, "计划不可用时必须重新拆解");
+    }
+
+    #[tokio::test]
+    async fn unparseable_cached_plan_falls_back_to_a_fresh_decomposition() {
+        use crate::core::db::models::ExecutionPlanRecord;
+
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+            guard
+                .insert_execution_plan(&ExecutionPlanRecord {
+                    id: "plan-broken".to_string(),
+                    session_id: "session-1".to_string(),
+                    source: "dynamic".to_string(),
+                    goal: Some("损坏的计划".to_string()),
+                    plan_json: "{not json".to_string(),
+                    status: "pending".to_string(),
+                    created_at: "2026-11-09T00:00:00Z".to_string(),
+                    finished_at: None,
+                })
+                .expect("insert broken plan");
+        }
+
+        let mut session = test_session();
+        session.active_plan_id = Some("plan-broken".to_string());
+
+        let resolved =
+            resolve_decomposition(&router, &db, "session-1", &session, &[], None, "继续", None)
+                .await
+                .expect("resolve with broken cache");
+
+        assert_eq!(resolved.origin, IntentOrigin::Fresh);
+        assert_eq!(decomposer.calls(), 1, "计划不可解析时也必须重新拆解");
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_plan_replaces_routing_without_decomposing() {
+        let db = Arc::new(Mutex::new(Database::new_test().expect("in-memory db")));
+        let decomposer = Arc::new(CountingDecomposer::new());
+        let router = IntentRouter::new(db.clone(), None, decomposer.clone(), RouterConfig::default());
+
+        let session = test_session();
+        let plan = plan_with_intent("session-1", "test.intent");
+        {
+            let guard = db.lock().await;
+            seed_domain(&guard);
+            crate::app::commands::intent_plan::persist_pending_plan(&guard, &plan)
+                .expect("persist plan");
+        }
+
+        let resolved = resolve_decomposition(
+            &router,
+            &db,
+            "session-1",
+            &session,
+            &[],
+            None,
+            "执行计划",
+            Some(&plan.id),
+        )
+        .await
+        .expect("resolve confirmed plan");
+
+        assert_eq!(resolved.origin, IntentOrigin::Plan);
+        assert_eq!(resolved.decomposition.intents.len(), 1);
+        assert_eq!(decomposer.calls(), 0);
+    }
+
+    fn completed_step(index: usize, text: &str) -> CompletedStep {
+        CompletedStep {
+            index,
+            id: format!("step-{}", index + 1),
+            label: format!("Step {}", index + 1),
+            result: serde_json::Value::String(text.to_string()),
+        }
+    }
+
+    #[test]
+    fn plan_results_become_one_assistant_message_per_step() {
+        let completed = vec![completed_step(0, "第一步"), completed_step(1, "第二步")];
+
+        let contents = plan_result_contents(&completed, None);
+
+        assert_eq!(contents, vec!["第一步".to_string(), "第二步".to_string()]);
+        assert_eq!(plan_outcome_text(&completed, None), "第一步\n\n第二步");
+    }
+
+    #[test]
+    fn a_failed_plan_reports_the_completed_steps_and_the_reason() {
+        let completed = vec![completed_step(0, "第一步")];
+
+        let contents = plan_result_contents(&completed, Some("执行在第「Step 2」步失败：boom"));
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0], "第一步");
+        assert!(contents[1].contains("boom"));
+        assert_eq!(
+            plan_outcome_text(&completed, Some("执行在第「Step 2」步失败：boom")),
+            "第一步\n\n> 执行在第「Step 2」步失败：boom"
+        );
+    }
+
+    #[test]
+    fn a_plan_without_textual_output_still_persists_a_summary() {
+        let contents = plan_result_contents(&[], None);
+        assert_eq!(contents.len(), 1);
+        assert!(contents[0].contains("没有产生文本结果"));
+
+        let contents = plan_result_contents(&[], Some("执行失败"));
+        assert_eq!(contents, vec!["执行失败".to_string()]);
+    }
+
+    #[test]
+    fn cached_intents_keep_follow_up_messages_on_the_fast_path() {
+        let mut deep = intent_result("test.deep", PathSelection::Deep);
+        deep.path = PathSelection::Deep;
+        let policy = ExecutionPolicy::from_decomposition(&decomposition_of(vec![
+            DecomposedIntent::new(deep, "do it", 0.9, false),
+        ]));
+
+        assert_eq!(turn_path(&policy, IntentOrigin::Fresh, false), PathSelection::Deep);
+        assert_eq!(turn_path(&policy, IntentOrigin::Cached, false), PathSelection::Fast);
+        assert_eq!(turn_path(&policy, IntentOrigin::Plan, true), PathSelection::Fast);
     }
 }
 

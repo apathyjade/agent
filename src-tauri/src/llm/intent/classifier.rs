@@ -12,6 +12,9 @@ use tokio::sync::Mutex;
 use crate::core::db::models::{IntentRecord, Message};
 use crate::llm::provider::ProviderRegistry;
 
+/// 拆解输入携带的最近消息条数（与 `ROUTE_HISTORY_LIMIT` 的 6 条保持一致）。
+const DECOMPOSE_HISTORY_LIMIT: usize = 6;
+
 /// 一次 rerank 的结果。
 ///
 /// 必须把「模型明确说没有候选匹配」与「没拿到可用回答」分开：前者是可信
@@ -24,6 +27,34 @@ pub enum RerankOutcome {
     NoMatch,
     /// 调用失败、超时或回复无法解析；路由器可继续降级。
     Unavailable,
+}
+
+/// 一次拆解里的单个意图项（已通过网络边界与候选校验）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecomposedItem {
+    pub intent_id: String,
+    pub instruction: String,
+    pub confidence: f32,
+}
+
+/// 拆解调用结果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecomposeOutcome {
+    /// 模型返回了可解析的意图列表（可能为空 = 零意图）。
+    Parsed(Vec<DecomposedItem>),
+    /// 调用失败、超时或无可用候选；上层应走普通聊天兜底。
+    Unavailable,
+}
+
+/// 上下文感知的拆解器边界，可在测试中注入替身。
+#[async_trait::async_trait]
+pub trait IntentDecomposer: Send + Sync {
+    async fn decompose(
+        &self,
+        message: &str,
+        recent_messages: &[Message],
+        candidates: &[IntentRecord],
+    ) -> DecomposeOutcome;
 }
 
 /// 上下文感知的 reranker 边界，可在测试中注入替身。
@@ -90,6 +121,46 @@ impl IntentReranker for LlmReranker {
     }
 }
 
+impl LlmReranker {
+    /// 让 LLM 把用户输入拆解为**零个或多个**候选意图。
+    ///
+    /// 调用失败、超时或没有候选时返回 [`DecomposeOutcome::Unavailable`]；
+    /// 解析失败视为零意图。超时由调用方负责。
+    pub async fn decompose(
+        &self,
+        message: &str,
+        recent_messages: &[Message],
+        candidates: &[IntentRecord],
+    ) -> DecomposeOutcome {
+        if candidates.is_empty() {
+            return DecomposeOutcome::Unavailable;
+        }
+
+        let Ok(provider) = self.providers.lock().await.resolve(self.model_id.as_deref()) else {
+            return DecomposeOutcome::Unavailable;
+        };
+
+        let preamble = build_decompose_prompt(candidates);
+        let prompt = build_decompose_input(message, recent_messages);
+        match provider.prompt(&preamble, &prompt).await {
+            Ok(reply) => DecomposeOutcome::Parsed(parse_decompose_reply(&reply, candidates)),
+            Err(_) => DecomposeOutcome::Unavailable,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IntentDecomposer for LlmReranker {
+    async fn decompose(
+        &self,
+        message: &str,
+        recent_messages: &[Message],
+        candidates: &[IntentRecord],
+    ) -> DecomposeOutcome {
+        LlmReranker::decompose(self, message, recent_messages, candidates).await
+    }
+}
+
 /// 渲染 rerank 的候选列表。`none` 是显式合法的回答。
 pub fn build_rerank_prompt(candidates: &[IntentRecord]) -> String {
     let mut prompt = String::from(
@@ -153,6 +224,112 @@ pub fn build_rerank_input(message: &str, recent_messages: &[Message]) -> String 
     input.push_str("Current user message:\n");
     input.push_str(message);
     input
+}
+
+/// 渲染拆解的候选清单。零意图是显式合法的回答（空数组）。
+pub fn build_decompose_prompt(candidates: &[IntentRecord]) -> String {
+    let mut prompt = String::from(
+        "You are an intent decomposer for an AI coding assistant.\n\
+         Read the user's current message and decompose it into ZERO OR MORE candidate intents.\n\
+         Use the recent conversation to resolve references such as \"that\" or \n\
+         \"what we just discussed\".\n\
+         A single message often needs MORE THAN ONE intent: when it contains several\n\
+         independent things (for example \"plan first, then implement\" or \"fix the bug\n\
+         and add tests\"), list EVERY matching intent, each with its own concrete\n\
+         instruction. Do not just pick the single best match.\n\
+         Only use ids from the candidate list below; never invent an id, and never\n\
+         list the same id more than once.\n\
+         For each intent, write a concrete instruction that tells the agent what to do.\n\
+         Matching only some of the candidates still counts as a match.\n\
+         Return an empty intents array only when the message is unrelated to ALL\n\
+         candidate intents (greetings, chit-chat, weather, translation, emotional\n\
+         expression).\n\nCandidates:\n",
+    );
+
+    for intent in candidates {
+        let examples = intent
+            .examples
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ");
+        prompt.push_str(&format!(
+            "- id: {}\n  name: {}\n  when: {}\n  examples: {}\n",
+            intent.id, intent.name, intent.description, examples
+        ));
+    }
+
+    prompt.push_str(
+        "\nRespond with one JSON object and nothing else:\n\
+         { \"intents\": [ { \"intent_id\": \"<id>\", \"instruction\": \"...\", \"confidence\": 0.0-1.0 } ] }\n\
+         Return {\"intents\": []} only when the message is unrelated to all candidates.",
+    );
+
+    prompt
+}
+
+/// 渲染拆解的输入：最近对话（最多 [`DECOMPOSE_HISTORY_LIMIT`] 条）与当前消息。
+pub fn build_decompose_input(message: &str, recent_messages: &[Message]) -> String {
+    let start = recent_messages.len().saturating_sub(DECOMPOSE_HISTORY_LIMIT);
+    build_rerank_input(message, &recent_messages[start..])
+}
+
+/// 把 LLM 回复解析成已校验的意图项列表。
+///
+/// 校验规则（防幻觉）：
+/// - `intent_id` 不在候选集合内 → 丢弃该项；
+/// - `instruction` 为空 → 丢弃该项；
+/// - `confidence` 缺失或非数值 → 记 `0.0`；
+/// - 回复里没有可解析的 `intents` 数组 → 空列表（零意图）。
+pub fn parse_decompose_reply(reply: &str, candidates: &[IntentRecord]) -> Vec<DecomposedItem> {
+    let mut items: Vec<DecomposedItem> = Vec::new();
+
+    for (start, _) in reply.match_indices('{') {
+        let Some(end) = matching_brace_end(reply, start) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&reply[start..=end]) else {
+            continue;
+        };
+        let Some(entries) = value.get("intents").and_then(|v| v.as_array()) else {
+            continue;
+        };
+
+        for entry in entries {
+            let Some(intent_id) = entry.get("intent_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !candidates.iter().any(|intent| intent.id == intent_id) {
+                continue;
+            }
+            let instruction = entry
+                .get("instruction")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if instruction.is_empty() {
+                continue;
+            }
+            let confidence = entry
+                .get("confidence")
+                .and_then(parse_confidence)
+                .unwrap_or(0.0);
+            if items.iter().any(|item| item.intent_id == intent_id) {
+                continue;
+            }
+            items.push(DecomposedItem {
+                intent_id: intent_id.to_string(),
+                instruction,
+                confidence,
+            });
+        }
+
+        return items;
+    }
+
+    items
 }
 
 /// 纯靠已存数据驱动的兜底打分。
@@ -559,5 +736,112 @@ mod tests {
             parse_rerank_reply(reply, &fixtures()),
             RerankOutcome::Unavailable
         );
+    }
+
+    #[test]
+    fn decompose_prompt_lists_candidates_and_zero_intent_contract() {
+        let prompt = build_decompose_prompt(&fixtures());
+
+        assert!(prompt.contains("builtin.software_dev.implement"));
+        assert!(prompt.contains("builtin.software_dev.explain"));
+        assert!(prompt.contains("name: 实现功能"));
+        assert!(prompt.contains("when: 把需求实现为代码"));
+        assert!(prompt.contains("examples: 把这段改成异步"));
+        assert!(
+            prompt.contains("{\"intents\": []}"),
+            "必须给出零意图的确定表达路径：{prompt}"
+        );
+    }
+
+    #[test]
+    fn decompose_prompt_encourages_listing_every_matching_intent() {
+        let prompt = build_decompose_prompt(&fixtures());
+
+        assert!(prompt.contains("MORE THAN ONE"), "{prompt}");
+        assert!(prompt.contains("EVERY matching intent"), "{prompt}");
+        assert!(
+            prompt.contains("list the same id more than once"),
+            "必须明确每个 id 至多出现一次：{prompt}"
+        );
+        assert!(
+            prompt.contains("Matching only some of the candidates still counts as a match"),
+            "部分匹配也算匹配：{prompt}"
+        );
+        assert!(
+            prompt.contains("unrelated to ALL"),
+            "零意图条件必须收窄成「与所有候选都无关」：{prompt}"
+        );
+    }
+
+    #[test]
+    fn decompose_reply_parses_ordered_items() {
+        let reply = r#"{"intents": [
+            {"intent_id": "builtin.software_dev.implement", "instruction": "实现导出", "confidence": 0.91},
+            {"intent_id": "builtin.software_dev.explain", "instruction": "解释现有实现", "confidence": 0.62}
+        ]}"#;
+
+        let items = parse_decompose_reply(reply, &fixtures());
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].intent_id, "builtin.software_dev.implement");
+        assert_eq!(items[0].instruction, "实现导出");
+        assert_eq!(items[0].confidence, 0.91);
+        assert_eq!(items[1].intent_id, "builtin.software_dev.explain");
+    }
+
+    #[test]
+    fn decompose_reply_empty_array_is_zero_intent() {
+        assert!(parse_decompose_reply(r#"{"intents": []}"#, &fixtures()).is_empty());
+    }
+
+    #[test]
+    fn decompose_reply_missing_confidence_becomes_zero() {
+        let reply = r#"{"intents": [{"intent_id": "builtin.software_dev.implement", "instruction": "实现"}]}"#;
+
+        let items = parse_decompose_reply(reply, &fixtures());
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].confidence, 0.0);
+    }
+
+    #[test]
+    fn decompose_reply_drops_empty_instruction() {
+        let reply = r#"{"intents": [
+            {"intent_id": "builtin.software_dev.implement", "instruction": "  ", "confidence": 0.8},
+            {"intent_id": "builtin.software_dev.explain", "instruction": "解释", "confidence": 0.8}
+        ]}"#;
+
+        let items = parse_decompose_reply(reply, &fixtures());
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].intent_id, "builtin.software_dev.explain");
+    }
+
+    #[test]
+    fn decompose_reply_drops_hallucinated_intent() {
+        let reply = r#"{"intents": [
+            {"intent_id": "builtin.software_dev.does_not_exist", "instruction": "幻觉", "confidence": 0.99},
+            {"intent_id": "builtin.software_dev.implement", "instruction": "实现", "confidence": 0.9}
+        ]}"#;
+
+        let items = parse_decompose_reply(reply, &fixtures());
+
+        assert_eq!(items.len(), 1, "候选外的 id 必须被丢弃");
+        assert_eq!(items[0].intent_id, "builtin.software_dev.implement");
+    }
+
+    #[test]
+    fn decompose_input_keeps_only_the_last_six_messages() {
+        let recent: Vec<Message> = (1..=8)
+            .map(|index| message("user", &format!("MESSAGE_{index}")))
+            .collect();
+
+        let input = build_decompose_input("now", &recent);
+
+        assert!(!input.contains("MESSAGE_1"));
+        assert!(!input.contains("MESSAGE_2"));
+        assert!(input.contains("MESSAGE_3"));
+        assert!(input.contains("MESSAGE_8"));
+        assert!(input.contains("Current user message:\nnow"));
     }
 }

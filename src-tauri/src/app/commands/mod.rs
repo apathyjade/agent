@@ -8,6 +8,7 @@
 
 pub mod execution;
 pub mod intent;
+pub mod intent_plan;
 pub mod lifecycle;
 pub mod mcp;
 pub mod memory;
@@ -28,6 +29,7 @@ pub mod workflow;
 
 pub use execution::*;
 pub use intent::*;
+pub use intent_plan::*;
 pub use lifecycle::*;
 pub use mcp::*;
 pub use memory::*;

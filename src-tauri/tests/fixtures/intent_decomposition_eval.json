@@ -1,0 +1,335 @@
+[
+  {
+    "message": "先别写代码，帮我把这个需求拆成几步",
+    "expected_intents": ["builtin.software_dev.plan"],
+    "category": "single"
+  },
+  {
+    "message": "给我一个落地方案，先不动代码",
+    "expected_intents": ["builtin.software_dev.plan"],
+    "category": "single"
+  },
+  {
+    "message": "这个功能大概怎么实现，先说说思路",
+    "expected_intents": ["builtin.software_dev.plan"],
+    "category": "single"
+  },
+  {
+    "message": "按照依赖关系排一下实施顺序",
+    "expected_intents": ["builtin.software_dev.plan"],
+    "category": "single"
+  },
+  {
+    "message": "先把重构思路理清楚再动手",
+    "expected_intents": ["builtin.software_dev.plan"],
+    "category": "single"
+  },
+  {
+    "message": "写一份登录模块的技术规格文档",
+    "expected_intents": ["builtin.software_dev.spec"],
+    "category": "single"
+  },
+  {
+    "message": "把刚才讨论的需求整理成可存档的文档",
+    "expected_intents": ["builtin.software_dev.spec"],
+    "category": "single"
+  },
+  {
+    "message": "生成一份接口设计文档放到 docs 目录下",
+    "expected_intents": ["builtin.software_dev.spec"],
+    "category": "single"
+  },
+  {
+    "message": "给设置页加一个深色模式开关",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "single"
+  },
+  {
+    "message": "实现一个按标签筛选会话的接口",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "single"
+  },
+  {
+    "message": "把这段同步代码改成异步",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "single"
+  },
+  {
+    "message": "新增一个登出入口",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "single"
+  },
+  {
+    "message": "按这份设计把代码写出来",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "single"
+  },
+  {
+    "message": "这个接口一调用就 500，先定位原因",
+    "expected_intents": ["builtin.software_dev.debug"],
+    "category": "single"
+  },
+  {
+    "message": "登录之后页面白屏了，帮我查一下",
+    "expected_intents": ["builtin.software_dev.debug"],
+    "category": "single"
+  },
+  {
+    "message": "同样的输入两次结果不一样，排查一下",
+    "expected_intents": ["builtin.software_dev.debug"],
+    "category": "single"
+  },
+  {
+    "message": "给这个函数补几个边界用例",
+    "expected_intents": ["builtin.software_dev.test"],
+    "category": "single"
+  },
+  {
+    "message": "跑一下单测，看看哪里挂了",
+    "expected_intents": ["builtin.software_dev.test"],
+    "category": "single"
+  },
+  {
+    "message": "帮我看看这次改动有没有风险",
+    "expected_intents": ["builtin.software_dev.review"],
+    "category": "single"
+  },
+  {
+    "message": "这个 PR 可以合吗",
+    "expected_intents": ["builtin.software_dev.review"],
+    "category": "single"
+  },
+  {
+    "message": "把这段重复逻辑抽出来，行为不要变",
+    "expected_intents": ["builtin.software_dev.refactor"],
+    "category": "single"
+  },
+  {
+    "message": "解释一下这里为什么需要加锁",
+    "expected_intents": ["builtin.software_dev.explain"],
+    "category": "single"
+  },
+  {
+    "message": "项目里怎么跑测试",
+    "expected_intents": ["builtin.software_dev.lookup"],
+    "category": "single"
+  },
+  {
+    "message": "启动一下开发服务器",
+    "expected_intents": ["builtin.software_dev.execute"],
+    "category": "single"
+  },
+
+  {
+    "message": "先帮我排查一下登录接口 500 的原因，修好之后给这个修复补几个单测",
+    "expected_intents": [
+      "builtin.software_dev.debug",
+      "builtin.software_dev.test"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "写一份导出 CSV 的规格文档，然后按它实现功能",
+    "expected_intents": [
+      "builtin.software_dev.spec",
+      "builtin.software_dev.implement"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "先给这个功能出一个实施计划，再按计划把代码写出来",
+    "expected_intents": [
+      "builtin.software_dev.plan",
+      "builtin.software_dev.implement"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "帮我看下这个 PR 有没有问题，然后补一份测试",
+    "expected_intents": [
+      "builtin.software_dev.review",
+      "builtin.software_dev.test"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "解释一下这段代码为什么要加锁，然后把它重构得清楚一点",
+    "expected_intents": [
+      "builtin.software_dev.explain",
+      "builtin.software_dev.refactor"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "查一下这个项目怎么跑测试，然后跑一遍全量测试",
+    "expected_intents": [
+      "builtin.software_dev.lookup",
+      "builtin.software_dev.execute"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "先定位这个 panic 的根因并修复，再补上边界用例",
+    "expected_intents": [
+      "builtin.software_dev.debug",
+      "builtin.software_dev.test"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "把这个模块里的重复代码抽出来，再 review 一下改动",
+    "expected_intents": [
+      "builtin.software_dev.refactor",
+      "builtin.software_dev.review"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "把需求整理成可存档的规格，同时给我一个落地步骤",
+    "expected_intents": [
+      "builtin.software_dev.spec",
+      "builtin.software_dev.plan"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "实现深色模式开关，并给设置页补几个测试",
+    "expected_intents": [
+      "builtin.software_dev.implement",
+      "builtin.software_dev.test"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "看看构建为什么失败，然后把开发服务器起起来",
+    "expected_intents": [
+      "builtin.software_dev.debug",
+      "builtin.software_dev.execute"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "解释这个设计为什么这么做，并把结论写进文档",
+    "expected_intents": [
+      "builtin.software_dev.explain",
+      "builtin.software_dev.spec"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "先列一份迁移计划，再执行迁移脚本",
+    "expected_intents": [
+      "builtin.software_dev.plan",
+      "builtin.software_dev.execute"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "审查这次改动，把发现的问题直接修掉",
+    "expected_intents": [
+      "builtin.software_dev.review",
+      "builtin.software_dev.implement"
+    ],
+    "category": "multi"
+  },
+  {
+    "message": "生成接口文档，然后补上对应的单测",
+    "expected_intents": [
+      "builtin.software_dev.spec",
+      "builtin.software_dev.test"
+    ],
+    "category": "multi"
+  },
+
+  {
+    "message": "你好",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "今天天气怎么样",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "帮我翻译一下这句话：hello world",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "讲个笑话吧",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "我最近有点焦虑",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "推荐几部科幻电影",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "现在几点了",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "谢谢你的帮助",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "周末适合去哪里玩",
+    "expected_intents": [],
+    "category": "zero"
+  },
+  {
+    "message": "红烧肉怎么做",
+    "expected_intents": [],
+    "category": "zero"
+  },
+
+  {
+    "message": "登出这里有点问题，看看",
+    "expected_intents": ["builtin.software_dev.debug"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "把这块整理一下",
+    "expected_intents": ["builtin.software_dev.refactor"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "这个接口怎么弄",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "登录相关的东西帮我处理下",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "改一下这个函数",
+    "expected_intents": ["builtin.software_dev.implement"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "这里不太对",
+    "expected_intents": ["builtin.software_dev.debug"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "看看这段",
+    "expected_intents": ["builtin.software_dev.explain"],
+    "category": "ambiguous"
+  },
+  {
+    "message": "优化一下性能",
+    "expected_intents": ["builtin.software_dev.refactor"],
+    "category": "ambiguous"
+  }
+]

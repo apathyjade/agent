@@ -75,15 +75,14 @@ pub struct Session {
     /// 会话归属的项目；`None` 表示未归属任何项目。
     #[serde(default)]
     pub project_id: Option<String>,
-    /// 会话最近所属的意图领域。`auto` 模式下它只是路由先验，
-    /// 不限制消息可以落到哪个领域；`None` 表示没有先验。
+    /// 会话绑定的意图领域；`None` 表示没有绑定（普通聊天）。
     #[serde(default)]
     pub intent_domain_id: Option<String>,
     /// 会话领域模式，只有两个合法值：
-    /// - "auto"：`intent_domain_id` 仅作为路由先验，消息可落到任意领域；
-    /// - "pinned"：会话被钉在 `intent_domain_id` 指向的领域。
+    /// - "pinned"：会话被钉在 `intent_domain_id` 指向的领域；
+    /// - "none"：没有领域绑定，消息走普通聊天兜底。
     ///
-    /// 领域被删除时会回落到 "auto"。该字段刻意保持字符串而非枚举，
+    /// 领域被删除时会回落到 "none"。该字段刻意保持字符串而非枚举，
     /// 以维持与前端和数据库的契约。
     #[serde(default = "default_intent_domain_mode")]
     pub intent_domain_mode: String,
@@ -91,7 +90,20 @@ pub struct Session {
 
 /// [`Session::intent_domain_mode`] 的默认值；读取旧版本持久化数据时同样适用。
 fn default_intent_domain_mode() -> String {
-    "auto".to_string()
+    "none".to_string()
+}
+
+/// 读时归一化旧数据：只要存在领域绑定就映射为 `'pinned'`（历史的 `'auto'`
+/// 也归入其中）；领域为空映射为 `'none'`。
+///
+/// 只改 serde 默认值不足以修正已经落库的 `'auto'`，因此所有读取会话的
+/// SQL 映射都必须调用本函数。
+pub fn normalize_intent_domain_mode(domain_id: Option<&str>, _mode: &str) -> String {
+    if domain_id.is_none() {
+        "none".to_string()
+    } else {
+        "pinned".to_string()
+    }
 }
 
 /// 会话内一段消息区间的摘要。
@@ -390,8 +402,35 @@ mod tests {
             "缺少 intent_domain_id 的旧 JSON 必须默认为 None"
         );
         assert_eq!(
-            restored.intent_domain_mode, "auto",
-            "缺少 intent_domain_mode 的旧 JSON 必须默认为 auto"
+            restored.intent_domain_mode, "none",
+            "缺少 intent_domain_mode 的旧 JSON 必须默认为 none"
+        );
+    }
+
+    #[test]
+    fn legacy_auto_mode_normalizes_to_pinned() {
+        assert_eq!(
+            normalize_intent_domain_mode(Some("domain-a"), "auto"),
+            "pinned",
+            "显式存为 auto 的历史会话必须按 pinned 处理"
+        );
+    }
+
+    #[test]
+    fn missing_domain_normalizes_to_none() {
+        assert_eq!(
+            normalize_intent_domain_mode(None, "auto"),
+            "none",
+            "领域为空的会话必须按 none 处理"
+        );
+        assert_eq!(normalize_intent_domain_mode(None, "pinned"), "none");
+    }
+
+    #[test]
+    fn pinned_mode_is_preserved() {
+        assert_eq!(
+            normalize_intent_domain_mode(Some("domain-a"), "pinned"),
+            "pinned"
         );
     }
 }

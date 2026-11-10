@@ -9,7 +9,10 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::core::db::models::{BoundProjectModel, Project, RuntimeVersionCache, Session, WorkflowRunRecord};
+use crate::core::db::models::{
+    normalize_intent_domain_mode, BoundProjectModel, Project, RuntimeVersionCache, Session,
+    WorkflowRunRecord,
+};
 use crate::core::error::Result;
 
 /// SQLite 连接持有者，所有持久化操作的入口。
@@ -473,8 +476,10 @@ impl Database {
         }
 
         // 迁移 v11：为 sessions 增加会话级意图领域状态。
-        // `intent_domain_id` 是会话最近所属的领域（仅作为路由先验，不是约束）；
-        // `intent_domain_mode` 的合法值为 "auto" 或 "pinned"。
+        // `intent_domain_id` 是会话绑定的领域（硬过滤来源，不是排序先验）；
+        // `intent_domain_mode` 的合法值为 "pinned" 或 "none"。迁移默认值用
+        // "none"：没有领域的历史会话退化为普通聊天；显式存过 "auto" 的历史行
+        // 在读取时归一化为 "pinned"。
         let has_intent_domain_id = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='intent_domain_id'",
             [],
@@ -484,7 +489,7 @@ impl Database {
         if has_intent_domain_id == 0 {
             conn.execute_batch(
                 "ALTER TABLE sessions ADD COLUMN intent_domain_id TEXT;
-                 ALTER TABLE sessions ADD COLUMN intent_domain_mode TEXT NOT NULL DEFAULT 'auto';",
+                 ALTER TABLE sessions ADD COLUMN intent_domain_mode TEXT NOT NULL DEFAULT 'none';",
             )?;
         }
 
@@ -830,6 +835,8 @@ impl Database {
              FROM sessions WHERE project_id = ?1 ORDER BY updated_at DESC",
         )?;
         let sessions = stmt.query_map(params![project_id], |row| {
+            let intent_domain_id: Option<String> = row.get(14)?;
+            let stored_mode: String = row.get(15)?;
             Ok(Session {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -845,8 +852,11 @@ impl Database {
                 execution_status: row.get(11)?,
                 active_plan_id: row.get(12)?,
                 project_id: row.get(13)?,
-                intent_domain_id: row.get(14)?,
-                intent_domain_mode: row.get(15)?,
+                intent_domain_mode: normalize_intent_domain_mode(
+                    intent_domain_id.as_deref(),
+                    &stored_mode,
+                ),
+                intent_domain_id,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
@@ -878,7 +888,7 @@ mod tests {
             active_plan_id: None,
             project_id: None,
             intent_domain_id: None,
-            intent_domain_mode: "auto".to_string(),
+            intent_domain_mode: "none".to_string(),
         }
     }
 
@@ -940,7 +950,7 @@ mod tests {
             domain.is_none(),
             "既有会话的 intent_domain_id 必须默认为 NULL"
         );
-        assert_eq!(mode, "auto", "既有会话的 intent_domain_mode 必须默认为 auto");
+        assert_eq!(mode, "none", "既有会话的 intent_domain_mode 必须默认为 none");
     }
 
     #[test]
@@ -956,7 +966,7 @@ mod tests {
             Some("domain-a"),
             "未指定领域的新会话必须继承当前默认（is_active）领域"
         );
-        assert_eq!(stored.intent_domain_mode, "auto");
+        assert_eq!(stored.intent_domain_mode, "pinned");
     }
 
     #[test]
@@ -967,7 +977,7 @@ mod tests {
 
         let stored = db.get_session("session-b").unwrap().unwrap();
         assert!(stored.intent_domain_id.is_none(), "无默认领域时必须保持 NULL");
-        assert_eq!(stored.intent_domain_mode, "auto");
+        assert_eq!(stored.intent_domain_mode, "none");
     }
 
     #[test]
@@ -985,11 +995,11 @@ mod tests {
         assert_eq!(after.title, before.title, "不得改动标题");
         assert_eq!(after.updated_at, before.updated_at, "只更新领域两列，不得刷新 updated_at");
 
-        db.set_session_intent_domain("session-c", None, "auto")
+        db.set_session_intent_domain("session-c", None, "none")
             .unwrap();
         let cleared = db.get_session("session-c").unwrap().unwrap();
         assert!(cleared.intent_domain_id.is_none(), "传 None 必须清空领域");
-        assert_eq!(cleared.intent_domain_mode, "auto");
+        assert_eq!(cleared.intent_domain_mode, "none");
     }
 
     #[test]
@@ -1009,7 +1019,7 @@ mod tests {
 
         let cleared = db.get_session("session-d").unwrap().unwrap();
         assert!(cleared.intent_domain_id.is_none(), "引用会话必须置 NULL");
-        assert_eq!(cleared.intent_domain_mode, "auto", "模式必须回落 auto");
+        assert_eq!(cleared.intent_domain_mode, "none", "模式必须回落 none");
 
         let kept = db.get_session("session-e").unwrap().unwrap();
         assert_eq!(kept.intent_domain_id.as_deref(), Some("domain-b"));

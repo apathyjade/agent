@@ -1085,8 +1085,8 @@ mod tests {
                 "引用被删除领域的会话必须置 NULL"
             );
             assert_eq!(
-                session.intent_domain_mode, "auto",
-                "引用被删除领域的会话模式必须回落 auto"
+                session.intent_domain_mode, "none",
+                "引用被删除领域的会话模式必须回落 none"
             );
         }
 

@@ -16,7 +16,6 @@ import { RuntimeManagerPage } from './components/management/RuntimeManagerPage';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { WorkflowManagerPage } from './components/management/WorkflowManagerPage';
 import { ToastContainer } from './components/common/Toast';
-import { PlanConfirmDialog } from './components/session/PlanConfirmDialog';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
 import type { PlanProgressEvent, ExecutionLogEntry } from './types';
@@ -249,7 +248,6 @@ function App() {
       </Col.RowItem>
 
       <ToastContainer />
-      <PlanConfirmDialog />
     </Col>
   );
 }

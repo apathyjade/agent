@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,29 +8,22 @@ use tokio::sync::{Mutex, RwLock};
 use crate::core::db::models::IntentRecord;
 use crate::core::db::repository::Database;
 use crate::llm::embedding::EmbeddingService;
-use crate::llm::intent::classifier::{score_intents, IntentReranker, RerankOutcome};
+use crate::llm::intent::classifier::{DecomposeOutcome, IntentDecomposer};
 use crate::llm::intent::index::{intent_units, IntentVectorIndex};
 use crate::llm::intent::probe::probe;
 use crate::llm::intent::{
-    DecisionEvidence, DecisionSource, IntentCandidate, IntentConfig, IntentResult, PathSelection,
-    RouteContext, RouteDecision, RouteTrace, RouterConfig,
+    DecisionEvidence, DecisionSource, DecomposedIntent, Decomposition, IntentCandidate,
+    IntentConfig, IntentResult, PathSelection, RouteContext, RouteTrace, RouterConfig, TraceIntent,
 };
 
-/// 路由被禁用或无法执行时上报的稳定意图 id。
-const FALLBACK_INTENT_ID: &str = "builtin.software_dev.chat";
+/// 不参与拆解的意图：闲聊的配方等价于普通聊天，澄清是模型占位意图。
+const EXCLUDED_INTENT_IDS: [&str; 2] = [
+    "builtin.software_dev.chat",
+    "builtin.software_dev.clarify",
+];
 
-/// 合成结果归属的领域。它只是标明 fallback 意图所属的内置领域；结果的
-/// `domain_name` 故意留空，因为并没有查询任何领域行。
-const FALLBACK_DOMAIN_ID: &str = "builtin.software_dev";
-
-/// embedding 召回保留的候选数量。
-const EMBEDDING_TOP_K: usize = 6;
-/// 没有 embedding 结果时，交给 LLM rerank 的候选上限。
-const LLM_CANDIDATE_LIMIT: usize = 40;
 /// 进程内保留的路由轨迹条数。
 const TRACE_LIMIT: usize = 50;
-/// 单次 embedding 查询等待上限，避免拖垮整体预算。
-const EMBEDDING_QUERY_TIMEOUT_MS: u64 = 1200;
 
 /// 一次路由所需的全量数据快照：领域 id → 名称，以及所有启用意图。
 struct RoutingData {
@@ -38,88 +31,33 @@ struct RoutingData {
     intents: Vec<IntentRecord>,
 }
 
-/// 本次路由的候选范围：候选意图切片、按 id 的索引，以及 `auto` 模式下的先验领域。
-///
-/// `prior_domain` 只参与排序加成，不参与阈值判定，也不限制候选集。
-struct RoutingScope<'a> {
-    data: &'a RoutingData,
-    candidates: &'a [IntentRecord],
-    intents_by_id: HashMap<&'a str, &'a IntentRecord>,
-    candidate_ids: HashSet<String>,
-    prior_domain: Option<&'a str>,
-}
-
-impl<'a> RoutingScope<'a> {
-    fn new(
-        data: &'a RoutingData,
-        candidates: &'a [IntentRecord],
-        prior_domain: Option<&'a str>,
-    ) -> Self {
-        let intents_by_id = candidates
-            .iter()
-            .map(|intent| (intent.id.as_str(), intent))
-            .collect();
-        let candidate_ids = candidates
-            .iter()
-            .map(|intent| intent.id.clone())
-            .collect();
-        Self {
-            data,
-            candidates,
-            intents_by_id,
-            candidate_ids,
-            prior_domain,
-        }
-    }
-}
-
-/// 信号阶段之间传递的中间状态。
-#[derive(Default)]
-struct SignalState {
-    /// 最近一次 embedding 召回的 top-k 结果（id, 原始 cosine 分数）。
-    emb_top: Vec<(String, f32)>,
-    /// 已经考虑过的候选，用于观测与回放。
-    candidates_meta: Vec<IntentCandidate>,
-    /// 各信号留下的证据字段。
-    evidence: DecisionEvidence,
-}
-
-/// LLM 信号的处理结果。
-///
-/// `NoMatch` 是可信的语义结论（模型明确回答 `none`），不能再用规则打分
-/// 覆盖；`Unavailable` 才允许继续降级。
-enum LlmSignal {
-    Decided(RouteDecision),
-    NoMatch,
-    Unavailable,
-}
-
-/// 意图路由器：按信号可信度级联解析用户消息（embedding → LLM rerank →
-/// 规则打分），记录决策来源，并在进程内维护一个轨迹环形缓冲。
+/// 意图路由器：把一条消息拆解为零个或多个意图，记录决策来源，并在进程内
+/// 维护一个轨迹环形缓冲。
 pub struct IntentRouter {
     db: Arc<Mutex<Database>>,
     embedding: Option<Arc<EmbeddingService>>,
     index: RwLock<IntentVectorIndex>,
-    reranker: Arc<dyn IntentReranker>,
+    decomposer: Arc<dyn IntentDecomposer>,
     config: RouterConfig,
     traces: Mutex<VecDeque<RouteTrace>>,
 }
 
 impl IntentRouter {
-    /// 用数据库句柄、可选的 embedding 服务、reranker 与配置构造路由器。
+    /// 用数据库句柄、可选的 embedding 服务、拆解器与配置构造路由器。
     ///
-    /// `embedding` 为 `None` 时 embedding 信号永久不可用，路由退化为 LLM 与规则。
+    /// `embedding` 为 `None` 时 embedding 索引永不就绪；拆解不再使用它，
+    /// 保留该字段只为兼容记忆召回共享的客户端与既有预热流程。
     pub fn new(
         db: Arc<Mutex<Database>>,
         embedding: Option<Arc<EmbeddingService>>,
-        reranker: Arc<dyn IntentReranker>,
+        decomposer: Arc<dyn IntentDecomposer>,
         config: RouterConfig,
     ) -> Self {
         Self {
             db,
             embedding,
             index: RwLock::new(IntentVectorIndex::new()),
-            reranker,
+            decomposer,
             config,
             traces: Mutex::new(VecDeque::new()),
         }
@@ -189,127 +127,215 @@ impl IntentRouter {
         session_tools: Option<Vec<String>>,
         intent_tools: Option<&Vec<String>>,
     ) -> Option<Vec<String>> {
-        // 旧配置/旧意图里可能还是 file_system / code_executor；先归一化，
-        // 否则升级后交集为空，模型会突然没有任何工具。
-        let session_tools = session_tools.map(normalize_tool_names);
-        let intent_tools = intent_tools.map(|tools| normalize_tool_names(tools.clone()));
-
-        match (session_tools, intent_tools.as_ref()) {
-            (Some(session), Some(intent)) => Some(
-                session
-                    .into_iter()
-                    .filter(|tool| intent.contains(tool))
-                    .collect(),
-            ),
-            (None, Some(intent)) => Some(intent.clone()),
-            (Some(session), None) => Some(session),
-            (None, None) => None,
-        }
+        intersect_tools(session_tools, intent_tools)
     }
 
-    /// 把一条消息解析为一个意图。永不失败：任何降级情形都会返回一个决策，
-    /// 保证消息仍能被回答。
+    /// 把一条消息拆解为零个或多个意图。永不返回 `Err`：任何失败、超时或
+    /// 没有候选都降级为零意图（普通聊天兜底），保证消息仍能被回答。
     ///
-    /// 整体是三层结构：先按可信度依次收集信号（embedding → LLM rerank →
-    /// 探针 → 规则），命中即产出决策；再投影出执行策略；最后写入轨迹。
-    /// 信号之间不共享分数，也不做加权平均。
-    pub async fn route(&self, ctx: RouteContext<'_>) -> RouteDecision {
+    /// 每次拆解都会写入一条 [`RouteTrace`]（记录意图列表），作为只读调试数据。
+    pub async fn decompose(&self, ctx: RouteContext<'_>) -> Decomposition {
+        let started = Instant::now();
+        let mut decomposition = self.decompose_inner(&ctx).await;
+        decomposition.evidence.elapsed_ms = started.elapsed().as_millis() as u64;
+        self.record_trace(&decomposition, &ctx).await;
+        decomposition
+    }
+
+    async fn decompose_inner(&self, ctx: &RouteContext<'_>) -> Decomposition {
         let started = Instant::now();
 
         if !self.config.enabled {
-            return self
-                .finalize(Self::synthetic(false), &ctx, started)
-                .await;
+            return Self::finish_zero(
+                DecisionSource::Fallback,
+                Vec::new(),
+                DecisionEvidence::default(),
+                started,
+            );
         }
 
         let Some(data) = self.load_routing_data().await else {
-            return self
-                .finalize(Self::synthetic(true), &ctx, started)
-                .await;
+            return Self::finish_zero(
+                DecisionSource::Fallback,
+                Vec::new(),
+                DecisionEvidence::default(),
+                started,
+            );
         };
 
         if data.intents.is_empty() {
             log::warn!("intent routing: no enabled intents in any domain");
-            return self
-                .finalize(Self::synthetic(false), &ctx, started)
-                .await;
-        }
-
-        // `pinned` 是硬过滤；`auto` 下只保留候选全集。
-        let Some(candidates) = Self::select_candidates(&data, &ctx) else {
-            return self
-                .finalize(Self::synthetic(false), &ctx, started)
-                .await;
-        };
-
-        let scope = RoutingScope::new(&data, &candidates, ctx.prior_domain);
-        let mut state = SignalState::default();
-
-        // 第一层：按可信度级联收集信号，第一个命中的信号直接产出决策。
-        if let Some(decision) = self
-            .collect_embedding_signal(&scope, &ctx, started, &mut state)
-            .await
-        {
-            return self.finalize(decision, &ctx, started).await;
-        }
-
-        match self
-            .collect_llm_signal(&scope, &ctx, started, &mut state)
-            .await
-        {
-            LlmSignal::Decided(decision) => return self.finalize(decision, &ctx, started).await,
-            LlmSignal::NoMatch => {
-                // 模型明确说候选都不匹配：只允许 embedding 兜底，绝不用
-                // 规则打分的噪声推翻这个结论。
-                if let Some(decision) = self.collect_embedding_fallback(&scope, &mut state) {
-                    return self.finalize(decision, &ctx, started).await;
-                }
-                let evidence = std::mem::take(&mut state.evidence);
-                return self
-                    .finalize(Self::synthetic_with(false, evidence), &ctx, started)
-                    .await;
-            }
-            LlmSignal::Unavailable => {}
-        }
-
-        if let Some(decision) = self.collect_embedding_fallback(&scope, &mut state) {
-            return self.finalize(decision, &ctx, started).await;
-        }
-
-        if let Some(decision) = self.collect_rule_signal(&scope, &ctx, &mut state) {
-            return self.finalize(decision, &ctx, started).await;
-        }
-
-        let evidence = std::mem::take(&mut state.evidence);
-        self.finalize(Self::synthetic_with(true, evidence), &ctx, started)
-            .await
-    }
-
-    /// 按会话的 `pinned` 语义裁剪候选集。
-    ///
-    /// `pinned` 且领域存在时只保留该领域的启用意图；领域已不存在时按 `auto`
-    /// 处理并记一次 warn。返回 `None` 表示没有任何候选，调用方应返回合成闲聊。
-    fn select_candidates(data: &RoutingData, ctx: &RouteContext<'_>) -> Option<Vec<IntentRecord>> {
-        let prior_exists = ctx
-            .prior_domain
-            .is_some_and(|id| data.domain_names.contains_key(id));
-        if ctx.pinned && ctx.prior_domain.is_some() && !prior_exists {
-            log::warn!(
-                "intent routing: pinned domain '{}' no longer exists, treating the session as auto",
-                ctx.prior_domain.unwrap_or_default()
+            return Self::finish_zero(
+                DecisionSource::Fallback,
+                Vec::new(),
+                DecisionEvidence::default(),
+                started,
             );
         }
-        let pinned = ctx.pinned && prior_exists;
 
-        let candidates: Vec<IntentRecord> = if pinned {
-            data.intents
-                .iter()
-                .filter(|intent| Some(intent.domain_id.as_str()) == ctx.prior_domain)
-                .cloned()
-                .collect()
-        } else {
-            data.intents.clone()
+        let Some(candidates) = Self::select_candidates(&data, &ctx) else {
+            return Self::finish_zero(
+                DecisionSource::Fallback,
+                Vec::new(),
+                DecisionEvidence::default(),
+                started,
+            );
         };
+
+        let candidates = Self::decompose_candidates(candidates);
+        if candidates.is_empty() {
+            log::warn!("intent routing: pinned domain has no decomposable intents");
+            return Self::finish_zero(
+                DecisionSource::Fallback,
+                Vec::new(),
+                DecisionEvidence::default(),
+                started,
+            );
+        }
+
+        let mut evidence = DecisionEvidence::default();
+        if !self.config.llm_rerank_enabled {
+            return Self::finish_zero(DecisionSource::Fallback, Vec::new(), evidence, started);
+        }
+
+        let wait = budget_left(started, self.config.routing_budget_ms)
+            .min(Duration::from_millis(self.config.llm_timeout_ms));
+        if wait.is_zero() {
+            // 预算在调用前就耗尽：不是「模型判定零意图」，而是没能完成拆解。
+            return Self::finish_zero(DecisionSource::Unavailable, Vec::new(), evidence, started);
+        }
+
+        evidence.llm_calls += 1;
+        let outcome = tokio::time::timeout(
+            wait,
+            self.decomposer
+                .decompose(ctx.content, ctx.recent_messages, &candidates),
+        )
+        .await;
+
+        let items = match outcome {
+            Ok(DecomposeOutcome::Parsed(items)) => items,
+            // 超时、调用失败或没有可用候选：标记为不可用，调用方不得把它缓存成
+            // 零意图会话（否则一次瞬时失败会被永久固化）。
+            Ok(DecomposeOutcome::Unavailable) | Err(_) => {
+                return Self::finish_zero(
+                    DecisionSource::Unavailable,
+                    Vec::new(),
+                    evidence,
+                    started,
+                );
+            }
+        };
+
+        // 模型明确返回空数组：这是合法的零意图，走普通聊天兜底。
+        if items.is_empty() {
+            return Self::finish_zero(DecisionSource::Fallback, Vec::new(), evidence, started);
+        }
+
+        let by_id: HashMap<&str, &IntentRecord> = candidates
+            .iter()
+            .map(|intent| (intent.id.as_str(), intent))
+            .collect();
+
+        let mut intents = Vec::with_capacity(items.len());
+        let mut candidates_meta = Vec::new();
+        for item in &items {
+            let Some(record) = by_id.get(item.intent_id.as_str()).copied() else {
+                continue;
+            };
+            let uncertain = item.confidence < record.confidence_threshold as f32;
+            push_candidate(
+                &mut candidates_meta,
+                record,
+                item.confidence,
+                DecisionSource::Llm,
+            );
+            intents.push(DecomposedIntent::new(
+                Self::project(record, data.domain_name(&record.domain_id), item.confidence),
+                item.instruction.clone(),
+                item.confidence,
+                uncertain,
+            ));
+        }
+
+        if intents.is_empty() {
+            return Self::finish_zero(DecisionSource::Fallback, candidates_meta, evidence, started);
+        }
+
+        // 全部低置信 → 整体视同零意图，不执行任何领域意图。
+        if intents.iter().all(|item| item.uncertain) {
+            return Self::finish_zero(DecisionSource::Fallback, candidates_meta, evidence, started);
+        }
+
+        evidence.llm_confidence = Some(
+            intents
+                .iter()
+                .map(|item| item.confidence)
+                .fold(f32::INFINITY, f32::min),
+        );
+
+        // 只读探针：只为不确定项附加项目证据，不重排、不改置信度。
+        if self.config.probe_enabled && intents.iter().any(|item| item.uncertain) {
+            if let Some(project_root) = ctx.project_root {
+                for index in 0..intents.len() {
+                    if !intents[index].uncertain {
+                        continue;
+                    }
+                    let Some(record) = by_id
+                        .get(intents[index].intent.id.as_str())
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    let wait = budget_left(started, self.config.routing_budget_ms)
+                        .min(Duration::from_millis(self.config.probe_timeout_ms));
+                    if wait.is_zero() {
+                        break;
+                    }
+                    evidence.probe_used = true;
+                    if let Some(text) = probe(record, project_root, wait).await {
+                        intents[index].probe_evidence = Some(text.clone());
+                        intents[index].instruction =
+                            format!("Project evidence:\n{text}\n\n{}", intents[index].instruction);
+                    }
+                }
+            }
+        }
+
+        let mut decomposition = Decomposition::from_intents(
+            intents,
+            DecisionSource::Llm,
+            candidates_meta,
+            evidence,
+        );
+        decomposition.evidence.elapsed_ms = started.elapsed().as_millis() as u64;
+        decomposition
+    }
+
+    /// 按会话的领域绑定裁剪候选集。
+    ///
+    /// 领域是硬过滤：没有绑定、领域已不存在或领域内没有启用意图都返回 `None`，
+    /// 调用方据此走普通聊天兜底。不存在 `auto`（全领域）分支。
+    fn select_candidates(data: &RoutingData, ctx: &RouteContext<'_>) -> Option<Vec<IntentRecord>> {
+        let Some(domain_id) = ctx.prior_domain.filter(|id| {
+            let exists = data.domain_names.contains_key(*id);
+            if !exists {
+                log::warn!(
+                    "intent routing: pinned domain '{}' no longer exists, falling back to chat",
+                    id
+                );
+            }
+            exists
+        }) else {
+            return None;
+        };
+
+        let candidates: Vec<IntentRecord> = data
+            .intents
+            .iter()
+            .filter(|intent| intent.domain_id == domain_id)
+            .cloned()
+            .collect();
 
         if candidates.is_empty() {
             log::warn!("intent routing: pinned domain has no enabled intents");
@@ -319,316 +345,25 @@ impl IntentRouter {
         Some(candidates)
     }
 
-    /// 信号 1：embedding 召回。
-    ///
-    /// 索引未就绪、embedder 不可用或预算耗尽时静默返回 `None`，把决策让给后续
-    /// 信号。top1 同时满足 `embedding_floor` 与 `embedding_margin` 时才直接命中，
-    /// 否则只把候选与证据留给下游。
-    async fn collect_embedding_signal(
-        &self,
-        scope: &RoutingScope<'_>,
-        ctx: &RouteContext<'_>,
+    /// 拆解候选：排除 `chat` 与 `clarify` 两个内置意图。
+    fn decompose_candidates(candidates: Vec<IntentRecord>) -> Vec<IntentRecord> {
+        candidates
+            .into_iter()
+            .filter(|intent| !EXCLUDED_INTENT_IDS.contains(&intent.id.as_str()))
+            .collect()
+    }
+
+    /// 构造零意图结果并补齐耗时。
+    fn finish_zero(
+        source: DecisionSource,
+        candidates: Vec<IntentCandidate>,
+        mut evidence: DecisionEvidence,
         started: Instant,
-        state: &mut SignalState,
-    ) -> Option<RouteDecision> {
-        state.emb_top = self.embedding_recall(scope, ctx, started).await;
-
-        let top1 = state.emb_top.first().map(|(_, score)| *score);
-        let top2 = state.emb_top.get(1).map(|(_, score)| *score).unwrap_or(0.0);
-        state.evidence.embedding_top1 = top1;
-        state.evidence.embedding_margin = top1.map(|score| score - top2);
-
-        state.candidates_meta = embedding_candidates(&state.emb_top, &scope.intents_by_id);
-
-        let decisive = top1.is_some_and(|score| {
-            score >= self.config.embedding_floor
-                && (score - top2) >= self.config.embedding_margin
-        });
-        if !decisive {
-            return None;
-        }
-
-        let (record, confidence) = state
-            .emb_top
-            .first()
-            .and_then(|(id, _)| scope.intents_by_id.get(id.as_str()).copied())
-            .map(|record| (record.clone(), top1.unwrap_or(0.0)))?;
-
-        Some(self.decision_for(
-            scope.data,
-            &record,
-            confidence,
-            false,
-            DecisionSource::Embedding,
-            std::mem::take(&mut state.candidates_meta),
-            std::mem::take(&mut state.evidence),
-        ))
+    ) -> Decomposition {
+        evidence.elapsed_ms = started.elapsed().as_millis() as u64;
+        Decomposition::zero_intent(source, candidates, evidence)
     }
 
-    /// 取一次 embedding 查询结果，受剩余预算与单次查询上限共同约束。
-    async fn embedding_recall(
-        &self,
-        scope: &RoutingScope<'_>,
-        ctx: &RouteContext<'_>,
-        started: Instant,
-    ) -> Vec<(String, f32)> {
-        let Some(embedding) = self
-            .embedding
-            .as_ref()
-            .filter(|embedding| embedding.available())
-        else {
-            return Vec::new();
-        };
-        if !self.index.read().await.is_ready() {
-            return Vec::new();
-        }
-
-        let wait = budget_left(started, self.config.routing_budget_ms)
-            .min(Duration::from_millis(EMBEDDING_QUERY_TIMEOUT_MS));
-        if wait.is_zero() {
-            return Vec::new();
-        }
-
-        let Ok(Some(query)) = tokio::time::timeout(wait, embedding.embed(ctx.content)).await
-        else {
-            return Vec::new();
-        };
-
-        let index = self.index.read().await;
-        index.top_k(&query, &scope.candidate_ids, EMBEDDING_TOP_K)
-    }
-
-    /// 信号 2：LLM rerank（必要时叠加只读探针）。
-    ///
-    /// 仅在 embedding 未明确命中时运行。LLM 不可用、超时或返回未知 id 时返回
-    /// `None`，让 embedding 兜底而不是被规则覆盖。
-    async fn collect_llm_signal(
-        &self,
-        scope: &RoutingScope<'_>,
-        ctx: &RouteContext<'_>,
-        started: Instant,
-        state: &mut SignalState,
-    ) -> LlmSignal {
-        if !self.config.llm_rerank_enabled {
-            return LlmSignal::Unavailable;
-        }
-
-        let llm_candidates: Vec<IntentRecord> = if state.emb_top.is_empty() {
-            scope
-                .candidates
-                .iter()
-                .take(LLM_CANDIDATE_LIMIT)
-                .cloned()
-                .collect()
-        } else {
-            state
-                .emb_top
-                .iter()
-                .filter_map(|(id, _)| scope.intents_by_id.get(id.as_str()).map(|r| (*r).clone()))
-                .collect()
-        };
-        if llm_candidates.is_empty() {
-            return LlmSignal::Unavailable;
-        }
-
-        let wait = budget_left(started, self.config.routing_budget_ms)
-            .min(Duration::from_millis(self.config.llm_timeout_ms));
-        if wait.is_zero() {
-            return LlmSignal::Unavailable;
-        }
-
-        state.evidence.llm_calls += 1;
-        let outcome = tokio::time::timeout(
-            wait,
-            self.reranker
-                .rerank(ctx.content, ctx.recent_messages, &llm_candidates),
-        )
-        .await;
-        let (intent_id, confidence) = match outcome {
-            Ok(RerankOutcome::Picked {
-                intent_id,
-                confidence,
-            }) => (intent_id, confidence),
-            Ok(RerankOutcome::NoMatch) => {
-                state.evidence.llm_confidence = Some(0.0);
-                return LlmSignal::NoMatch;
-            }
-            // 超时、调用失败或回复不可解析：允许后续信号兜底。
-            Ok(RerankOutcome::Unavailable) | Err(_) => return LlmSignal::Unavailable,
-        };
-        let Some(record) = scope.intents_by_id.get(intent_id.as_str()).copied() else {
-            return LlmSignal::Unavailable;
-        };
-
-        state.evidence.llm_confidence = Some(confidence);
-        let uncertain = confidence < record.confidence_threshold as f32;
-
-        // 低置信时才值得为探针再花一次 LLM 调用。
-        if uncertain && self.config.probe_enabled {
-            if let Some(decision) = self
-                .collect_probe_signal(scope, ctx, started, state, record, &llm_candidates)
-                .await
-            {
-                return LlmSignal::Decided(decision);
-            }
-        }
-
-        push_candidate(
-            &mut state.candidates_meta,
-            record,
-            confidence,
-            DecisionSource::Llm,
-        );
-        LlmSignal::Decided(self.decision_for(
-            scope.data,
-            record,
-            confidence,
-            uncertain,
-            DecisionSource::Llm,
-            std::mem::take(&mut state.candidates_meta),
-            std::mem::take(&mut state.evidence),
-        ))
-    }
-
-    /// 信号 3：探针证据 + 第二次 rerank。
-    ///
-    /// 只有在预算足够、项目根存在且探针确实产出证据时才有效。任一步失败都返回
-    /// `None`，调用方退回第一次 LLM 的结果。
-    async fn collect_probe_signal(
-        &self,
-        scope: &RoutingScope<'_>,
-        ctx: &RouteContext<'_>,
-        started: Instant,
-        state: &mut SignalState,
-        record: &IntentRecord,
-        llm_candidates: &[IntentRecord],
-    ) -> Option<RouteDecision> {
-        let project_root = ctx.project_root?;
-
-        let need = Duration::from_millis(
-            self.config.probe_timeout_ms + self.config.second_rerank_min_budget_ms,
-        );
-        if budget_left(started, self.config.routing_budget_ms) < need {
-            return None;
-        }
-
-        state.evidence.probe_used = true;
-        let evidence_text = probe(
-            record,
-            project_root,
-            Duration::from_millis(self.config.probe_timeout_ms),
-        )
-        .await?;
-
-        let combined = format!("{}\n\nProject evidence:\n{}", ctx.content, evidence_text);
-        let wait = budget_left(started, self.config.routing_budget_ms)
-            .min(Duration::from_millis(self.config.llm_timeout_ms));
-        if wait.is_zero() {
-            return None;
-        }
-
-        state.evidence.llm_calls += 1;
-        let (second_id, second_conf) = match tokio::time::timeout(
-            wait,
-            self.reranker
-                .rerank(&combined, ctx.recent_messages, llm_candidates),
-        )
-        .await
-        {
-            Ok(RerankOutcome::Picked {
-                intent_id,
-                confidence,
-            }) => (intent_id, confidence),
-            // 二次 rerank 明确 no-match 或失败都只当「无新证据」，退回第一次
-            // LLM 的结果。
-            Ok(RerankOutcome::NoMatch) | Ok(RerankOutcome::Unavailable) | Err(_) => {
-                return None;
-            }
-        };
-        let second_record = scope.intents_by_id.get(second_id.as_str()).copied()?;
-
-        state.evidence.llm_confidence = Some(second_conf);
-        push_candidate(
-            &mut state.candidates_meta,
-            second_record,
-            second_conf,
-            DecisionSource::Probe,
-        );
-        Some(self.decision_for(
-            scope.data,
-            second_record,
-            second_conf,
-            second_conf < second_record.confidence_threshold as f32,
-            DecisionSource::Probe,
-            std::mem::take(&mut state.candidates_meta),
-            std::mem::take(&mut state.evidence),
-        ))
-    }
-
-    /// 信号 4：embedding 兜底。
-    ///
-    /// 用于 LLM 不可用或未能给出可用 id 的情形。`prior_boost` 只影响这里的
-    /// 排序，不改原始分数，因此决策始终标记为 `uncertain`。
-    fn collect_embedding_fallback(
-        &self,
-        scope: &RoutingScope<'_>,
-        state: &mut SignalState,
-    ) -> Option<RouteDecision> {
-        if state.emb_top.is_empty() {
-            return None;
-        }
-
-        let (record, raw) = ranked_choice(
-            &state.emb_top,
-            &scope.intents_by_id,
-            scope.prior_domain,
-            self.config.prior_boost,
-        )?;
-
-        push_candidate(
-            &mut state.candidates_meta,
-            &record,
-            raw,
-            DecisionSource::Embedding,
-        );
-        Some(self.decision_for(
-            scope.data,
-            &record,
-            raw,
-            true,
-            DecisionSource::Embedding,
-            std::mem::take(&mut state.candidates_meta),
-            std::mem::take(&mut state.evidence),
-        ))
-    }
-
-    /// 信号 5：纯数据驱动的规则打分（example 命中优先，其次中文 bigram 重叠）。
-    fn collect_rule_signal(
-        &self,
-        scope: &RoutingScope<'_>,
-        ctx: &RouteContext<'_>,
-        state: &mut SignalState,
-    ) -> Option<RouteDecision> {
-        let (intent_id, score) = score_intents(ctx.content, scope.candidates)?;
-        let record = scope.intents_by_id.get(intent_id.as_str()).copied()?;
-
-        state.evidence.rule_score = Some(score);
-        push_candidate(
-            &mut state.candidates_meta,
-            record,
-            score,
-            DecisionSource::Rule,
-        );
-        Some(self.decision_for(
-            scope.data,
-            record,
-            score,
-            score < record.confidence_threshold as f32,
-            DecisionSource::Rule,
-            std::mem::take(&mut state.candidates_meta),
-            std::mem::take(&mut state.evidence),
-        ))
-    }
 
     /// 一次性读出领域名映射与所有启用意图；任一查询失败都返回 `None`（降级为
     /// 合成闲聊），不向调用方抛错。
@@ -664,104 +399,47 @@ impl IntentRouter {
         })
     }
 
-    /// 用选中的意图行投影出一个完整决策，并把领域名一并带上。
-    fn decision_for(
-        &self,
-        data: &RoutingData,
-        record: &IntentRecord,
-        confidence: f32,
-        uncertain: bool,
-        source: DecisionSource,
-        candidates: Vec<IntentCandidate>,
-        evidence: DecisionEvidence,
-    ) -> RouteDecision {
-        RouteDecision {
-            chosen: Self::project(record, data.domain_name(&record.domain_id), confidence),
-            confidence,
-            uncertain,
-            source,
-            candidates,
-            evidence,
-        }
-    }
-
-    /// 收尾：补上总耗时，写入轨迹环形缓冲（最多保留 `TRACE_LIMIT` 条）。
+    /// 把拆解结果写入轨迹环形缓冲（最多保留 `TRACE_LIMIT` 条）。
     ///
-    /// 每个返回路径都必须经过这里，保证 `intent_resolved` 事件的可观测字段完整。
-    async fn finalize(
-        &self,
-        mut decision: RouteDecision,
-        ctx: &RouteContext<'_>,
-        started: Instant,
-    ) -> RouteDecision {
-        decision.evidence.elapsed_ms = started.elapsed().as_millis() as u64;
-
+    /// 轨迹记录完整意图列表，与 `intent_resolved` 事件保持同一口径。
+    async fn record_trace(&self, decomposition: &Decomposition, ctx: &RouteContext<'_>) {
         let excerpt: String = ctx.content.chars().take(80).collect();
+        let intents = decomposition
+            .intents
+            .iter()
+            .map(|item| TraceIntent {
+                intent_id: item.intent.id.clone(),
+                intent_name: item.intent.name.clone(),
+                instruction: item.instruction.clone(),
+                confidence: item.confidence,
+                uncertain: item.uncertain,
+            })
+            .collect();
+
         let trace = RouteTrace {
             at: Utc::now().to_rfc3339(),
             session_id: ctx.session_id.to_string(),
             message_excerpt: excerpt,
-            candidates: decision.candidates.clone(),
-            chosen_intent_id: decision.chosen.id.clone(),
-            chosen_intent_name: decision.chosen.name.clone(),
-            confidence: decision.confidence,
-            uncertain: decision.uncertain,
-            source: decision.source,
-            elapsed_ms: decision.evidence.elapsed_ms,
-            llm_calls: decision.evidence.llm_calls,
-            probe_used: decision.evidence.probe_used,
+            intents,
+            candidates: decomposition.candidates.clone(),
+            confidence: decomposition.confidence,
+            uncertain: decomposition.uncertain,
+            source: decomposition.source,
+            elapsed_ms: decomposition.evidence.elapsed_ms,
+            llm_calls: decomposition.evidence.llm_calls,
+            probe_used: decomposition.evidence.probe_used,
         };
 
         let mut traces = self.traces.lock().await;
         traces.push_front(trace);
         traces.truncate(TRACE_LIMIT);
-
-        decision
-    }
-
-    /// 合成闲聊结果：走 fast path，不限制工具、不设迭代上限，也不选领域。
-    fn synthetic(uncertain: bool) -> RouteDecision {
-        RouteDecision {
-            chosen: Self::fallback(),
-            confidence: 0.0,
-            uncertain,
-            source: DecisionSource::Fallback,
-            candidates: Vec::new(),
-            evidence: DecisionEvidence::default(),
-        }
-    }
-
-    /// 合成闲聊，但保留本次路由已经收集到的证据（例如 LLM 调用次数与耗时）。
-    fn synthetic_with(uncertain: bool, evidence: DecisionEvidence) -> RouteDecision {
-        let mut decision = Self::synthetic(uncertain);
-        decision.evidence = evidence;
-        decision
-    }
-
-    /// 内置闲聊意图的固定投影，`domain_name` 故意为空（未查询领域行）。
-    fn fallback() -> IntentResult {
-        IntentResult {
-            id: FALLBACK_INTENT_ID.to_string(),
-            name: "闲聊对话".to_string(),
-            domain_id: FALLBACK_DOMAIN_ID.to_string(),
-            domain_name: String::new(),
-            config: IntentConfig {
-                system_prompt_appendix: None,
-                enabled_tools: None,
-                model_id: None,
-                max_iterations: None,
-                auto_escalate: false,
-            },
-            path: PathSelection::Fast,
-            confidence: 0.0,
-        }
     }
 
     /// 把意图行投影为调用方使用的 [`IntentResult`]。
     ///
     /// 空字符串字段投影为 `None`；`path` 只认 `deep`（大小写不敏感），其余一律
     /// 视为 fast；置信度收敛到 `[0, 1]`。
-    fn project(record: &IntentRecord, domain_name: &str, confidence: f32) -> IntentResult {
+    pub fn project(record: &IntentRecord, domain_name: &str, confidence: f32) -> IntentResult {
         let optional = |value: &str| {
             if value.is_empty() {
                 None
@@ -773,6 +451,7 @@ impl IntentRouter {
         IntentResult {
             id: record.id.clone(),
             name: record.name.clone(),
+            description: record.description.clone(),
             domain_id: record.domain_id.clone(),
             domain_name: domain_name.to_string(),
             config: IntentConfig {
@@ -790,6 +469,34 @@ impl IntentRouter {
             confidence: confidence.clamp(0.0, 1.0),
         }
     }
+    /// 后续消息沿用的工具白名单：会话白名单 ∩ 各已选意图白名单的**并集**。
+    ///
+    /// `intent_tools` 为空表示会话没有已选意图（不施加意图限制）；其中任一项
+    /// 为 `None` 表示该意图不限制工具，并集因此也不限制。空数组仍然是
+    /// 「没有工具」，与会话白名单求交后保持 `Some(vec![])`。
+    pub fn resolve_union_tools(
+        &self,
+        session_tools: Option<Vec<String>>,
+        intent_tools: &[Option<Vec<String>>],
+    ) -> Option<Vec<String>> {
+        if intent_tools.is_empty() {
+            return self.resolve_tools(session_tools, None);
+        }
+
+        let mut union: Vec<String> = Vec::new();
+        for tools in intent_tools {
+            let Some(tools) = tools else {
+                // 任一意图不限制工具 → 并集不限制。
+                return self.resolve_tools(session_tools, None);
+            };
+            for tool in normalize_tool_names(tools.clone()) {
+                push_unique_tool(&mut union, &tool);
+            }
+        }
+
+        self.resolve_tools(session_tools, Some(&union))
+    }
+
 }
 
 impl RoutingData {
@@ -806,24 +513,31 @@ fn budget_left(started: Instant, budget_ms: u64) -> Duration {
     Duration::from_millis(budget_ms).saturating_sub(started.elapsed())
 }
 
-/// 把 embedding 召回结果投影成候选列表（信号统一记为 embedding）。
-fn embedding_candidates(
-    emb_top: &[(String, f32)],
-    intents_by_id: &HashMap<&str, &IntentRecord>,
-) -> Vec<IntentCandidate> {
-    emb_top
-        .iter()
-        .take(EMBEDDING_TOP_K)
-        .filter_map(|(intent_id, score)| {
-            intents_by_id.get(intent_id.as_str()).map(|record| IntentCandidate {
-                intent_id: intent_id.clone(),
-                name: record.name.clone(),
-                domain_id: record.domain_id.clone(),
-                score: *score,
-                signal: DecisionSource::Embedding,
-            })
-        })
-        .collect()
+/// 根据会话限制与意图限制求最终工具列表（交集）。
+///
+/// 意图侧的显式列表是权威的：它列出该意图允许的全部工具，因此交集为空
+/// 表示「没有任何工具」（`Some(vec![])`），而不是「不限制」。意图侧为
+/// `None` 才表示该意图不施加限制。
+pub fn intersect_tools(
+    session_tools: Option<Vec<String>>,
+    intent_tools: Option<&Vec<String>>,
+) -> Option<Vec<String>> {
+    // 旧配置/旧意图里可能还是 file_system / code_executor；先归一化，
+    // 否则升级后交集为空，模型会突然没有任何工具。
+    let session_tools = session_tools.map(normalize_tool_names);
+    let intent_tools = intent_tools.map(|tools| normalize_tool_names(tools.clone()));
+
+    match (session_tools, intent_tools.as_ref()) {
+        (Some(session), Some(intent)) => Some(
+            session
+                .into_iter()
+                .filter(|tool| intent.contains(tool))
+                .collect(),
+        ),
+        (None, Some(intent)) => Some(intent.clone()),
+        (Some(session), None) => Some(session),
+        (None, None) => None,
+    }
 }
 
 /// 追加一个候选；同一个意图只保留最先出现的记录，避免轨迹里重复。
@@ -846,37 +560,6 @@ fn push_candidate(
         score,
         signal,
     });
-}
-
-/// 在 embedding 召回结果里挑排序最靠前的意图。
-///
-/// `prior_boost` 只加在排序分上；返回的是原始分数，因此不会影响 floor / margin
-/// 判定，也不会让不确定的决策看起来确定。
-fn ranked_choice(
-    emb_top: &[(String, f32)],
-    intents_by_id: &HashMap<&str, &IntentRecord>,
-    prior_domain: Option<&str>,
-    prior_boost: f32,
-) -> Option<(IntentRecord, f32)> {
-    let mut best: Option<(IntentRecord, f32, f32)> = None;
-    for (intent_id, raw) in emb_top {
-        let Some(record) = intents_by_id.get(intent_id.as_str()) else {
-            continue;
-        };
-        let rank = raw
-            + if Some(record.domain_id.as_str()) == prior_domain {
-                prior_boost
-            } else {
-                0.0
-            };
-        if best
-            .as_ref()
-            .map_or(true, |(_, _, best_rank)| rank > *best_rank)
-        {
-            best = Some(((*record).clone(), *raw, rank));
-        }
-    }
-    best.map(|(record, raw, _)| (record, raw))
 }
 
 /// 把旧的内置工具名归一化到 rig-tools 的名字。
@@ -912,40 +595,11 @@ mod tests {
     use super::*;
     use crate::core::db::models::{IntentDomainRecord, Message};
     use crate::llm::embedding::TextEmbedder;
+    use crate::llm::intent::classifier::parse_decompose_reply;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TS: &str = "2026-11-05T00:00:00Z";
-
-    /// 评测集里的一条样例。缺失字段按原逻辑退化为默认值，避免评测因个别
-    /// 样例不完整而整体失败。
-    #[derive(serde::Deserialize)]
-    struct EvalEntry {
-        #[serde(default)]
-        message: String,
-        #[serde(default = "default_category")]
-        category: String,
-        #[serde(default)]
-        expected_intent: Option<String>,
-        #[serde(default)]
-        recent: Vec<EvalMessage>,
-    }
-
-    /// 评测集里的历史消息，只保留 rerank 需要的字段。
-    #[derive(serde::Deserialize)]
-    struct EvalMessage {
-        #[serde(default = "default_role")]
-        role: String,
-        #[serde(default)]
-        content: String,
-    }
-
-    fn default_category() -> String {
-        "clear".to_string()
-    }
-
-    fn default_role() -> String {
-        "user".to_string()
-    }
 
     fn test_db() -> Arc<Mutex<Database>> {
         Arc::new(Mutex::new(Database::new_test().expect("in-memory db")))
@@ -1015,77 +669,110 @@ mod tests {
         })))
     }
 
-    struct ScriptedReranker {
-        responses: Mutex<VecDeque<RerankOutcome>>,
+    struct CountingEmbedder {
         calls: AtomicUsize,
     }
 
-    impl ScriptedReranker {
-        fn new(responses: Vec<RerankOutcome>) -> Arc<Self> {
+    #[async_trait::async_trait]
+    impl TextEmbedder for CountingEmbedder {
+        async fn embed(&self, _text: &str) -> Option<Vec<f32>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Some(vec![1.0, 0.0])
+        }
+    }
+
+    enum ScriptedReply {
+        Parsed(String),
+        Unavailable,
+        /// 永不返回的调用，用于验证超时被标记为不可用。
+        Hang,
+    }
+
+    /// 用固定回复替身模拟 provider 输出；同时记录收到的候选与调用次数。
+    struct ScriptedDecomposer {
+        reply: ScriptedReply,
+        calls: AtomicUsize,
+        last_candidates: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedDecomposer {
+        fn parsed(reply: &str) -> Arc<Self> {
             Arc::new(Self {
-                responses: Mutex::new(responses.into()),
+                reply: ScriptedReply::Parsed(reply.to_string()),
                 calls: AtomicUsize::new(0),
+                last_candidates: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn unavailable() -> Arc<Self> {
+            Arc::new(Self {
+                reply: ScriptedReply::Unavailable,
+                calls: AtomicUsize::new(0),
+                last_candidates: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn hanging() -> Arc<Self> {
+            Arc::new(Self {
+                reply: ScriptedReply::Hang,
+                calls: AtomicUsize::new(0),
+                last_candidates: Mutex::new(Vec::new()),
             })
         }
 
         fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
         }
-    }
 
-    fn picked(intent_id: &str, confidence: f32) -> RerankOutcome {
-        RerankOutcome::Picked {
-            intent_id: intent_id.to_string(),
-            confidence,
+        async fn last_candidates(&self) -> Vec<String> {
+            self.last_candidates.lock().await.clone()
         }
     }
 
     #[async_trait::async_trait]
-    impl IntentReranker for ScriptedReranker {
-        async fn rerank(
+    impl IntentDecomposer for ScriptedDecomposer {
+        async fn decompose(
             &self,
             _message: &str,
             _recent_messages: &[Message],
-            _candidates: &[IntentRecord],
-        ) -> RerankOutcome {
+            candidates: &[IntentRecord],
+        ) -> DecomposeOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.responses
-                .lock()
-                .await
-                .pop_front()
-                .unwrap_or(RerankOutcome::Unavailable)
+            *self.last_candidates.lock().await =
+                candidates.iter().map(|intent| intent.id.clone()).collect();
+            match &self.reply {
+                ScriptedReply::Parsed(reply) => {
+                    DecomposeOutcome::Parsed(parse_decompose_reply(reply, candidates))
+                }
+                ScriptedReply::Unavailable => DecomposeOutcome::Unavailable,
+                ScriptedReply::Hang => {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    DecomposeOutcome::Unavailable
+                }
+            }
         }
     }
 
     fn router(
         db: Arc<Mutex<Database>>,
         embedding: Option<Arc<EmbeddingService>>,
-        reranker: Arc<ScriptedReranker>,
+        decomposer: Arc<ScriptedDecomposer>,
         config: RouterConfig,
     ) -> Arc<IntentRouter> {
-        Arc::new(IntentRouter::new(db, embedding, reranker, config))
-    }
-
-    async fn set_index(router: &IntentRouter, units: Vec<(&str, Vec<Vec<f32>>)>) {
-        let map = units
-            .into_iter()
-            .map(|(id, vectors)| (id.to_string(), vectors))
-            .collect();
-        router.index.write().await.replace(map);
+        Arc::new(IntentRouter::new(db, embedding, decomposer, config))
     }
 
     fn ctx<'a>(
         content: &'a str,
-        prior_domain: Option<&'a str>,
-        pinned: bool,
+        domain: Option<&'a str>,
         project_root: Option<&'a std::path::Path>,
     ) -> RouteContext<'a> {
         RouteContext {
             session_id: "session",
             content,
             recent_messages: &[],
-            prior_domain,
-            pinned,
+            prior_domain: domain,
+            pinned: domain.is_some(),
             project_root,
         }
     }
@@ -1097,45 +784,128 @@ mod tests {
         }
     }
 
+    fn reply(items: &[(&str, &str, f32)]) -> String {
+        let entries: Vec<String> = items
+            .iter()
+            .map(|(id, instruction, confidence)| {
+                format!(
+                    r#"{{"intent_id":"{id}","instruction":"{instruction}","confidence":{confidence}}}"#
+                )
+            })
+            .collect();
+        format!(r#"{{"intents":[{}]}}"#, entries.join(","))
+    }
+
     #[test]
     fn default_timeouts_cover_a_real_classifier_round_trip() {
         let config = RouterConfig::default();
 
-        // 实测默认分类模型峰值 3.7s；2.5s 会让 LLM 信号在超时后丢失。
-        assert!(config.llm_timeout_ms >= 8000);
+        assert!(config.llm_timeout_ms >= 20000);
         assert!(
             config.routing_budget_ms > config.llm_timeout_ms,
-            "总预算必须给探针与二次 rerank 留出空间"
+            "总预算必须给探针留出空间"
         );
     }
 
     #[tokio::test]
-    async fn disabled_router_returns_synthetic() {
+    async fn disabled_router_returns_zero_intent() {
         let db = test_db();
         {
             let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "deep")]);
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
         }
-        let reranker = ScriptedReranker::new(vec![picked("test.a", 0.9)]);
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[("test.a", "do a", 0.9)]));
         let router = router(
             db,
             None,
-            reranker.clone(),
+            decomposer.clone(),
             RouterConfig {
                 enabled: false,
                 ..config()
             },
         );
 
-        let decision = router.route(ctx("alpha", None, false, None)).await;
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
 
-        assert_eq!(decision.chosen.id, FALLBACK_INTENT_ID);
-        assert_eq!(decision.source, DecisionSource::Fallback);
-        assert_eq!(reranker.calls(), 0);
+        assert!(decomposition.is_empty());
+        assert_eq!(decomposer.calls(), 0);
     }
 
     #[tokio::test]
-    async fn embedding_decisive_skips_llm() {
+    async fn no_bound_domain_returns_zero_intent() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
+        }
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[("test.a", "do a", 0.9)]));
+        let router = router(db, None, decomposer.clone(), config());
+
+        let decomposition = router.decompose(ctx("alpha", None, None)).await;
+
+        assert!(decomposition.is_empty(), "无领域绑定必须走普通聊天兜底");
+        assert_eq!(decomposer.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn domain_without_enabled_intents_returns_zero_intent() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            // 领域存在但没有任何意图。
+            seed_domain(&guard, "test.domain", &[]);
+            seed_domain(
+                &guard,
+                "other.domain",
+                &[mk_intent("other.intent", "other.domain", "fast")],
+            );
+        }
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[("other.intent", "do it", 0.9)]));
+        let router = router(db, None, decomposer.clone(), config());
+
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        assert!(
+            decomposition.is_empty(),
+            "绑定领域无启用意图时必须走普通聊天兜底"
+        );
+        assert_eq!(decomposer.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn deleted_domain_returns_zero_intent() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
+        }
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[("test.a", "do a", 0.9)]));
+        let router = router(db, None, decomposer.clone(), config());
+
+        let decomposition = router.decompose(ctx("alpha", Some("missing"), None)).await;
+
+        assert!(decomposition.is_empty(), "领域不存在时不得跨领域挑选");
+        assert_eq!(decomposer.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn decomposes_multiple_intents_in_model_order() {
         let db = test_db();
         {
             let guard = db.lock().await;
@@ -1148,401 +918,380 @@ mod tests {
                 ],
             );
         }
-        let reranker = ScriptedReranker::new(vec![picked("test.b", 0.9)]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 0.0])),
-            reranker.clone(),
-            config(),
-        );
-        set_index(
-            &router,
-            vec![
-                ("test.a", vec![vec![1.0, 0.0]]),
-                ("test.b", vec![vec![0.0, 1.0]]),
-            ],
-        )
-        .await;
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.b", "do b", 0.8),
+            ("test.a", "do a", 0.9),
+        ]));
+        let router = router(db, None, decomposer.clone(), config());
 
-        let decision = router.route(ctx("alpha", None, false, None)).await;
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
 
-        assert_eq!(decision.chosen.id, "test.a");
-        assert_eq!(decision.source, DecisionSource::Embedding);
-        assert!(!decision.uncertain);
-        assert_eq!(reranker.calls(), 0);
+        assert_eq!(decomposition.intents.len(), 2);
+        assert_eq!(decomposition.intents[0].intent.id, "test.b");
+        assert_eq!(decomposition.intents[0].instruction, "do b");
+        assert_eq!(decomposition.intents[1].intent.id, "test.a");
+        assert_eq!(decomposition.source, DecisionSource::Llm);
+        assert_eq!(decomposition.evidence.llm_calls, 1);
+        assert_eq!(decomposer.calls(), 1);
     }
 
     #[tokio::test]
-    async fn ambiguous_embedding_calls_llm() {
+    async fn hallucinated_intent_is_dropped_from_router_result() {
         let db = test_db();
         {
             let guard = db.lock().await;
             seed_domain(
                 &guard,
                 "test.domain",
-                &[
-                    mk_intent("test.a", "test.domain", "fast"),
-                    mk_intent("test.b", "test.domain", "fast"),
-                ],
+                &[mk_intent("test.a", "test.domain", "fast")],
             );
         }
-        let reranker = ScriptedReranker::new(vec![picked("test.a", 0.9)]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker.clone(),
-            config(),
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.ghost", "hallucinated", 0.99),
+            ("test.a", "do a", 0.9),
+        ]));
+        let router = router(db, None, decomposer, config());
+
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        assert_eq!(decomposition.intents.len(), 1);
+        assert_eq!(decomposition.intents[0].intent.id, "test.a");
+        assert!(
+            decomposition
+                .candidates
+                .iter()
+                .all(|candidate| candidate.intent_id != "test.ghost"),
+            "幻觉 id 不得出现在候选与结果中"
         );
-        set_index(
-            &router,
-            vec![
-                ("test.a", vec![vec![1.0, 0.0]]),
-                ("test.b", vec![vec![0.0, 1.0]]),
-            ],
-        )
-        .await;
-
-        let decision = router.route(ctx("alpha", None, false, None)).await;
-
-        assert_eq!(decision.chosen.id, "test.a");
-        assert_eq!(decision.source, DecisionSource::Llm);
-        assert_eq!(reranker.calls(), 1);
     }
 
     #[tokio::test]
-    async fn low_confidence_without_probe_is_uncertain() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
-        }
-        let reranker = ScriptedReranker::new(vec![picked("test.a", 0.2)]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker.clone(),
-            RouterConfig {
-                embedding_floor: 0.9,
-                ..config()
-            },
-        );
-        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
-
-        let decision = router.route(ctx("alpha", None, false, None)).await;
-
-        assert_eq!(decision.chosen.id, "test.a");
-        assert_eq!(decision.source, DecisionSource::Llm);
-        assert!(decision.uncertain);
-        assert_eq!(reranker.calls(), 1);
-    }
-
-    #[tokio::test]
-    async fn llm_failure_uses_embedding_not_rule() {
-        let db = test_db();
-        let mut rule_bait = mk_intent("test.b", "test.domain", "fast");
-        rule_bait.examples = vec!["hello".to_string()];
-        {
-            let guard = db.lock().await;
-            seed_domain(
-                &guard,
-                "test.domain",
-                &[mk_intent("test.a", "test.domain", "fast"), rule_bait],
-            );
-        }
-        let reranker = ScriptedReranker::new(vec![RerankOutcome::Unavailable]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker,
-            config(),
-        );
-        set_index(
-            &router,
-            vec![
-                ("test.a", vec![vec![1.0, 0.0]]),
-                ("test.b", vec![vec![0.0, 1.0]]),
-            ],
-        )
-        .await;
-
-        let decision = router.route(ctx("hello", None, false, None)).await;
-
-        assert_eq!(decision.chosen.id, "test.a");
-        assert_eq!(decision.source, DecisionSource::Embedding);
-        assert!(decision.uncertain);
-    }
-
-    #[tokio::test]
-    async fn explicit_no_match_does_not_fall_through_to_rule() {
-        let db = test_db();
-        let mut rule_bait = mk_intent("test.b", "test.domain", "fast");
-        rule_bait.examples = vec!["hello".to_string()];
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[rule_bait]);
-        }
-        let reranker = ScriptedReranker::new(vec![RerankOutcome::NoMatch]);
-        let router = router(db, None, reranker, config());
-
-        let decision = router.route(ctx("hello", None, false, None)).await;
-
-        // 规则打分本会命中 test.b，但模型的 none 是可信结论，不能被噪声推翻。
-        assert_eq!(decision.chosen.id, FALLBACK_INTENT_ID);
-        assert_eq!(decision.source, DecisionSource::Fallback);
-        assert!(!decision.uncertain);
-        assert_eq!(decision.evidence.llm_calls, 1, "合成结果不得吞掉 LLM 调用证据");
-    }
-
-    #[tokio::test]
-    async fn explicit_no_match_uses_embedding_when_available() {
+    async fn empty_intents_reply_is_zero_intent() {
         let db = test_db();
         {
             let guard = db.lock().await;
             seed_domain(
                 &guard,
                 "test.domain",
-                &[
-                    mk_intent("test.a", "test.domain", "fast"),
-                    mk_intent("test.b", "test.domain", "fast"),
-                ],
+                &[mk_intent("test.a", "test.domain", "fast")],
             );
         }
-        let reranker = ScriptedReranker::new(vec![RerankOutcome::NoMatch]);
-        let router = router(db, Some(embedding_with(vec![1.0, 1.0])), reranker, config());
-        set_index(
-            &router,
-            vec![
-                ("test.a", vec![vec![1.0, 0.0]]),
-                ("test.b", vec![vec![0.0, 1.0]]),
-            ],
-        )
-        .await;
+        let decomposer = ScriptedDecomposer::parsed(r#"{"intents": []}"#);
+        let router = router(db, None, decomposer.clone(), config());
 
-        let decision = router.route(ctx("alpha", None, false, None)).await;
+        let decomposition = router
+            .decompose(ctx("你好", Some("test.domain"), None))
+            .await;
 
-        assert_eq!(decision.chosen.id, "test.a");
-        assert_eq!(decision.source, DecisionSource::Embedding);
-        assert!(decision.uncertain);
+        assert!(decomposition.is_empty());
+        assert_eq!(
+            decomposition.source,
+            DecisionSource::Fallback,
+            "模型明确返回空数组是合法零意图"
+        );
+        assert_eq!(decomposition.evidence.llm_calls, 1, "零意图仍是一次真实调用");
+        assert_eq!(decomposer.calls(), 1);
     }
 
     #[tokio::test]
-    async fn unavailable_rerank_falls_through_to_rule() {
+    async fn unavailable_decomposer_is_marked_unavailable() {
         let db = test_db();
-        let mut rule_bait = mk_intent("test.b", "test.domain", "fast");
-        rule_bait.examples = vec!["hello".to_string()];
         {
             let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[rule_bait]);
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
         }
-        let reranker = ScriptedReranker::new(vec![RerankOutcome::Unavailable]);
-        let router = router(db, None, reranker, config());
+        let decomposer = ScriptedDecomposer::unavailable();
+        let router = router(db, None, decomposer.clone(), config());
 
-        let decision = router.route(ctx("hello", None, false, None)).await;
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
 
-        assert_eq!(decision.chosen.id, "test.b");
-        assert_eq!(decision.source, DecisionSource::Rule);
+        assert!(decomposition.is_empty(), "拆解失败必须走普通聊天兜底");
+        assert_eq!(
+            decomposition.source,
+            DecisionSource::Unavailable,
+            "调用失败必须与「模型明确返回空数组」区分开"
+        );
+        assert_eq!(decomposition.evidence.llm_calls, 1);
+        assert_eq!(decomposer.calls(), 1);
     }
 
+    /// 超时与调用失败同样标记为不可用，而不是合法零意图。
     #[tokio::test]
-    async fn llm_disabled_uses_embedding() {
+    async fn timed_out_decomposer_is_marked_unavailable() {
         let db = test_db();
         {
             let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
         }
-        let reranker = ScriptedReranker::new(vec![picked("test.a", 0.9)]);
+        let decomposer = ScriptedDecomposer::hanging();
         let router = router(
             db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker.clone(),
-            RouterConfig {
-                llm_rerank_enabled: false,
-                embedding_floor: 0.9,
-                ..config()
-            },
-        );
-        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
-
-        let decision = router.route(ctx("alpha", None, false, None)).await;
-
-        assert_eq!(decision.source, DecisionSource::Embedding);
-        assert!(decision.uncertain);
-        assert_eq!(reranker.calls(), 0);
-    }
-
-    #[tokio::test]
-    async fn pinned_limits_candidates_to_the_domain() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "a.domain", &[mk_intent("a.intent", "a.domain", "fast")]);
-            seed_domain(&guard, "b.domain", &[mk_intent("b.intent", "b.domain", "fast")]);
-        }
-        let reranker = ScriptedReranker::new(vec![picked("b.intent", 0.9)]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker,
-            config(),
-        );
-        set_index(&router, vec![("a.intent", vec![vec![1.0, 0.0]])]).await;
-
-        let decision = router.route(ctx("alpha", Some("a.domain"), true, None)).await;
-
-        assert_eq!(decision.chosen.id, "a.intent");
-        assert_eq!(decision.chosen.domain_id, "a.domain");
-    }
-
-    #[tokio::test]
-    async fn deleted_pinned_domain_falls_back_to_auto() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "a.domain", &[mk_intent("a.intent", "a.domain", "fast")]);
-        }
-        let reranker = ScriptedReranker::new(vec![picked("a.intent", 0.9)]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker,
-            RouterConfig {
-                embedding_floor: 0.9,
-                ..config()
-            },
-        );
-        set_index(&router, vec![("a.intent", vec![vec![1.0, 0.0]])]).await;
-
-        let decision = router.route(ctx("alpha", Some("missing"), true, None)).await;
-
-        assert_eq!(decision.chosen.id, "a.intent");
-        assert_eq!(decision.source, DecisionSource::Llm);
-    }
-
-    #[tokio::test]
-    async fn no_enabled_intents_returns_synthetic() {
-        let router = router(
-            test_db(),
             None,
-            ScriptedReranker::new(vec![picked("test.a", 0.9)]),
-            config(),
-        );
-
-        let decision = router.route(ctx("alpha", None, false, None)).await;
-
-        assert_eq!(decision.chosen.id, FALLBACK_INTENT_ID);
-        assert_eq!(decision.source, DecisionSource::Fallback);
-    }
-
-    #[tokio::test]
-    async fn prior_boost_only_changes_ranking() {
-        let db = test_db();
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "a.domain", &[mk_intent("a.intent", "a.domain", "fast")]);
-            seed_domain(&guard, "b.domain", &[mk_intent("b.intent", "b.domain", "fast")]);
-        }
-        let reranker = ScriptedReranker::new(vec![RerankOutcome::Unavailable]);
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker,
+            decomposer,
             RouterConfig {
-                embedding_floor: 0.9,
-                llm_rerank_enabled: false,
+                llm_timeout_ms: 10,
+                routing_budget_ms: 1000,
                 ..config()
             },
         );
-        set_index(
-            &router,
-            vec![
-                ("a.intent", vec![vec![0.58, 1.0]]),
-                ("b.intent", vec![vec![0.60, 1.0]]),
-            ],
-        )
-        .await;
 
-        let decision = router
-            .route(ctx("alpha", Some("a.domain"), false, None))
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
             .await;
 
-        assert_eq!(decision.chosen.id, "a.intent");
-        assert!(decision.uncertain);
+        assert!(decomposition.is_empty());
+        assert_eq!(decomposition.source, DecisionSource::Unavailable);
     }
 
     #[tokio::test]
-    async fn probe_runs_after_low_confidence_and_can_raise_confidence() {
+    async fn candidates_exclude_chat_clarify_and_other_domains() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[
+                    mk_intent("test.a", "test.domain", "fast"),
+                    mk_intent("builtin.software_dev.chat", "test.domain", "fast"),
+                    mk_intent("builtin.software_dev.clarify", "test.domain", "fast"),
+                ],
+            );
+            seed_domain(
+                &guard,
+                "other.domain",
+                &[mk_intent("other.intent", "other.domain", "fast")],
+            );
+        }
+        let decomposer = ScriptedDecomposer::parsed(r#"{"intents": []}"#);
+        let router = router(db, None, decomposer.clone(), config());
+
+        router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        let candidates = decomposer.last_candidates().await;
+        assert_eq!(candidates, vec!["test.a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn low_confidence_item_is_kept_and_flagged() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            let mut uncertain = mk_intent("test.a", "test.domain", "fast");
+            uncertain.confidence_threshold = 0.9;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[uncertain, mk_intent("test.b", "test.domain", "fast")],
+            );
+        }
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.a", "do a", 0.2),
+            ("test.b", "do b", 0.9),
+        ]));
+        let router = router(db, None, decomposer, config());
+
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        assert_eq!(decomposition.intents.len(), 2);
+        assert!(decomposition.intents[0].uncertain);
+        assert!(!decomposition.intents[1].uncertain);
+        assert!(decomposition.uncertain);
+    }
+
+    #[tokio::test]
+    async fn all_low_confidence_becomes_zero_intent() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            let mut a = mk_intent("test.a", "test.domain", "fast");
+            a.confidence_threshold = 0.9;
+            let mut b = mk_intent("test.b", "test.domain", "fast");
+            b.confidence_threshold = 0.9;
+            seed_domain(&guard, "test.domain", &[a, b]);
+        }
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.a", "do a", 0.2),
+            ("test.b", "do b", 0.3),
+        ]));
+        let router = router(db, None, decomposer, config());
+
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        assert!(
+            decomposition.is_empty(),
+            "全部低置信必须整体视同零意图"
+        );
+        assert_eq!(decomposition.source, DecisionSource::Fallback);
+    }
+
+    #[tokio::test]
+    async fn probe_attaches_evidence_to_uncertain_items_only() {
         let project = tempfile::tempdir().expect("temp dir");
         std::fs::write(project.path().join("settings.ts"), "darkMode = true").unwrap();
 
         let db = test_db();
-        let mut intent = mk_intent("test.a", "test.domain", "fast");
-        intent.examples = vec!["darkMode".to_string()];
         {
             let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[intent]);
+            let mut uncertain = mk_intent("test.a", "test.domain", "fast");
+            uncertain.confidence_threshold = 0.9;
+            uncertain.examples = vec!["darkMode".to_string()];
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[uncertain, mk_intent("test.b", "test.domain", "fast")],
+            );
         }
-
-        let reranker = ScriptedReranker::new(vec![
-            picked("test.a", 0.2),
-            picked("test.a", 0.9),
-        ]);
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.a", "do a", 0.2),
+            ("test.b", "do b", 0.9),
+        ]));
         let router = router(
             db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker.clone(),
+            None,
+            decomposer,
             RouterConfig {
                 probe_enabled: true,
-                embedding_floor: 0.9,
                 ..config()
             },
         );
-        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
 
-        let decision = router
-            .route(ctx("alpha", None, false, Some(project.path())))
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), Some(project.path())))
             .await;
 
-        assert_eq!(decision.source, DecisionSource::Probe);
-        assert!(!decision.uncertain);
-        assert!(decision.evidence.probe_used);
-        assert_eq!(reranker.calls(), 2);
+        assert_eq!(decomposition.intents.len(), 2);
+        assert_eq!(decomposition.intents[0].intent.id, "test.a");
+        assert_eq!(decomposition.intents[1].intent.id, "test.b", "探针不得重排");
+        assert_eq!(decomposition.intents[0].confidence, 0.2, "探针不得改置信度");
+        assert_eq!(decomposition.intents[0].confidence, 0.2);
+        assert!(decomposition.intents[0].probe_evidence.is_some());
+        assert!(decomposition.intents[0]
+            .instruction
+            .starts_with("Project evidence:"));
+        assert!(decomposition.intents[1].probe_evidence.is_none());
+        assert!(decomposition.evidence.probe_used);
     }
 
     #[tokio::test]
-    async fn probe_is_skipped_when_budget_is_too_small() {
-        let project = tempfile::tempdir().expect("temp dir");
-        std::fs::write(project.path().join("settings.ts"), "darkMode = true").unwrap();
-
+    async fn probe_is_skipped_without_project_root() {
         let db = test_db();
-        let mut intent = mk_intent("test.a", "test.domain", "fast");
-        intent.examples = vec!["darkMode".to_string()];
         {
             let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[intent]);
+            let mut uncertain = mk_intent("test.a", "test.domain", "fast");
+            uncertain.confidence_threshold = 0.9;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[uncertain, mk_intent("test.b", "test.domain", "fast")],
+            );
         }
-
-        let reranker = ScriptedReranker::new(vec![
-            picked("test.a", 0.2),
-            picked("test.a", 0.9),
-        ]);
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.a", "do a", 0.2),
+            ("test.b", "do b", 0.9),
+        ]));
         let router = router(
             db,
-            Some(embedding_with(vec![1.0, 1.0])),
-            reranker.clone(),
+            None,
+            decomposer,
             RouterConfig {
                 probe_enabled: true,
-                routing_budget_ms: 0,
                 ..config()
             },
         );
-        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
 
-        let decision = router
-            .route(ctx("alpha", None, false, Some(project.path())))
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
             .await;
 
-        assert!(!decision.evidence.probe_used);
-        assert_eq!(reranker.calls(), 0);
+        assert_eq!(decomposition.intents.len(), 2);
+        assert!(decomposition.intents[0].probe_evidence.is_none());
+        assert!(!decomposition.evidence.probe_used);
+    }
+
+    #[tokio::test]
+    async fn embedding_and_rule_signals_are_not_used() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
+        }
+        let embedder = Arc::new(CountingEmbedder {
+            calls: AtomicUsize::new(0),
+        });
+        let embedding = Arc::new(EmbeddingService::with_embedder(embedder.clone()));
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[("test.a", "do a", 0.9)]));
+        let router = router(db, Some(embedding), decomposer.clone(), config());
+
+        let decomposition = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        assert_eq!(
+            embedder.calls.load(Ordering::SeqCst),
+            0,
+            "拆解不得调用 embedding 召回"
+        );
+        assert_eq!(decomposition.source, DecisionSource::Llm);
+        assert_eq!(decomposer.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn decompose_records_a_trace_with_the_intent_list() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[
+                    mk_intent("test.a", "test.domain", "fast"),
+                    mk_intent("test.b", "test.domain", "fast"),
+                ],
+            );
+        }
+        let decomposer = ScriptedDecomposer::parsed(&reply(&[
+            ("test.b", "do b", 0.8),
+            ("test.a", "do a", 0.9),
+        ]));
+        let router = router(db, None, decomposer, config());
+
+        router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+
+        let traces = router.recent_traces().await;
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].session_id, "session");
+        assert_eq!(traces[0].intents.len(), 2);
+        assert_eq!(traces[0].intents[0].intent_id, "test.b");
+        assert_eq!(traces[0].intents[0].instruction, "do b");
+        assert_eq!(traces[0].intents[1].intent_name, "意图 test.a");
+        assert_eq!(traces[0].intents[1].confidence, 0.9);
     }
 
     #[tokio::test]
@@ -1550,12 +1299,16 @@ mod tests {
         let db = test_db();
         {
             let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("test.a", "test.domain", "fast")],
+            );
         }
         let router = router(
             db,
             Some(embedding_with(vec![1.0, 0.0])),
-            ScriptedReranker::new(vec![]),
+            ScriptedDecomposer::unavailable(),
             config(),
         );
 
@@ -1569,31 +1322,6 @@ mod tests {
             router.index.read().await.is_ready(),
             "the old snapshot keeps serving while the rebuild is pending"
         );
-
-        let decision = router.route(ctx("alpha", None, false, None)).await;
-        assert_eq!(decision.chosen.id, "test.a");
-    }
-
-    #[tokio::test]
-    async fn route_records_a_trace() {        let db = test_db();
-        {
-            let guard = db.lock().await;
-            seed_domain(&guard, "test.domain", &[mk_intent("test.a", "test.domain", "fast")]);
-        }
-        let router = router(
-            db,
-            Some(embedding_with(vec![1.0, 0.0])),
-            ScriptedReranker::new(vec![]),
-            config(),
-        );
-        set_index(&router, vec![("test.a", vec![vec![1.0, 0.0]])]).await;
-
-        router.route(ctx("alpha", None, false, None)).await;
-
-        let traces = router.recent_traces().await;
-        assert_eq!(traces.len(), 1);
-        assert_eq!(traces[0].chosen_intent_id, "test.a");
-        assert_eq!(traces[0].session_id, "session");
     }
 
     #[test]
@@ -1601,7 +1329,7 @@ mod tests {
         let router = IntentRouter::new(
             test_db(),
             None,
-            ScriptedReranker::new(vec![]),
+            ScriptedDecomposer::unavailable(),
             config(),
         );
         let session = Some(vec![
@@ -1622,7 +1350,7 @@ mod tests {
         let router = IntentRouter::new(
             test_db(),
             None,
-            ScriptedReranker::new(vec![]),
+            ScriptedDecomposer::unavailable(),
             config(),
         );
 
@@ -1640,7 +1368,7 @@ mod tests {
         let router = IntentRouter::new(
             test_db(),
             None,
-            ScriptedReranker::new(vec![]),
+            ScriptedDecomposer::unavailable(),
             config(),
         );
         let session = Some(vec!["file_system".to_string(), "web_search".to_string()]);
@@ -1652,137 +1380,330 @@ mod tests {
         );
     }
 
-    /// 标注集上的手动评测。运行方式：
-    /// `INTENT_ROUTING_EVAL=1 cargo test --lib intent_routing_eval -- --ignored --nocapture`
+    #[test]
+    fn union_tools_takes_the_union_then_intersects_the_session() {
+        let router = IntentRouter::new(
+            test_db(),
+            None,
+            ScriptedDecomposer::unavailable(),
+            config(),
+        );
+        let session = Some(vec!["read".to_string(), "shell".to_string()]);
+        let intents = [
+            Some(vec!["read".to_string()]),
+            Some(vec!["read".to_string(), "shell".to_string()]),
+        ];
+
+        let resolved = router.resolve_union_tools(session, &intents);
+
+        assert_eq!(
+            resolved,
+            Some(vec!["read".to_string(), "shell".to_string()])
+        );
+    }
+
+    #[test]
+    fn union_tools_stays_empty_when_no_intent_allows_any_tool() {
+        let router = IntentRouter::new(
+            test_db(),
+            None,
+            ScriptedDecomposer::unavailable(),
+            config(),
+        );
+        let session = Some(vec!["read".to_string()]);
+        let intents = [Some(Vec::new()), Some(Vec::new())];
+
+        assert_eq!(
+            router.resolve_union_tools(session, &intents),
+            Some(Vec::new())
+        );
+    }
+
+    /// 拆解评测集里的一条样例。
+    #[derive(serde::Deserialize)]
+    struct DecomposeEvalEntry {
+        message: String,
+        #[serde(default)]
+        expected_intents: Vec<String>,
+        #[serde(default = "default_decompose_category")]
+        category: String,
+    }
+
+    fn default_decompose_category() -> String {
+        "single".to_string()
+    }
+
+    fn eval_p50(mut samples: Vec<u64>) -> u64 {
+        if samples.is_empty() {
+            return 0;
+        }
+        samples.sort_unstable();
+        samples[samples.len() / 2]
+    }
+
+    /// 多意图拆解评测的手动通道。运行方式：
+    /// `INTENT_ROUTING_EVAL=1 cargo test --lib intent_decomposition_eval -- --ignored --nocapture`
+    ///
+    /// 指标：集合准确率（全部 / 排除 ambiguous / single / multi）、多意图顺序准确率、
+    /// 意图召回、零意图准确率、ambiguous 的 uncertain 覆盖率、幻觉率、调用次数与 p50 耗时。
     #[tokio::test]
     #[ignore]
-    async fn intent_routing_eval() {
+    async fn intent_decomposition_eval() {
         if std::env::var("INTENT_ROUTING_EVAL").ok().as_deref() != Some("1") {
-            eprintln!("set INTENT_ROUTING_EVAL=1 to run the routing eval");
+            eprintln!("set INTENT_ROUTING_EVAL=1 to run the decomposition eval");
             return;
         }
 
-        let fixture: Vec<EvalEntry> = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/intent_routing_eval.json"
+        let fixture: Vec<DecomposeEvalEntry> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/intent_decomposition_eval.json"
         ))
-        .expect("valid eval fixture");
+        .expect("valid decomposition eval fixture");
 
         let app_config = crate::app::config::AppConfig::load().unwrap_or_default();
+        // `AppConfig::load` 不会填充 keychain 里的 key；这里补齐，否则所有
+        // provider 都会因空 key 失败。
+        let mut models = app_config.models.clone();
+        for model in &mut models {
+            model.api_key = crate::core::keychain::resolve_api_key(&model.id, &model.api_key);
+        }
+
         let db = test_db();
-        {
+        let allowed_ids: HashSet<String> = {
             let guard = db.lock().await;
             crate::features::intent_management::seeds::seed_builtin_intents(&guard)
                 .expect("seed built-in intents");
-        }
+            guard
+                .list_all_enabled_intents()
+                .expect("list intents")
+                .into_iter()
+                .map(|intent| intent.id)
+                .collect()
+        };
 
         let providers = Arc::new(Mutex::new(crate::llm::provider::ProviderRegistry::new(
-            &app_config.models,
+            &models,
         )));
-        let reranker = Arc::new(crate::llm::intent::classifier::LlmReranker::new(
+        // 允许用 `INTENT_EVAL_MODEL_ID` 覆盖拆解模型，便于横向比较不同模型的
+        // 准确率与延迟（例如换用更快的模型来消除超时）。
+        let eval_model_id = std::env::var("INTENT_EVAL_MODEL_ID")
+            .ok()
+            .filter(|id| !id.trim().is_empty())
+            .or_else(|| app_config.intent.classifier_model_id.clone());
+        let decomposer = Arc::new(crate::llm::intent::classifier::LlmReranker::new(
             providers,
-            app_config.intent.classifier_model_id.clone(),
-        ));
-        let embedding = Arc::new(crate::llm::embedding::EmbeddingService::new(
-            std::env::var("OPENAI_API_KEY").ok(),
-            app_config.intent.embedding_model_id.as_deref(),
+            eval_model_id,
         ));
         let router = Arc::new(IntentRouter::new(
             db,
-            Some(embedding),
-            reranker,
+            None,
+            decomposer,
             RouterConfig {
                 enabled: app_config.intent.enabled,
-                embedding_floor: app_config.intent.embedding_floor,
-                embedding_margin: app_config.intent.embedding_margin,
-                prior_boost: app_config.intent.prior_boost,
                 llm_rerank_enabled: app_config.intent.llm_rerank_enabled,
                 llm_timeout_ms: app_config.intent.llm_timeout_ms,
                 probe_enabled: app_config.intent.probe_enabled,
                 probe_timeout_ms: app_config.intent.probe_timeout_ms,
-                second_rerank_min_budget_ms: app_config.intent.second_rerank_min_budget_ms,
                 routing_budget_ms: app_config.intent.routing_budget_ms,
             },
         ));
-        router.warm_up().await;
 
-        let mut labelled = 0usize;
-        let mut correct = 0usize;
-        let mut ambiguous = 0usize;
-        let mut ambiguous_flagged = 0usize;
-        let mut clear_by_embedding = 0usize;
+        let mut single_total = 0usize;
+        let mut single_correct = 0usize;
+        let mut zero_total = 0usize;
+        let mut zero_correct = 0usize;
+        let mut multi_total = 0usize;
+        let mut multi_correct = 0usize;
+        let mut multi_ordered_correct = 0usize;
+        let mut ambiguous_total = 0usize;
+        let mut ambiguous_uncertain = 0usize;
+        let mut set_correct = 0usize;
+        let mut non_ambiguous_total = 0usize;
+        let mut non_ambiguous_correct = 0usize;
+        let mut recall_hit = 0usize;
+        let mut recall_total = 0usize;
+        let mut predicted_total = 0usize;
+        let mut hallucinated = 0usize;
         let mut llm_calls = 0usize;
+        let mut latencies = Vec::new();
 
         for entry in &fixture {
-            let message = entry.message.as_str();
-            let category = entry.category.as_str();
-            let expected = entry.expected_intent.as_deref();
-
-            let recent: Vec<Message> = entry
-                .recent
-                .iter()
-                .map(|item| Message {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    session_id: "eval".to_string(),
-                    role: item.role.clone(),
-                    content: item.content.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    tool_name: None,
-                    tokens: None,
-                    created_at: TS.to_string(),
-                })
-                .collect();
-
-            let decision = router
-                .route(RouteContext {
+            let started = Instant::now();
+            let decomposition = router
+                .decompose(RouteContext {
                     session_id: "eval",
-                    content: message,
-                    recent_messages: &recent,
-                    prior_domain: None,
-                    pinned: false,
+                    content: &entry.message,
+                    recent_messages: &[],
+                    prior_domain: Some("builtin.software_dev"),
+                    pinned: true,
                     project_root: None,
                 })
                 .await;
+            latencies.push(started.elapsed().as_millis() as u64);
+            llm_calls += decomposition.evidence.llm_calls;
 
-            llm_calls += decision.evidence.llm_calls;
+            let predicted: HashSet<String> = decomposition
+                .intents
+                .iter()
+                .map(|item| item.intent.id.clone())
+                .collect();
+            let expected: HashSet<String> = entry.expected_intents.iter().cloned().collect();
 
-            if category == "ambiguous" {
-                ambiguous += 1;
-                if decision.uncertain {
-                    ambiguous_flagged += 1;
+            predicted_total += predicted.len();
+            hallucinated += predicted.iter().filter(|id| !allowed_ids.contains(*id)).count();
+
+            // 集合准确率：预测集合与期望集合完全一致（跨全部子集）。
+            if predicted == expected {
+                set_correct += 1;
+            }
+            // ambiguous 是设计上允许判错的子集（spec 只要求标 uncertain），
+            // 混进总准确率会低估模型，因此单独给一个排除后的口径。
+            if entry.category != "ambiguous" {
+                non_ambiguous_total += 1;
+                if predicted == expected {
+                    non_ambiguous_correct += 1;
                 }
-                continue;
+            }
+            // 单意图召回：期望集合里的每个意图是否都被拆出来（漏一个即失败）。
+            for id in &expected {
+                recall_total += 1;
+                if predicted.contains(id) {
+                    recall_hit += 1;
+                }
             }
 
-            labelled += 1;
-            if expected == Some(decision.chosen.id.as_str()) {
-                correct += 1;
-            }
-            if category == "clear" && decision.source == DecisionSource::Embedding {
-                clear_by_embedding += 1;
+            match entry.category.as_str() {
+                "single" => {
+                    single_total += 1;
+                    if predicted == expected {
+                        single_correct += 1;
+                    }
+                }
+                "multi" => {
+                    multi_total += 1;
+                    // 顺序：模型返回的意图顺序必须与标注顺序一致。
+                    let predicted_order: Vec<String> = decomposition
+                        .intents
+                        .iter()
+                        .map(|item| item.intent.id.clone())
+                        .collect();
+                    if predicted == expected {
+                        multi_correct += 1;
+                    } else {
+                        // 失败样本：把消息、期望集合、实际集合、耗时与决策来源都打出来，
+                        // 便于区分「模型真的返回空数组」「响应超时被吞成零意图」
+                        // 与「标注本身有歧义」三种原因。
+                        println!(
+                            "  [multi miss] message: {}\n    expected: {:?}\n    predicted: {:?}\n    source: {:?} elapsed: {} ms",
+                            entry.message,
+                            entry.expected_intents,
+                            predicted_order,
+                            decomposition.source,
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    if predicted_order == entry.expected_intents {
+                        multi_ordered_correct += 1;
+                    }
+                }
+                "zero" => {
+                    zero_total += 1;
+                    if predicted.is_empty() {
+                        zero_correct += 1;
+                    }
+                }
+                "ambiguous" => {
+                    ambiguous_total += 1;
+                    if decomposition.uncertain {
+                        ambiguous_uncertain += 1;
+                    }
+                }
+                _ => {}
             }
         }
 
-        let accuracy = if labelled == 0 {
+        let single_accuracy = if single_total == 0 {
             0.0
         } else {
-            correct as f32 / labelled as f32
+            single_correct as f32 / single_total as f32
         };
-        let ambiguous_rate = if ambiguous == 0 {
+        let zero_accuracy = if zero_total == 0 {
             0.0
         } else {
-            ambiguous_flagged as f32 / ambiguous as f32
+            zero_correct as f32 / zero_total as f32
+        };
+        let hallucination_rate = if predicted_total == 0 {
+            0.0
+        } else {
+            hallucinated as f32 / predicted_total as f32
+        };
+        let multi_accuracy = if multi_total == 0 {
+            0.0
+        } else {
+            multi_correct as f32 / multi_total as f32
+        };
+        let multi_ordered_accuracy = if multi_total == 0 {
+            0.0
+        } else {
+            multi_ordered_correct as f32 / multi_total as f32
+        };
+        let set_accuracy = if fixture.is_empty() {
+            0.0
+        } else {
+            set_correct as f32 / fixture.len() as f32
+        };
+        let non_ambiguous_accuracy = if non_ambiguous_total == 0 {
+            0.0
+        } else {
+            non_ambiguous_correct as f32 / non_ambiguous_total as f32
+        };
+        let ambiguous_uncertain_rate = if ambiguous_total == 0 {
+            0.0
+        } else {
+            ambiguous_uncertain as f32 / ambiguous_total as f32
+        };
+        let recall_rate = if recall_total == 0 {
+            0.0
+        } else {
+            recall_hit as f32 / recall_total as f32
         };
 
-        println!("intent routing eval");
-        println!("  labelled top-1: {correct}/{labelled} ({accuracy:.2})");
+        println!("intent decomposition eval");
         println!(
-            "  ambiguous flagged: {ambiguous_flagged}/{ambiguous} ({ambiguous_rate:.2})"
+            "  set accuracy (all): {set_correct}/{} ({set_accuracy:.2})",
+            fixture.len()
         );
-        println!("  clear decided by embedding: {clear_by_embedding}/{correct}");
+        println!(
+            "  set accuracy (excluding ambiguous): {non_ambiguous_correct}/{non_ambiguous_total} ({non_ambiguous_accuracy:.2})"
+        );
+        println!(
+            "  set accuracy (single): {single_correct}/{single_total} ({single_accuracy:.2})"
+        );
+        println!(
+            "  set accuracy (multi): {multi_correct}/{multi_total} ({multi_accuracy:.2})"
+        );
+        println!(
+            "  ordered accuracy (multi): {multi_ordered_correct}/{multi_total} ({multi_ordered_accuracy:.2})"
+        );
+        println!("  intent recall: {recall_hit}/{recall_total} ({recall_rate:.2})");
+        println!("  zero-intent accuracy: {zero_correct}/{zero_total} ({zero_accuracy:.2})");
+        println!(
+            "  ambiguous uncertain: {ambiguous_uncertain}/{ambiguous_total} ({ambiguous_uncertain_rate:.2})"
+        );
+        println!("  hallucination rate: {hallucinated}/{predicted_total} ({hallucination_rate:.2})");
         println!("  llm calls: {llm_calls}");
+        // 尾部延迟要先算：`eval_p50` 按值消耗 `latencies`，所以排序副本要提前取。
+        let mut sorted = latencies.clone();
+        sorted.sort_unstable();
+        let p95 = sorted
+            .get(((sorted.len() as f32 * 0.95) as usize).min(sorted.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0);
+        let max = sorted.last().copied().unwrap_or(0);
+        println!("  p50 latency: {} ms", eval_p50(latencies));
+        println!("  p95 latency: {p95} ms");
+        println!("  max latency: {max} ms");
 
-        assert!(accuracy >= 0.0);
-        assert!(ambiguous_rate >= 0.0);
+        assert!(single_accuracy >= 0.0);
+        assert!(zero_accuracy >= 0.0);
     }
 }

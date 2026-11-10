@@ -42,7 +42,8 @@ export interface IntentInfo {
 export interface SessionIntentState {
   domain_id: string | null;
   domain_name: string | null;
-  mode: 'auto' | 'pinned';
+  /** `'none'` = 通用（不绑定领域）；`'pinned'` = 绑定到指定领域。 */
+  mode: 'pinned' | 'none';
 }
 
 /** One candidate considered while routing. */
@@ -54,13 +55,22 @@ export interface IntentCandidate {
   signal: 'embedding' | 'llm' | 'rule' | 'probe' | 'fallback';
 }
 
+/** One intent produced by a decomposition. */
+export interface DecomposedIntentInfo {
+  intent_id: string;
+  intent_name: string;
+  instruction: string;
+  confidence: number;
+  uncertain: boolean;
+}
+
 /** Payload of the `intent_resolved` Tauri event. */
 export interface IntentResolvedEvent {
   session_id: string;
   domain_id: string;
   domain_name: string;
-  intent_id: string;
-  intent_name: string;
+  /** Ordered intents produced by this decomposition; empty = zero intents. */
+  intents: DecomposedIntentInfo[];
   confidence: number;
   uncertain: boolean;
   source: 'embedding' | 'llm' | 'rule' | 'probe' | 'fallback';
@@ -70,14 +80,22 @@ export interface IntentResolvedEvent {
   probe_used: boolean;
 }
 
+/** One intent recorded in a route trace. */
+export interface TraceIntent {
+  intent_id: string;
+  intent_name: string;
+  instruction: string;
+  confidence: number;
+  uncertain: boolean;
+}
+
 /** One row returned by the read-only route trace IPC. */
 export interface RouteTrace {
   at: string;
   session_id: string;
   message_excerpt: string;
+  intents: TraceIntent[];
   candidates: IntentCandidate[];
-  chosen_intent_id: string;
-  chosen_intent_name: string;
   confidence: number;
   uncertain: boolean;
   source: 'embedding' | 'llm' | 'rule' | 'probe' | 'fallback';

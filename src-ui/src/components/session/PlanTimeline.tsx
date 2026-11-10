@@ -5,7 +5,6 @@ import { useStore } from '../../store';
 export function PlanTimeline() {
   const activePlan = useStore((s) => s.activePlan);
   const planProgress = useStore((s) => s.planProgress);
-  const sessionMode = useStore((s) => s.sessionMode);
   const executionStatus = useStore((s) => s.executionStatus);
   const currentSession = useStore((s) => s.currentSession);
   const cancelExecution = useStore((s) => s.cancelExecution);
@@ -19,7 +18,8 @@ export function PlanTimeline() {
     }
   }, [executionStatus.type]);
 
-  if (sessionMode !== 'autonomous' || !activePlan) return null;
+  // 有确认/执行中的计划就展示；会话 mode 仍是 chat，不能再依赖 autonomous。
+  if (!activePlan) return null;
 
   const totalSteps = activePlan.steps.length;
   const completedSteps = planProgress?.completed_steps ?? 0;

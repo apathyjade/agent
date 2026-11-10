@@ -69,17 +69,16 @@ pub struct IntentAppConfig {
     /// `text-embedding-3-small`。
     #[serde(default)]
     pub embedding_model_id: Option<String>,
-    /// embedding 判定「确定命中」所需的最低原始 cosine 分数。
-    /// 由路由评测集标定，改动前请重跑评测。
+    /// 已退役：embedding 双阈值不再参与拆解；仅为兼容旧 `config.json` 保留。
     #[serde(default = "default_embedding_floor")]
     pub embedding_floor: f32,
-    /// top1 与 top2 原始 cosine 分数之间的最小差值。
+    /// 已退役：仅为兼容旧 `config.json` 保留。
     #[serde(default = "default_embedding_margin")]
     pub embedding_margin: f32,
-    /// 仅影响排序：对会话上一轮所属领域的加分。
+    /// 已退役：`auto` 模式与领域先验排序加成已移除；仅为兼容旧配置保留。
     #[serde(default = "default_prior_boost")]
     pub prior_boost: f32,
-    /// embedding 结果不够确定时，是否允许再跑一次 LLM 重排。
+    /// 是否启用意图拆解（沿用原名，默认开启）。
     #[serde(default = "default_true")]
     pub llm_rerank_enabled: bool,
     /// LLM 重排的硬超时（毫秒）。
@@ -91,7 +90,7 @@ pub struct IntentAppConfig {
     /// 只读探针的硬超时（毫秒）。
     #[serde(default = "default_probe_timeout_ms")]
     pub probe_timeout_ms: u64,
-    /// 启动「探针 + 二次重排」所需的最小剩余预算（毫秒）。
+    /// 已退役：探针不再做二次重排；仅为兼容旧 `config.json` 保留。
     #[serde(default = "default_second_rerank_min_budget_ms")]
     pub second_rerank_min_budget_ms: u64,
     /// 单次路由决策的墙钟总预算（毫秒）。
@@ -118,12 +117,13 @@ fn default_prior_boost() -> f32 {
     0.04
 }
 
-/// 单次 LLM rerank 的默认超时。
+/// 单次 LLM 拆解的默认超时。
 ///
-/// 必须覆盖分类模型在真实消息上的往返：实测 DeepSeek 默认模型峰值 3.7s。
-/// 低于这个量级会让 LLM 信号在超时后丢失，路由退化到噪声很大的规则打分。
+/// 实测慢模型（如 deepseek-v4-pro）的拆解往返在 4s 左右，8s 及以下会周期性
+/// 撞超时并把结果吞成零意图。这里留出足够余量，避免把「模型慢」误判成
+/// 「模型说没有意图」。
 fn default_llm_timeout_ms() -> u64 {
-    8000
+    20000
 }
 
 fn default_probe_timeout_ms() -> u64 {
@@ -134,28 +134,30 @@ fn default_second_rerank_min_budget_ms() -> u64 {
     1200
 }
 
+/// 单次路由的总预算；必须大于 [`default_llm_timeout_ms`]，给探针留空间。
 fn default_routing_budget_ms() -> u64 {
-    12000
+    25000
 }
 
 /// 上一版默认超时：会被旧配置原样写进 `config.json`，加载时迁移掉。
-const LEGACY_LLM_TIMEOUT_MS: u64 = 2500;
-const LEGACY_ROUTING_BUDGET_MS: u64 = 6000;
+/// 2500 / 6000 是最早的一版，8000 / 12000 是上一版，都必须能迁移到当前值。
+const LEGACY_LLM_TIMEOUT_MS: [u64; 2] = [2500, 8000];
+const LEGACY_ROUTING_BUDGET_MS: [u64; 2] = [6000, 12000];
 
 impl IntentAppConfig {
-    /// 把上一版默认超时迁移到当前默认值。
+    /// 把历史默认超时迁移到当前默认值。
     ///
-    /// 旧配置把 2500 / 6000 固化在文件里，只改 [`Default`] 对已有安装无效。
-    /// 只迁移恰好等于旧默认值的字段：用户显式改过的值保持不变。返回是否
-    /// 发生了迁移，调用方据此决定是否写回磁盘。
+    /// 旧配置把 2500 / 8000 与 6000 / 12000 固化在文件里，只改 [`Default`] 对
+    /// 已有安装无效。只迁移恰好等于旧默认值的字段：用户显式改过的值保持
+    /// 不变。返回是否发生了迁移，调用方据此决定是否写回磁盘。
     pub fn migrate_legacy_timeouts(&mut self) -> bool {
         let mut migrated = false;
 
-        if self.llm_timeout_ms == LEGACY_LLM_TIMEOUT_MS {
+        if LEGACY_LLM_TIMEOUT_MS.contains(&self.llm_timeout_ms) {
             self.llm_timeout_ms = default_llm_timeout_ms();
             migrated = true;
         }
-        if self.routing_budget_ms == LEGACY_ROUTING_BUDGET_MS {
+        if LEGACY_ROUTING_BUDGET_MS.contains(&self.routing_budget_ms) {
             self.routing_budget_ms = default_routing_budget_ms();
             migrated = true;
         }
@@ -422,8 +424,31 @@ mod tests {
     }
 
     #[test]
-    fn empty_intent_section_defaults_to_enabled() {
+    fn legacy_routing_fields_are_tolerated_after_retirement() {
+        // embedding 双阈值、prior_boost 与二次重排预算已不再参与决策；
+        // 旧配置里的这些键必须被继续接受，不能让应用起不来。
         let json = r#"{
+            "models": [],
+            "enabled_tools": [],
+            "intent": {
+                "embedding_floor": 0.2,
+                "embedding_margin": 0.9,
+                "prior_boost": 0.5,
+                "second_rerank_min_budget_ms": 5
+            }
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("含已退役字段的旧配置必须能加载");
+
+        assert!(config.intent.enabled);
+        assert_eq!(config.intent.classifier_model_id, None);
+        // 缺失的新字段保持默认值。
+        assert_eq!(config.intent.llm_timeout_ms, 20000);
+        assert_eq!(config.intent.routing_budget_ms, 25000);
+    }
+
+    #[test]
+    fn empty_intent_section_defaults_to_enabled() {        let json = r#"{
             "models": [],
             "enabled_tools": [],
             "intent": {}
@@ -451,21 +476,22 @@ mod tests {
         assert!((intent.embedding_margin - 0.05).abs() < f32::EPSILON);
         assert!((intent.prior_boost - 0.04).abs() < f32::EPSILON);
         assert!(intent.llm_rerank_enabled);
-        assert_eq!(intent.llm_timeout_ms, 8000);
+        assert_eq!(intent.llm_timeout_ms, 20000);
         assert!(intent.probe_enabled);
         assert_eq!(intent.probe_timeout_ms, 1500);
         assert_eq!(intent.second_rerank_min_budget_ms, 1200);
-        assert_eq!(intent.routing_budget_ms, 12000);
+        assert_eq!(intent.routing_budget_ms, 25000);
     }
 
-    /// 分类模型在真实消息上的往返时间实测到 3.7s；超时低于它会让 LLM
-    /// 信号直接丢失，路由退化到规则打分。
+    /// 实测慢模型（deepseek-v4-pro）的拆解往返会稳定撞上 8s 超时，被吞成
+    /// 零意图。默认超时必须留出足够余量；总预算还要大于超时，给探针留空间。
     #[test]
-    fn routing_timeouts_cover_real_classifier_latency() {
+    fn routing_timeouts_cover_slow_classifier_latency() {
         let intent = IntentAppConfig::default();
 
-        assert_eq!(intent.llm_timeout_ms, 8000);
-        assert_eq!(intent.routing_budget_ms, 12000);
+        assert_eq!(intent.llm_timeout_ms, 20000);
+        assert_eq!(intent.routing_budget_ms, 25000);
+        assert!(intent.routing_budget_ms > intent.llm_timeout_ms);
     }
 
     #[test]
@@ -486,8 +512,22 @@ mod tests {
         };
 
         assert!(intent.migrate_legacy_timeouts());
-        assert_eq!(intent.llm_timeout_ms, 8000);
-        assert_eq!(intent.routing_budget_ms, 12000);
+        assert_eq!(intent.llm_timeout_ms, 20000);
+        assert_eq!(intent.routing_budget_ms, 25000);
+    }
+
+    /// 上一版默认值 8000 / 12000 同样会被写进旧 `config.json`，必须一起迁移。
+    #[test]
+    fn immediately_previous_timeout_defaults_are_migrated() {
+        let mut intent = IntentAppConfig {
+            llm_timeout_ms: 8000,
+            routing_budget_ms: 12000,
+            ..IntentAppConfig::default()
+        };
+
+        assert!(intent.migrate_legacy_timeouts());
+        assert_eq!(intent.llm_timeout_ms, 20000);
+        assert_eq!(intent.routing_budget_ms, 25000);
     }
 
     #[test]
@@ -503,6 +543,20 @@ mod tests {
         assert_eq!(intent.routing_budget_ms, 9000);
     }
 
+    /// 用户显式调大过超时（如 30000）时必须原样保留，迁移只认旧默认值。
+    #[test]
+    fn explicitly_increased_timeouts_are_preserved() {
+        let mut intent = IntentAppConfig {
+            llm_timeout_ms: 30000,
+            routing_budget_ms: 40000,
+            ..IntentAppConfig::default()
+        };
+
+        assert!(!intent.migrate_legacy_timeouts());
+        assert_eq!(intent.llm_timeout_ms, 30000);
+        assert_eq!(intent.routing_budget_ms, 40000);
+    }
+
     #[test]
     fn timeouts_are_migrated_independently() {
         let mut intent = IntentAppConfig {
@@ -512,7 +566,7 @@ mod tests {
         };
 
         assert!(intent.migrate_legacy_timeouts());
-        assert_eq!(intent.llm_timeout_ms, 8000);
+        assert_eq!(intent.llm_timeout_ms, 20000);
         assert_eq!(intent.routing_budget_ms, 9000);
     }
 }

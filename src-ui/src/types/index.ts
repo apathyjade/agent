@@ -613,7 +613,7 @@ export type ExecStatus =
   | { type: 'cancelled' };
 
 export type ExecStep =
-  | { type: 'agent_task'; instruction: string; model_id?: string; max_iterations?: number; allowed_tools?: string[]; temperature?: number }
+  | { type: 'agent_task'; instruction: string; model_id?: string; max_iterations?: number; allowed_tools?: string[]; temperature?: number; system_prompt_appendix?: string }
   | { type: 'llm_call'; prompt: string; system_prompt?: string; model_id?: string; temperature?: number; max_tokens?: number }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; retry?: { max: number; delay_seconds: number }; timeout_seconds?: number }
   | { type: 'condition'; expression: string; on_true?: string; on_false?: string }
@@ -628,6 +628,10 @@ export interface PlanStep {
   error?: string | null;
   started_at?: string | null;
   duration_ms?: number | null;
+  /** Intent that produced this step; absent for planner-generated plans. */
+  intent_id?: string | null;
+  confidence?: number | null;
+  uncertain?: boolean;
 }
 
 export interface ExecutionPlan {
