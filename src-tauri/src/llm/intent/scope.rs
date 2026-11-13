@@ -619,6 +619,79 @@ fn resolve_prompts(layers: ScopeLayers<'_>) -> Vec<String> {
     fragments
 }
 
+/// 资源目录指纹：目录内容变化时缓存必须失效。
+///
+/// 使用 FNV-1a 64 位对 `(source, id)` 序列求值，稳定且无额外依赖。
+impl ResourceCatalog {
+    pub fn signature(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for tool in &self.tools {
+            for byte in tool.source.as_bytes().iter().chain(b"/").chain(tool.id.as_bytes()) {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(0x1000_0000_01b3);
+            }
+        }
+        hash
+    }
+}
+
+/// 第二级路由（资源收窄）的系统提示词：列出候选资源，只要求返回 id 数组。
+pub fn build_scope_prompt(resources: &[CatalogTool]) -> String {
+    let mut prompt = String::from(
+        "You are narrowing the tool set for ONE request of an AI coding assistant.\n\
+         Below is every tool available in the current domain. Pick only the tools this\n\
+         request actually needs; calling tools outside your pick is impossible.\n\
+         Prefer fewer tools. If the request needs no tool, answer with an empty array.\n\
+         Reply with a JSON array of tool ids and nothing else.\n\nAvailable tools:\n",
+    );
+    for tool in resources {
+        prompt.push_str(&format!("- {} ({})\n", tool.id, tool.source));
+    }
+    prompt
+}
+
+/// 解析第二级路由的回复。
+///
+/// 只接受字符串数组（可被对象 `{"tools": [...]}` 包裹）；未知 id 被丢弃，
+/// 空数组与不可解析的回复都返回 `None`——收窄失败时不能把工具全裁掉。
+pub fn parse_scope_reply(reply: &str, resources: &[CatalogTool]) -> Option<ScopeDraft> {
+    let value = extract_json(reply)?;
+    let raw = match value {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(map) => map.get("tools")?.as_array()?.clone(),
+        _ => return None,
+    };
+
+    let valid: BTreeSet<&str> = resources.iter().map(|tool| tool.id.as_str()).collect();
+    let mut selected: Vec<String> = Vec::new();
+    for item in raw {
+        let Some(id) = item.as_str() else { continue };
+        if valid.contains(id) && !selected.iter().any(|known| known == id) {
+            selected.push(id.to_string());
+        }
+    }
+    if selected.is_empty() {
+        return None;
+    }
+    Some(ScopeDraft {
+        tools: Some(selected),
+        prompts: None,
+    })
+}
+
+/// 从可能带 markdown 围栏或前后说明的回复里取出第一个 JSON 值。
+fn extract_json(reply: &str) -> Option<serde_json::Value> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(reply.trim()) {
+        return Some(value);
+    }
+    let start = reply.find(['[', '{'])?;
+    let end = reply.rfind([']', '}'])?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str(&reply[start..=end]).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1116,63 @@ mod tests {
         assert!(resolved.allows_tool("create_issue"));
         assert!(resolved.allows_tool("read"), "内置工具不受 MCP 白名单影响");
         assert!(!resolved.allows_tool("search_repo"));
+    }
+}
+
+#[cfg(test)]
+mod scope_prompt_tests {
+    use super::*;
+
+    fn resources() -> Vec<CatalogTool> {
+        vec![
+            CatalogTool::new("read", "builtin"),
+            CatalogTool::new("shell", "builtin"),
+            CatalogTool::new("create_issue", "mcp:linear"),
+        ]
+    }
+
+    #[test]
+    fn prompt_lists_resource_ids_and_sources() {
+        let prompt = build_scope_prompt(&resources());
+        assert!(prompt.contains("- read (builtin)"));
+        assert!(prompt.contains("- create_issue (mcp:linear)"));
+    }
+
+    #[test]
+    fn parses_plain_array() {
+        let draft = parse_scope_reply(r#"["read","create_issue"]"#, &resources()).unwrap();
+        assert_eq!(
+            draft.tools,
+            Some(vec!["read".to_string(), "create_issue".to_string()])
+        );
+    }
+
+    #[test]
+    fn parses_fenced_reply_with_prose() {
+        let reply = "Sure:\n```json\n{\"tools\":[\"shell\"]}\n```";
+        let draft = parse_scope_reply(reply, &resources()).unwrap();
+        assert_eq!(draft.tools, Some(vec!["shell".to_string()]));
+    }
+
+    #[test]
+    fn drops_unknown_and_duplicate_ids() {
+        let draft =
+            parse_scope_reply(r#"["read","read","not_a_tool"]"#, &resources()).unwrap();
+        assert_eq!(draft.tools, Some(vec!["read".to_string()]));
+    }
+
+    #[test]
+    fn empty_or_invalid_reply_yields_none() {
+        assert!(parse_scope_reply("[]", &resources()).is_none());
+        assert!(parse_scope_reply("no idea", &resources()).is_none());
+        assert!(parse_scope_reply(r#"{"tools":[]}"#, &resources()).is_none());
+    }
+
+    #[test]
+    fn signature_changes_when_catalog_changes() {
+        let first = ResourceCatalog::from_tools(resources());
+        let second = ResourceCatalog::from_tools([CatalogTool::new("read", "builtin")]);
+        assert_ne!(first.signature(), second.signature());
+        assert_eq!(first.signature(), first.clone().signature());
     }
 }

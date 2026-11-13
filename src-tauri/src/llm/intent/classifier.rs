@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::core::db::models::{IntentRecord, Message};
+use crate::llm::intent::scope::{build_scope_prompt, parse_scope_reply, CatalogTool, ScopeDraft};
 use crate::llm::provider::ProviderRegistry;
 
 /// 拆解输入携带的最近消息条数（与 `ROUTE_HISTORY_LIMIT` 的 6 条保持一致）。
@@ -55,6 +56,13 @@ pub trait IntentDecomposer: Send + Sync {
         recent_messages: &[Message],
         candidates: &[IntentRecord],
     ) -> DecomposeOutcome;
+
+    /// 第二级路由：在候选资源里挑出本回合要用的子集。
+    ///
+    /// 默认实现不参与收窄，因此既有测试替身无需改动；只有真实 LLM 实现覆盖它。
+    async fn narrow_scope(&self, _message: &str, _resources: &[CatalogTool]) -> Option<ScopeDraft> {
+        None
+    }
 }
 
 /// 上下文感知的 reranker 边界，可在测试中注入替身。
@@ -147,6 +155,28 @@ impl LlmReranker {
             Err(_) => DecomposeOutcome::Unavailable,
         }
     }
+
+    /// 第二级路由：让模型从资源摘要里挑出本回合要用的工具。
+    ///
+    /// 失败、超时（由调用方控制）或回复不可解析都返回 `None`——收窄失败必须
+    /// 退回「不收窄」，而不是把工具全部裁掉。
+    pub async fn narrow_scope(
+        &self,
+        message: &str,
+        resources: &[CatalogTool],
+    ) -> Option<ScopeDraft> {
+        if resources.is_empty() {
+            return None;
+        }
+        let Ok(provider) = self.providers.lock().await.resolve(self.model_id.as_deref()) else {
+            return None;
+        };
+        let preamble = build_scope_prompt(resources);
+        match provider.prompt(&preamble, message).await {
+            Ok(reply) => parse_scope_reply(&reply, resources),
+            Err(_) => None,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -158,6 +188,10 @@ impl IntentDecomposer for LlmReranker {
         candidates: &[IntentRecord],
     ) -> DecomposeOutcome {
         LlmReranker::decompose(self, message, recent_messages, candidates).await
+    }
+
+    async fn narrow_scope(&self, message: &str, resources: &[CatalogTool]) -> Option<ScopeDraft> {
+        LlmReranker::narrow_scope(self, message, resources).await
     }
 }
 

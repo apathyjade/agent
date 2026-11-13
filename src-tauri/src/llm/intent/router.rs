@@ -11,9 +11,11 @@ use crate::llm::embedding::EmbeddingService;
 use crate::llm::intent::classifier::{DecomposeOutcome, IntentDecomposer};
 use crate::llm::intent::index::{intent_units, IntentVectorIndex};
 use crate::llm::intent::probe::probe;
+use crate::llm::intent::scope::{CatalogTool, ResourceCatalog, ScopeDraft};
 use crate::llm::intent::{
     DecisionEvidence, DecisionSource, DecomposedIntent, Decomposition, IntentCandidate,
-    IntentConfig, IntentResult, PathSelection, RouteContext, RouteTrace, RouterConfig, TraceIntent,
+    IntentConfig, IntentResult, PathSelection, RouteContext, RouteTrace, RouterConfig, ScopeStatus,
+    ScopeTrace, TraceIntent,
 };
 
 /// 不参与拆解的意图：闲聊的配方等价于普通聊天，澄清是模型占位意图。
@@ -24,6 +26,12 @@ const EXCLUDED_INTENT_IDS: [&str; 2] = [
 
 /// 进程内保留的路由轨迹条数。
 const TRACE_LIMIT: usize = 50;
+
+/// 候选资源少于该数量时不做第二级收窄：收益不足，且会白花一次调用。
+const SCOPE_NARROW_THRESHOLD: usize = 8;
+
+/// 剩余路由预算低于该值时跳过第二级收窄。
+const SCOPE_MIN_BUDGET_MS: u64 = 800;
 
 /// 一次路由所需的全量数据快照：领域 id → 名称，以及所有启用意图。
 struct RoutingData {
@@ -40,6 +48,13 @@ pub struct IntentRouter {
     decomposer: Arc<dyn IntentDecomposer>,
     config: RouterConfig,
     traces: Mutex<VecDeque<RouteTrace>>,
+    /// 可裁剪资源的只读快照；为空时跳过第二级收窄。
+    ///
+    /// 用 `std` 锁而不是 tokio 锁：只做整体替换与克隆，不跨 await 持有，
+    /// 构造期（同步上下文）即可装配。
+    catalog: std::sync::RwLock<ResourceCatalog>,
+    /// 第二级收窄结果缓存，键为 `domain|intent_ids|catalog_sig`。
+    scope_cache: std::sync::Mutex<HashMap<String, ScopeDraft>>,
 }
 
 impl IntentRouter {
@@ -60,6 +75,8 @@ impl IntentRouter {
             decomposer,
             config,
             traces: Mutex::new(VecDeque::new()),
+            catalog: std::sync::RwLock::new(ResourceCatalog::default()),
+            scope_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -137,9 +154,109 @@ impl IntentRouter {
     pub async fn decompose(&self, ctx: RouteContext<'_>) -> Decomposition {
         let started = Instant::now();
         let mut decomposition = self.decompose_inner(&ctx).await;
+        self.apply_scope_draft(&ctx, &mut decomposition, started).await;
         decomposition.evidence.elapsed_ms = started.elapsed().as_millis() as u64;
         self.record_trace(&decomposition, &ctx).await;
         decomposition
+    }
+
+    /// 用新的资源目录替换快照，并清空收窄缓存。
+    ///
+    /// 目录变化（MCP 连接/断开、工具开关）后必须调用一次，否则缓存会给出
+    /// 已经失效的资源集合。
+    pub fn set_catalog(&self, catalog: ResourceCatalog) {
+        if let Ok(mut guard) = self.catalog.write() {
+            *guard = catalog;
+        }
+        if let Ok(mut cache) = self.scope_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    /// 第二级路由：在候选资源里让模型挑出本回合真正要用的子集。
+    ///
+    /// 任何失败都只意味着「本回合不收窄」，绝不阻断意图路由。
+    async fn apply_scope_draft(
+        &self,
+        ctx: &RouteContext<'_>,
+        decomposition: &mut Decomposition,
+        started: Instant,
+    ) {
+        if decomposition.intents.is_empty() || !self.config.llm_rerank_enabled {
+            return;
+        }
+
+        let catalog = self
+            .catalog
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        if catalog.tools().is_empty() {
+            decomposition.scope_status = ScopeStatus::SkippedNoCatalog;
+            return;
+        }
+
+        let candidates: Vec<CatalogTool> = catalog
+            .tools()
+            .iter()
+            .filter(|tool| tool.enabled)
+            .cloned()
+            .collect();
+        let catalog_size = candidates.len();
+        if catalog_size <= SCOPE_NARROW_THRESHOLD {
+            decomposition.scope_status = ScopeStatus::SkippedSmallCatalog;
+            return;
+        }
+
+        let left = budget_left(started, self.config.routing_budget_ms);
+        if left < Duration::from_millis(SCOPE_MIN_BUDGET_MS) {
+            decomposition.scope_status = ScopeStatus::SkippedNoBudget;
+            return;
+        }
+
+        let key = scope_cache_key(ctx, decomposition, &catalog);
+        if let Some(cached) = self
+            .scope_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&key).cloned())
+        {
+            let selected = cached.tools.as_ref().map_or(0, |tools| tools.len());
+            decomposition.scope = Some(cached);
+            decomposition.scope_status = ScopeStatus::Applied {
+                selected,
+                catalog_size,
+                cached: true,
+            };
+            return;
+        }
+
+        let timeout_ms = self
+            .config
+            .llm_timeout_ms
+            .min(left.as_millis() as u64)
+            .max(1);
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            self.decomposer.narrow_scope(ctx.content, &candidates),
+        )
+        .await
+        .ok()
+        .flatten();
+
+        let Some(draft) = outcome else {
+            decomposition.scope_status = ScopeStatus::SkippedUnavailable;
+            return;
+        };        let selected = draft.tools.as_ref().map_or(0, |tools| tools.len());
+        decomposition.scope_status = ScopeStatus::Applied {
+            selected,
+            catalog_size,
+            cached: false,
+        };
+        decomposition.scope = Some(draft.clone());
+        if let Ok(mut cache) = self.scope_cache.lock() {
+            cache.insert(key, draft);
+        }
     }
 
     async fn decompose_inner(&self, ctx: &RouteContext<'_>) -> Decomposition {
@@ -428,6 +545,25 @@ impl IntentRouter {
             elapsed_ms: decomposition.evidence.elapsed_ms,
             llm_calls: decomposition.evidence.llm_calls,
             probe_used: decomposition.evidence.probe_used,
+            scope: match decomposition.scope_status {
+                ScopeStatus::NotRequested => None,
+                ScopeStatus::Applied {
+                    selected,
+                    catalog_size,
+                    cached,
+                } => Some(ScopeTrace {
+                    catalog_size,
+                    selected,
+                    cached,
+                    skipped: None,
+                }),
+                skipped => Some(ScopeTrace {
+                    catalog_size: 0,
+                    selected: 0,
+                    cached: false,
+                    skipped: Some(skipped.label().to_string()),
+                }),
+            },
         };
 
         let mut traces = self.traces.lock().await;
@@ -511,6 +647,25 @@ impl RoutingData {
 /// 整体路由预算的剩余部分；已超预算时返回零时长。
 fn budget_left(started: Instant, budget_ms: u64) -> Duration {
     Duration::from_millis(budget_ms).saturating_sub(started.elapsed())
+}
+
+/// 收窄缓存键：领域、意图集合与目录指纹共同决定结果。
+fn scope_cache_key(
+    ctx: &RouteContext<'_>,
+    decomposition: &Decomposition,
+    catalog: &ResourceCatalog,
+) -> String {
+    let intents: Vec<&str> = decomposition
+        .intents
+        .iter()
+        .map(|item| item.intent.id.as_str())
+        .collect();
+    format!(
+        "{}|{}|{:x}",
+        ctx.prior_domain.unwrap_or(""),
+        intents.join(","),
+        catalog.signature()
+    )
 }
 
 /// 根据会话限制与意图限制求最终工具列表（交集）。

@@ -18,6 +18,7 @@ use crate::features::session::lifecycle::LifecycleManager;
 use crate::llm::embedding::EmbeddingService;
 use crate::llm::intent::classifier::LlmReranker;
 use crate::llm::intent::router::IntentRouter;
+use crate::llm::intent::scope::{CatalogTool, ResourceCatalog};
 use crate::llm::intent::RouterConfig;
 use crate::llm::model::{ModelConfig, ModelProvider};
 use crate::llm::provider::ProviderRegistry;
@@ -108,12 +109,13 @@ impl AppState {
             Some(approval.clone()),
         )));
         // 内置工具的启用状态来自配置；MCP 工具在注册时自行决定，不受影响。
-        let tools_arc = Arc::new(Mutex::new({
+        let (tools_arc, builtin_catalog) = {
             let mut registry = ToolRegistry::new();
             registry.apply_builtin_enabled(&config.enabled_tools);
             registry.set_gate(approval.clone());
-            registry
-        }));
+            let catalog = registry.catalog();
+            (Arc::new(Mutex::new(registry)), catalog)
+        };
         let db_arc = Arc::new(Mutex::new(db));
 
         let embedding = build_embedding_service(&models, config.intent.embedding_model_id.as_deref());
@@ -124,6 +126,7 @@ impl AppState {
             db_arc.clone(),
             providers_arc.clone(),
             embedding,
+            builtin_catalog,
         );
 
         let persona = PersonaManager::new(db_arc.clone());
@@ -204,6 +207,7 @@ fn build_intent_router(
     db: Arc<Mutex<Database>>,
     providers: Arc<Mutex<ProviderRegistry>>,
     embedding: Arc<EmbeddingService>,
+    builtin_tools: Vec<crate::agent::tools::base::ToolInfo>,
 ) -> Arc<IntentRouter> {
     let router_config = RouterConfig {
         enabled: intent.enabled,
@@ -222,6 +226,13 @@ fn build_intent_router(
         Some(embedding),
         reranker,
         router_config,
+    ));
+
+    // 启动时先用内置工具装配资源目录；MCP 连接/断开后由 manager 再刷新。
+    router.set_catalog(ResourceCatalog::from_tools(
+        builtin_tools
+            .into_iter()
+            .map(|info| CatalogTool::new(info.name, info.source).with_enabled(info.enabled)),
     ));
 
     let warm_router = router.clone();
