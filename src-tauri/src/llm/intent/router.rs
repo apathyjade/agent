@@ -912,6 +912,9 @@ mod tests {
         reply: ScriptedReply,
         calls: AtomicUsize,
         last_candidates: Mutex<Vec<String>>,
+        /// 第二级路由返回的工具集合；`None` 表示不参与收窄。
+        scope: Option<Vec<String>>,
+        scope_calls: AtomicUsize,
     }
 
     impl ScriptedDecomposer {
@@ -920,6 +923,8 @@ mod tests {
                 reply: ScriptedReply::Parsed(reply.to_string()),
                 calls: AtomicUsize::new(0),
                 last_candidates: Mutex::new(Vec::new()),
+                scope: None,
+                scope_calls: AtomicUsize::new(0),
             })
         }
 
@@ -928,6 +933,8 @@ mod tests {
                 reply: ScriptedReply::Unavailable,
                 calls: AtomicUsize::new(0),
                 last_candidates: Mutex::new(Vec::new()),
+                scope: None,
+                scope_calls: AtomicUsize::new(0),
             })
         }
 
@@ -936,11 +943,28 @@ mod tests {
                 reply: ScriptedReply::Hang,
                 calls: AtomicUsize::new(0),
                 last_candidates: Mutex::new(Vec::new()),
+                scope: None,
+                scope_calls: AtomicUsize::new(0),
             })
         }
 
         fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
+        }
+
+        /// 在 `parsed` 的基础上让第二级路由返回固定的一组工具。
+        fn with_scope(reply: &str, tools: &[&str]) -> Arc<Self> {
+            Arc::new(Self {
+                reply: ScriptedReply::Parsed(reply.to_string()),
+                calls: AtomicUsize::new(0),
+                last_candidates: Mutex::new(Vec::new()),
+                scope: Some(tools.iter().map(|tool| tool.to_string()).collect()),
+                scope_calls: AtomicUsize::new(0),
+            })
+        }
+
+        fn scope_calls(&self) -> usize {
+            self.scope_calls.load(Ordering::SeqCst)
         }
 
         async fn last_candidates(&self) -> Vec<String> {
@@ -950,6 +974,18 @@ mod tests {
 
     #[async_trait::async_trait]
     impl IntentDecomposer for ScriptedDecomposer {
+        async fn narrow_scope(
+            &self,
+            _message: &str,
+            _resources: &[CatalogTool],
+        ) -> Option<ScopeDraft> {
+            self.scope_calls.fetch_add(1, Ordering::SeqCst);
+            self.scope.as_ref().map(|tools| ScopeDraft {
+                tools: Some(tools.clone()),
+                prompts: None,
+            })
+        }
+
         async fn decompose(
             &self,
             _message: &str,
@@ -1025,6 +1061,60 @@ mod tests {
             config.routing_budget_ms > config.llm_timeout_ms,
             "总预算必须给探针留出空间"
         );
+    }
+
+    #[tokio::test]
+    async fn second_stage_scope_is_applied_and_cached() {
+        let db = test_db();
+        {
+            let guard = db.lock().await;
+            seed_domain(
+                &guard,
+                "test.domain",
+                &[mk_intent("alpha", "test.domain", "fast")],
+            );
+        }
+        let decomposer = ScriptedDecomposer::with_scope(
+            &reply(&[("alpha", "do it", 0.9)]),
+            &["tool_0"],
+        );
+        let router = router(db, None, decomposer.clone(), config());
+        router.set_catalog(ResourceCatalog::from_tools(
+            (0..12).map(|index| CatalogTool::new(format!("tool_{index}"), "builtin")),
+        ));
+
+        let first = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+        assert!(
+            matches!(
+                first.scope_status,
+                ScopeStatus::Applied {
+                    selected: 1,
+                    cached: false,
+                    ..
+                }
+            ),
+            "首次必须真实调用收窄: {:?}",
+            first.scope_status
+        );
+        assert_eq!(
+            first.scope.as_ref().and_then(|draft| draft.tools.clone()),
+            Some(vec!["tool_0".to_string()])
+        );
+
+        let second = router
+            .decompose(ctx("alpha", Some("test.domain"), None))
+            .await;
+        assert!(
+            matches!(
+                second.scope_status,
+                ScopeStatus::Applied { cached: true, .. }
+            ),
+            "第二次必须命中缓存: {:?}",
+            second.scope_status
+        );
+        assert_eq!(decomposer.scope_calls(), 1, "缓存命中时不得再次调用模型");
     }
 
     #[tokio::test]
