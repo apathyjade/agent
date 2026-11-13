@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { PlanConfirmDialog, planIntentSideEffects, planScopeStatusLabel } from '../PlanConfirmDialog';
+import { PlanConfirmDialog, planIntentSideEffects } from '../PlanConfirmDialog';
+import { scopeStatusLabel } from '../../common/scopeLabels';
 import type { PlanConfirmIntent } from '../../../api/plan';
 
 // antd 的 TextArea 在挂载时会观察尺寸；jsdom 没有 ResizeObserver，补一个空实现。
@@ -183,6 +184,6 @@ describe('PlanConfirmDialog', () => {
   });
 
   it('keeps unknown scope statuses visible', () => {
-    expect(planScopeStatusLabel('future_status')).toBe('future_status');
+    expect(scopeStatusLabel('future_status')).toBe('future_status');
   });
 });

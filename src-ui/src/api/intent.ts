@@ -89,6 +89,14 @@ export interface TraceIntent {
   uncertain: boolean;
 }
 
+/** 第二级收窄摘要；`skipped` 非空表示未收窄及其原因。 */
+export interface ScopeTrace {
+  catalog_size: number;
+  selected: number;
+  cached: boolean;
+  skipped: string | null;
+}
+
 /** One row returned by the read-only route trace IPC. */
 export interface RouteTrace {
   at: string;
@@ -102,6 +110,8 @@ export interface RouteTrace {
   elapsed_ms: number;
   llm_calls: number;
   probe_used: boolean;
+  /** 旧后端不返回该字段时为 `null`。 */
+  scope: ScopeTrace | null;
 }
 
 /**

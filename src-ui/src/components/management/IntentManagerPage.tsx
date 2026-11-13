@@ -16,6 +16,7 @@ import {
 import * as api from '../../api/intent';
 import type { IntentDomainInfo, IntentInfo, IntentInput } from '../../api/intent';
 import { ManagerPageLayout } from '../common/ManagerPageLayout';
+import { RouteTracePanel } from './RouteTracePanel';
 
 // ── Constants ──
 
@@ -795,6 +796,7 @@ export function IntentManagerPage() {
       icon={<Target size={18} />}
       headerActions={
         <>
+          <RouteTracePanel />
           <button
             onClick={() => setImportOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:border-purple-300 dark:hover:border-purple-700 rounded-lg transition-colors"

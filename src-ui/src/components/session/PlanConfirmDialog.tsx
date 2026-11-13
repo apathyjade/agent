@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Modal, Button, Input } from 'antd';
 import { AlertTriangle, FileEdit, Terminal, Trash2 } from 'lucide-react';
 import type { PlanConfirmIntent, ScopePayload } from '../../api/plan';
+import { scopeStatusLabel } from '../common/scopeLabels';
 
 /**
  * 从工具白名单推出副作用标注。只做展示，不改变任何执行语义。
@@ -28,25 +29,7 @@ export interface PlanConfirmDialogProps {
   onUpdateInstruction: (stepId: string, instruction: string) => void | Promise<void>;
 }
 
-/** scope 状态标签 → 中文说明；未知状态原样展示，避免静默丢信息。 */
-export function planScopeStatusLabel(status: string): string {
-  switch (status) {
-    case 'applied':
-      return '已按请求收窄';
-    case 'not_requested':
-      return '未启用收窄';
-    case 'skipped_no_catalog':
-      return '无资源目录，未收窄';
-    case 'skipped_small_catalog':
-      return '候选资源太少，未收窄';
-    case 'skipped_no_budget':
-      return '路由预算不足，未收窄';
-    case 'skipped_unavailable':
-      return '收窄服务不可用，未收窄';
-    default:
-      return status;
-  }
-}
+/** scope 状态标签 → 中文说明；映射集中在 `common/scopeLabels`。 */
 
 /** 确认卡顶部的只读资源作用域摘要；只展示，不提供编辑。 */
 function ScopeSummary({ scope }: { scope: ScopePayload }) {
@@ -57,7 +40,7 @@ function ScopeSummary({ scope }: { scope: ScopePayload }) {
     >
       <div className="flex items-center gap-2 flex-wrap">
         <span className="font-medium text-gray-700 dark:text-gray-200">资源作用域</span>
-        <span data-testid="plan-scope-status">{planScopeStatusLabel(scope.status)}</span>
+        <span data-testid="plan-scope-status">{scopeStatusLabel(scope.status)}</span>
         {scope.cached && <span className="text-gray-400">（缓存命中）</span>}
         {scope.truncated && (
           <span className="text-amber-600 dark:text-amber-400">已按预算截断</span>
