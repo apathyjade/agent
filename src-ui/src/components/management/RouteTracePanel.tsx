@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Drawer } from 'antd';
 import { Activity, RefreshCw } from 'lucide-react';
-import { getRecentRouteTraces } from '../../api/intent';
-import type { RouteTrace } from '../../api/intent';
+import { getRecentRouteTraces, getScopeMetrics } from '../../api/intent';
+import type { RouteTrace, ScopeMetrics } from '../../api/intent';
 import { scopeStatusLabel } from '../common/scopeLabels';
 
 /**
@@ -16,6 +16,42 @@ export function routeScopeSummary(trace: RouteTrace): string | null {
   return `收窄 ${scope.selected}/${scope.catalog_size}${cached}`;
 }
 
+/** 比率 → 百分比文本；`0` 保持 `0%`，不做四舍五入到 `-0%`。 */
+export function formatRate(value: number, digits = 0): string {
+  if (!Number.isFinite(value) || value <= 0) return '0%';
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+/** 毫秒 → 取整文本。 */
+export function formatMs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 ms';
+  return `${Math.round(value)} ms`;
+}
+
+/** 顶部指标行的一条；`testid` 供测试定位。 */
+interface MetricItem {
+  label: string;
+  value: string;
+  testid: string;
+}
+
+/** 把聚合结果摊平成展示项；样本为 0 时返回空数组。 */
+export function metricItems(metrics: ScopeMetrics | null): MetricItem[] {
+  if (!metrics || metrics.samples === 0) return [];
+  return [
+    { label: '采样', value: String(metrics.samples), testid: 'metric-samples' },
+    { label: '收窄率', value: formatRate(metrics.applied_rate), testid: 'metric-applied-rate' },
+    {
+      label: '选中比',
+      value: formatRate(metrics.selected_ratio, 1),
+      testid: 'metric-selected-ratio',
+    },
+    { label: '缓存', value: formatRate(metrics.cache_rate), testid: 'metric-cache-rate' },
+    { label: '跳过', value: formatRate(metrics.skip_rate), testid: 'metric-skip-rate' },
+    { label: '平均耗时', value: formatMs(metrics.avg_elapsed_ms), testid: 'metric-avg-elapsed' },
+  ];
+}
+
 /**
  * 路由调试抽屉：只读展示进程内最近的路由决策与收窄结果。
  *
@@ -25,13 +61,19 @@ export function RouteTracePanel() {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [traces, setTraces] = useState<RouteTrace[]>([]);
+  const [metrics, setMetrics] = useState<ScopeMetrics | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      setTraces(await getRecentRouteTraces());
+      const [nextTraces, nextMetrics] = await Promise.all([
+        getRecentRouteTraces(),
+        getScopeMetrics(),
+      ]);
+      setTraces(nextTraces);
+      setMetrics(nextMetrics);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -73,6 +115,26 @@ export function RouteTracePanel() {
         </div>
 
         {error && <p className="text-sm text-red-600 dark:text-red-400 mb-3">{error}</p>}
+
+        <div
+          data-testid="scope-metrics"
+          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-3 mb-3 text-xs"
+        >
+          {metricItems(metrics).length === 0 ? (
+            <span className="text-gray-400 dark:text-gray-500">暂无收窄样本。</span>
+          ) : (
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {metricItems(metrics).map((item) => (
+                <span key={item.testid} className="text-gray-600 dark:text-gray-300">
+                  {item.label}{' '}
+                  <span data-testid={item.testid} className="font-medium text-gray-800 dark:text-gray-100">
+                    {item.value}
+                  </span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
         {!loading && traces.length === 0 && !error && (
           <p className="text-sm text-gray-400 dark:text-gray-500">还没有路由记录。</p>

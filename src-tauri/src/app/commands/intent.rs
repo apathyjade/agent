@@ -718,6 +718,15 @@ pub async fn get_recent_route_traces(
     Ok(state.intent_router.recent_traces().await)
 }
 
+/// 最近轨迹的收窄指标聚合（只读）。空样本时全部为 0，不报错。
+#[tauri::command]
+pub async fn get_scope_metrics(
+    state: State<'_, AppState>,
+) -> Result<crate::llm::intent::metrics::ScopeMetrics> {
+    let traces = state.intent_router.recent_traces().await;
+    Ok(crate::llm::intent::metrics::ScopeMetrics::from_traces(&traces))
+}
+
 /// 列出某个领域下的全部意图（含已禁用的），按 `sort_order` 排序。
 #[tauri::command]
 pub async fn list_intents(

@@ -173,6 +173,7 @@ pub fn main() {
                 commands::get_session_intent_state,
                 commands::set_session_intent_domain,
                 commands::get_recent_route_traces,
+                commands::get_scope_metrics,
                 commands::decompose_message,
                 commands::update_plan_step,
                 commands::remove_plan_step,

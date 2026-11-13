@@ -2,13 +2,43 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-vi.mock('../../../api/intent', () => ({ getRecentRouteTraces: vi.fn() }));
+vi.mock('../../../api/intent', () => ({
+  getRecentRouteTraces: vi.fn(),
+  getScopeMetrics: vi.fn(),
+}));
 
-import { getRecentRouteTraces } from '../../../api/intent';
-import type { RouteTrace } from '../../../api/intent';
-import { RouteTracePanel, routeScopeSummary } from '../RouteTracePanel';
+import { getRecentRouteTraces, getScopeMetrics } from '../../../api/intent';
+import type { RouteTrace, ScopeMetrics } from '../../../api/intent';
+import {
+  RouteTracePanel,
+  formatMs,
+  formatRate,
+  metricItems,
+  routeScopeSummary,
+} from '../RouteTracePanel';
 
 const getTracesMock = vi.mocked(getRecentRouteTraces);
+const getMetricsMock = vi.mocked(getScopeMetrics);
+
+function metrics(overrides: Partial<ScopeMetrics> = {}): ScopeMetrics {
+  return {
+    samples: 4,
+    attempted: 2,
+    applied: 1,
+    cached: 1,
+    skipped: 1,
+    not_requested: 1,
+    selected_total: 6,
+    catalog_total: 20,
+    avg_elapsed_ms: 150.4,
+    avg_llm_calls: 2,
+    applied_rate: 1,
+    cache_rate: 0.5,
+    skip_rate: 0.25,
+    selected_ratio: 0.3,
+    ...overrides,
+  };
+}
 
 function trace(overrides: Partial<RouteTrace> = {}): RouteTrace {
   return {
@@ -65,6 +95,39 @@ describe('routeScopeSummary', () => {
   });
 });
 
+describe('metric formatting', () => {
+  it('formats rates as percentages', () => {
+    expect(formatRate(0.5)).toBe('50%');
+    expect(formatRate(0.25, 1)).toBe('25.0%');
+    expect(formatRate(0)).toBe('0%');
+    expect(formatRate(Number.NaN)).toBe('0%');
+  });
+
+  it('formats milliseconds without fractions', () => {
+    expect(formatMs(150.4)).toBe('150 ms');
+    expect(formatMs(0)).toBe('0 ms');
+  });
+
+  it('flattens metrics into labeled items', () => {
+    const items = metricItems(metrics());
+
+    expect(items.map((item) => item.testid)).toEqual([
+      'metric-samples',
+      'metric-applied-rate',
+      'metric-selected-ratio',
+      'metric-cache-rate',
+      'metric-skip-rate',
+      'metric-avg-elapsed',
+    ]);
+    expect(items.map((item) => item.value)).toEqual(['4', '100%', '30.0%', '50%', '25%', '150 ms']);
+  });
+
+  it('returns no items for empty or missing metrics', () => {
+    expect(metricItems(null)).toEqual([]);
+    expect(metricItems(metrics({ samples: 0 }))).toEqual([]);
+  });
+});
+
 describe('RouteTracePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -73,6 +136,7 @@ describe('RouteTracePanel', () => {
   it('lists recent traces with the narrowing summary', async () => {
     const user = userEvent.setup();
     getTracesMock.mockResolvedValue([trace()]);
+    getMetricsMock.mockResolvedValue(metrics());
     render(<RouteTracePanel />);
 
     await user.click(screen.getByTestId('route-trace-open'));
@@ -83,9 +147,36 @@ describe('RouteTracePanel', () => {
     expect(screen.getByTestId('route-trace-scope').textContent).toBe('收窄 4/12');
   });
 
+  it('shows the aggregate metrics row above the traces', async () => {
+    const user = userEvent.setup();
+    getTracesMock.mockResolvedValue([trace()]);
+    getMetricsMock.mockResolvedValue(metrics());
+    render(<RouteTracePanel />);
+
+    await user.click(screen.getByTestId('route-trace-open'));
+
+    await screen.findByTestId('route-trace');
+    expect(screen.getByTestId('metric-samples').textContent).toBe('4');
+    expect(screen.getByTestId('metric-applied-rate').textContent).toBe('100%');
+    expect(screen.getByTestId('metric-selected-ratio').textContent).toBe('30.0%');
+    expect(screen.getByTestId('metric-avg-elapsed').textContent).toBe('150 ms');
+  });
+
+  it('shows an empty metrics state when no samples exist', async () => {
+    const user = userEvent.setup();
+    getTracesMock.mockResolvedValue([]);
+    getMetricsMock.mockResolvedValue(metrics({ samples: 0 }));
+    render(<RouteTracePanel />);
+
+    await user.click(screen.getByTestId('route-trace-open'));
+
+    expect(await screen.findByText('暂无收窄样本。')).toBeTruthy();
+  });
+
   it('shows an empty state when nothing has been routed', async () => {
     const user = userEvent.setup();
     getTracesMock.mockResolvedValue([]);
+    getMetricsMock.mockResolvedValue(metrics({ samples: 0 }));
     render(<RouteTracePanel />);
 
     await user.click(screen.getByTestId('route-trace-open'));

@@ -216,3 +216,26 @@ export async function setSessionIntentDomain(
 export async function getRecentRouteTraces(): Promise<RouteTrace[]> {
   return invoke('get_recent_route_traces');
 }
+
+/** 最近轨迹的收窄汇总；空样本时全部为 0。 */
+export interface ScopeMetrics {
+  samples: number;
+  attempted: number;
+  applied: number;
+  cached: number;
+  skipped: number;
+  not_requested: number;
+  selected_total: number;
+  catalog_total: number;
+  avg_elapsed_ms: number;
+  avg_llm_calls: number;
+  applied_rate: number;
+  cache_rate: number;
+  skip_rate: number;
+  selected_ratio: number;
+}
+
+/** Read the aggregated scope metrics of the recent traces (debug panel only). */
+export async function getScopeMetrics(): Promise<ScopeMetrics> {
+  return invoke('get_scope_metrics');
+}

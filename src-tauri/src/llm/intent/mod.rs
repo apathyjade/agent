@@ -1,5 +1,6 @@
 pub mod classifier;
 pub mod index;
+pub mod metrics;
 pub mod probe;
 pub mod router;
 pub mod scope;
