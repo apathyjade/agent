@@ -201,7 +201,7 @@ impl ExecutionRuntime {
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
         // 先做策略校验，避免无谓地触碰工具注册表。
-        self.validate_tool_call(tool)?;
+        self.validate_tool_call(tool).await?;
 
         let max_retries = retry.as_ref().map(|r| r.max).unwrap_or(1);
         let delay = retry.as_ref().map(|r| r.delay_seconds).unwrap_or(0);
@@ -217,7 +217,10 @@ impl ExecutionRuntime {
 
             let call = async {
                 let tools = self.tools.lock().await;
-                tools.execute(tool, input.clone()).await
+                // 调用期二次校验：即使计划里混进了越界工具名，也在注册表入口拒绝。
+                tools
+                    .execute_with_policy(tool, input.clone(), self.allowed_tools.as_deref())
+                    .await
             };
 
             let result = match timeout_seconds.filter(|secs| *secs > 0) {

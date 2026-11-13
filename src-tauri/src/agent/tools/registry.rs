@@ -223,58 +223,97 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 以 JSON 对象调用工具。
+    /// 判断 `name` 是否落在给定白名单内。
+    ///
+    /// 两侧都先做别名归一（`read_file` → `read`），因此白名单可以沿用旧名。
+    /// 未注册的名字一律视为「不在范围内」。
+    pub fn allowed_in_scope(&self, name: &str, allowed: &[String]) -> bool {
+        let Some(canonical) = self.canonical_name(name) else {
+            return false;
+        };
+        allowed
+            .iter()
+            .any(|item| self.canonical_name(item).as_deref() == Some(canonical.as_str()))
+    }
+
+    /// 以 JSON 对象调用工具，不施加调用期作用域限制。
     ///
     /// 返回 JSON 的工具直接解析；返回纯文本的工具则原样包成字符串。
     /// 不做「解析失败即报错」——工具输出形态本来就允许是文本。
     pub fn execute(&self, name: &str, input: Value) -> impl Future<Output = Result<Value>> + Send + '_ {
+        self.execute_with_policy(name, input, None)
+    }
+
+    /// 带调用期作用域的调用：`allowed` 为 `None` 表示不限制。
+    ///
+    /// 这是 Rig 之外三条旁路（deep 路径、MCP 桥接、工作流）的唯一守门点：
+    /// 工具名先归一别名再比对，越界调用直接失败，不进入审批与执行。
+    pub fn execute_with_policy(
+        &self,
+        name: &str,
+        input: Value,
+        allowed: Option<&[String]>,
+    ) -> impl Future<Output = Result<Value>> + Send + '_ {
+        let denied = allowed.map_or(false, |list| !self.allowed_in_scope(name, list));
         let name_owned = name.to_string();
         async move {
-            let entry = self.get(&name_owned)?;
+            if denied {
+                return Err(AppError::Tool(format!(
+                    "Tool '{}' is not allowed in this scope",
+                    name_owned
+                )));
+            }
+            self.run_entry(&name_owned, input).await
+        }
+    }
 
-            // 审批闸门：deep 路径没有 Rig 的 dispatch hook，必须在注册表入口
-            // 走同一套判定，否则同一条策略在两条路径上不一致。
-            if let Some(gate) = &self.gate {
-                let footprint = entry.footprint_for(&input);
-                let definition = entry.tool.definition();
-                match decide(
-                    gate.policy(),
-                    definition.name.as_str(),
-                    &definition.annotations,
-                    footprint.as_ref(),
-                ) {
-                    ApprovalDecision::Allow => {}
-                    ApprovalDecision::Deny(reason) => {
-                        return Err(AppError::ApprovalDenied(reason));
-                    }
-                    ApprovalDecision::Confirm => {
-                        let call_id = format!("deep-{}", uuid::Uuid::new_v4());
-                        let approved = gate
-                            .request(
-                                &call_id,
-                                definition.name.as_str(),
-                                &input,
-                                "This tool call may modify data and needs confirmation",
-                            )
-                            .await;
-                        if !approved {
-                            return Err(AppError::ApprovalDenied(
-                                "User rejected this tool call".to_string(),
-                            ));
-                        }
+    /// 真正执行工具条目（审批闸门 + 运行 + 结果渲染）。
+    async fn run_entry(&self, name: &str, input: Value) -> Result<Value> {
+        let name_owned = name.to_string();
+        let entry = self.get(&name_owned)?;
+
+        // 审批闸门：deep 路径没有 Rig 的 dispatch hook，必须在注册表入口
+        // 走同一套判定，否则同一条策略在两条路径上不一致。
+        if let Some(gate) = &self.gate {
+            let footprint = entry.footprint_for(&input);
+            let definition = entry.tool.definition();
+            match decide(
+                gate.policy(),
+                definition.name.as_str(),
+                &definition.annotations,
+                footprint.as_ref(),
+            ) {
+                ApprovalDecision::Allow => {}
+                ApprovalDecision::Deny(reason) => {
+                    return Err(AppError::ApprovalDenied(reason));
+                }
+                ApprovalDecision::Confirm => {
+                    let call_id = format!("deep-{}", uuid::Uuid::new_v4());
+                    let approved = gate
+                        .request(
+                            &call_id,
+                            definition.name.as_str(),
+                            &input,
+                            "This tool call may modify data and needs confirmation",
+                        )
+                        .await;
+                    if !approved {
+                        return Err(AppError::ApprovalDenied(
+                            "User rejected this tool call".to_string(),
+                        ));
                     }
                 }
             }
-
-            let output = entry
-                .tool
-                .run(input)
-                .await
-                .map_err(|e| AppError::Tool(format!("Tool '{}' failed: {}", name_owned, e)))?;
-
-            let rendered = output.render();
-            Ok(serde_json::from_str(&rendered).unwrap_or(Value::String(rendered)))
         }
+
+        let output = entry
+            .tool
+            .run(input)
+            .await
+            .map_err(|e| AppError::Tool(format!("Tool '{}' failed: {}", name_owned, e)))?;
+
+        let rendered = output.render();
+        Ok(serde_json::from_str(&rendered).unwrap_or(Value::String(rendered)))
     }
 
     /// 工具目录：含真实描述、参数 schema 与风险注解，供前端与规划器使用。
@@ -333,5 +372,119 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::message::ToolName;
+    use rig::tool::{DynamicTool, ToolExecutionError, ToolOutput};
+    use serde_json::json;
+
+    /// 构造一个不触碰外部世界的假工具：总是返回 `"ok"`。
+    fn echo_entry(name: &str) -> ToolEntry {
+        let dynamic = DynamicTool::new(
+            ToolName::new(name).expect("工具名合法"),
+            "测试工具",
+            json!({ "type": "object", "properties": {} }),
+            move |_args: Value| {
+                Box::pin(async move { Ok::<ToolOutput, ToolExecutionError>(ToolOutput::text("ok")) })
+            },
+        );
+        ToolEntry::from_dynamic(dynamic)
+    }
+
+    /// 只含指定工具的注册表，别名表与真实注册表一致。
+    fn fake_registry(tools: &[&str]) -> ToolRegistry {
+        let mut registry = ToolRegistry {
+            tools: HashMap::new(),
+            enabled: HashMap::new(),
+            sources: HashMap::new(),
+            aliases: tool_aliases()
+                .into_iter()
+                .map(|(alias, target)| (alias.to_string(), target.to_string()))
+                .collect(),
+            gate: None,
+        };
+        for name in tools {
+            registry.register(name, echo_entry(name), true);
+        }
+        registry
+    }
+
+    #[tokio::test]
+    async fn unscoped_call_runs_the_tool() {
+        let registry = fake_registry(&["read"]);
+
+        let value = registry
+            .execute("read", json!({}))
+            .await
+            .expect("不限制时必须执行");
+
+        assert_eq!(value, Value::String("ok".to_string()));
+    }
+
+    #[tokio::test]
+    async fn scope_allows_listed_tool() {
+        let registry = fake_registry(&["read", "write"]);
+
+        let value = registry
+            .execute_with_policy("read", json!({}), Some(&["read".to_string()]))
+            .await
+            .expect("白名单内的工具必须执行");
+
+        assert_eq!(value, Value::String("ok".to_string()));
+    }
+
+    #[tokio::test]
+    async fn scope_rejects_tool_outside_the_list() {
+        let registry = fake_registry(&["read", "write"]);
+
+        let error = registry
+            .execute_with_policy("write", json!({}), Some(&["read".to_string()]))
+            .await
+            .expect_err("越界调用必须被拒绝");
+
+        let message = error.to_string();
+        assert!(message.contains("not allowed in this scope"), "{message}");
+        assert!(message.contains("write"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn empty_scope_rejects_every_tool() {
+        let registry = fake_registry(&["read"]);
+
+        assert!(registry
+            .execute_with_policy("read", json!({}), Some(&[]))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scope_matches_aliases_on_both_sides() {
+        let registry = fake_registry(&["read"]);
+
+        // 白名单用旧名，调用用新名。
+        assert!(registry
+            .execute_with_policy("read", json!({}), Some(&["read_file".to_string()]))
+            .await
+            .is_ok());
+        // 调用用旧名，白名单用新名。
+        assert!(registry
+            .execute_with_policy("read_file", json!({}), Some(&["read".to_string()]))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn scope_rejects_unregistered_names() {
+        let registry = fake_registry(&["read"]);
+
+        assert!(!registry.allowed_in_scope("no_such_tool", &["read".to_string()]));
+        assert!(registry
+            .execute_with_policy("no_such_tool", json!({}), Some(&["read".to_string()]))
+            .await
+            .is_err());
     }
 }

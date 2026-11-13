@@ -592,7 +592,10 @@ impl ExecutionRuntime {
     }
 
     /// 拒绝当前运行策略不允许的 `ToolCall` 步骤。
-    pub(super) fn validate_tool_call(&self, tool: &str) -> Result<(), ExecutionError> {
+    ///
+    /// 白名单两侧都按注册表归一别名，因此计划里写 `read_file` 也能匹配到
+    /// `read`；未注册的名字一律视为越界。
+    pub(super) async fn validate_tool_call(&self, tool: &str) -> Result<(), ExecutionError> {
         if !self.tools_enabled {
             return Err(ExecutionError::StepFailed {
                 step: 0,
@@ -604,7 +607,8 @@ impl ExecutionRuntime {
         }
 
         if let Some(allowed) = &self.allowed_tools {
-            if !allowed.iter().any(|name| name == tool) {
+            let permitted = self.tools.lock().await.allowed_in_scope(tool, allowed);
+            if !permitted {
                 return Err(ExecutionError::StepFailed {
                     step: 0,
                     message: format!(
