@@ -30,7 +30,8 @@ pub async fn execute_plan(
 
     let handle = ExecutionHandle::new(session_id.clone(), plan.id.clone());
 
-    let runtime = ExecutionRuntime::new(state.providers.clone(), state.tools.clone(), state.db.clone());
+    let runtime = ExecutionRuntime::new(state.providers.clone(), state.tools.clone(), state.db.clone())
+        .with_resolver(state.tool_resolver.clone());
 
     let (event_tx, mut event_rx) = mpsc::channel::<PlanProgressEvent>(32);
 

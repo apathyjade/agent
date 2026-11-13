@@ -604,6 +604,16 @@ impl McpServerManager {
             .unwrap_or_default()
     }
 
+    /// 指定连接是否处于可用状态（`Ready` 或 `Degraded`）。
+    ///
+    /// 供按需连接使用：已连接的服务器不应重复 `connect`（那会先断开再重连）。
+    pub async fn is_connected(&self, id: &str) -> bool {
+        let guard = self.connections.lock().await;
+        guard
+            .get(id)
+            .is_some_and(|conn| Self::status_snapshot(&conn.status).is_active())
+    }
+
     /// 获取指定连接的当前状态字符串与错误细节。
     pub async fn get_connection_status(&self, id: &str) -> Option<(String, Option<String>)> {
         let guard = self.connections.lock().await;

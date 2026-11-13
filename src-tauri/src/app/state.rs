@@ -22,6 +22,7 @@ use crate::llm::intent::scope::{CatalogTool, ResourceCatalog};
 use crate::llm::intent::RouterConfig;
 use crate::llm::model::{ModelConfig, ModelProvider};
 use crate::llm::provider::ProviderRegistry;
+use crate::features::mcp::config::on_demand_config;
 use crate::features::mcp::McpServerManager;
 use crate::features::memory::MemoryManager;
 use crate::agent::orchestrator::agent::OrchestratorAgent;
@@ -30,7 +31,7 @@ use crate::agent::orchestrator::plan_types::ExecutionHandle;
 use crate::features::persona::PersonaManager;
 use crate::features::skills::SkillsService;
 use crate::runtime::toolchain::RuntimeServices;
-use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::{ToolRegistry, ToolResolver};
 use crate::agent::workers::code_editor::CodeEditorWorker;
 use crate::agent::workers::code_explorer::CodeExplorerWorker;
 use crate::agent::workers::mcp_bridge::MCPBridgeWorker;
@@ -62,7 +63,9 @@ pub struct AppState {
     /// 人设的增删改查与自动匹配。
     pub persona: PersonaManager,
     /// MCP 连接池与工具注入。
-    pub mcp: McpServerManager,
+    pub mcp: Arc<McpServerManager>,
+    /// 工具按需解析钩子（MCP 按需连接）。
+    pub tool_resolver: Arc<dyn ToolResolver>,
     /// 运行时检测、安装、版本切换。
     pub toolchain: RuntimeServices,
     /// 会话生命周期（摘要、归档、标题）。
@@ -133,8 +136,17 @@ impl AppState {
         let lifecycle = LifecycleManager::new(db_arc.clone(), providers_arc.clone());
 
         let toolchain = RuntimeServices::new(config.runtime_options())?;
-        let mcp = McpServerManager::new(tools_arc.clone())
-            .with_runtime_manager(toolchain.manager.clone());
+        let mcp = Arc::new(
+            McpServerManager::new(tools_arc.clone())
+                .with_runtime_manager(toolchain.manager.clone()),
+        );
+        // 配置要在解析器之前变成共享句柄：解析器按需查找 MCP 服务器配置。
+        let config = Arc::new(Mutex::new(config));
+        let tool_resolver: Arc<dyn ToolResolver> = Arc::new(McpOnDemandResolver {
+            config: config.clone(),
+            mcp: mcp.clone(),
+            tools: tools_arc.clone(),
+        });
 
         let orchestrator = Arc::new(build_orchestrator(
             providers_arc.clone(),
@@ -145,13 +157,14 @@ impl AppState {
         Ok(Self {
             app_handle: app_handle.clone(),
             db: db_arc,
-            config: Arc::new(Mutex::new(config)),
+            config,
             providers: providers_arc,
             tools: tools_arc,
             skills: SkillsService::new(),
             memory,
             persona,
             mcp,
+            tool_resolver,
             toolchain,
             lifecycle,
             intent_router,
@@ -159,6 +172,61 @@ impl AppState {
             active_executions: Arc::new(Mutex::new(HashMap::new())),
             approval,
         })
+    }
+}
+
+/// MCP 按需连接解析器。
+///
+/// 当执行器遇到尚未注册的工具时，按 `<server>__<tool>` 前缀找到声明了
+/// `launch_on_demand` 的服务器并连接；连接成功后工具会被注册进注册表。
+///
+/// 连接流程内部会锁注册表，因此本实现必须只在**未持有注册表锁**时被调用
+/// （见 `ToolResolver` 的文档）。
+struct McpOnDemandResolver {
+    config: Arc<Mutex<AppConfig>>,
+    mcp: Arc<McpServerManager>,
+    tools: Arc<Mutex<ToolRegistry>>,
+}
+
+#[async_trait::async_trait]
+impl ToolResolver for McpOnDemandResolver {
+    async fn resolve(&self, name: &str) -> bool {
+        // 可能刚被其他调用注册好，先查一次，避免重复连接。
+        {
+            let tools = self.tools.lock().await;
+            if tools.canonical_name(name).is_some() {
+                return true;
+            }
+        }
+
+        // 复制配置后立即释放配置锁：连接可能耗时，不能长时间占住配置。
+        let config = {
+            let guard = self.config.lock().await;
+            on_demand_config(&guard.mcp_servers, name).cloned()
+        };
+        let Some(config) = config else {
+            return false;
+        };
+
+        // 已连接但工具仍未注册，说明该服务器没有这个工具，重连也没有意义。
+        if self.mcp.is_connected(&config.id).await {
+            return false;
+        }
+
+        match self.mcp.connect(&config).await {
+            Ok(()) => {
+                let tools = self.tools.lock().await;
+                tools.canonical_name(name).is_some()
+            }
+            Err(e) => {
+                log::warn!(
+                    "On-demand MCP connect failed for '{}': {}",
+                    config.name,
+                    e
+                );
+                false
+            }
+        }
     }
 }
 

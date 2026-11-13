@@ -46,6 +46,16 @@ fn tool_aliases() -> HashMap<&'static str, &'static str> {
     m
 }
 
+/// 工具按需解析钩子（例如 MCP 按需连接）。
+///
+/// 注册表本身不发起连接：解析必须在**未持有注册表锁**时进行，否则连接流程
+/// 里的工具注册会与调用方互锁。因此调用方先查注册表、放开锁，再调用本钩子。
+#[async_trait::async_trait]
+pub trait ToolResolver: Send + Sync {
+    /// 尝试让 `name` 变得可用；返回 `true` 表示可以重新尝试调用。
+    async fn resolve(&self, name: &str) -> bool;
+}
+
 /// 工具注册表，维护工具条目、启用状态、来源与别名。
 pub struct ToolRegistry {
     tools: HashMap<String, ToolEntry>,

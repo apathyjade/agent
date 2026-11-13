@@ -1636,6 +1636,7 @@ async fn run_deep_turn(
         state.tools.clone(),
         state.db.clone(),
     )
+    .with_resolver(state.tool_resolver.clone())
     .with_app_handle(app_handle.clone())
     .with_tool_policy(turn.allowed_tools.clone(), turn.tools_enabled)
     .with_system_prompt(Some(turn.agent_task_system_prompt()))
@@ -1724,6 +1725,7 @@ async fn execute_planned_turn(
         state.tools.clone(),
         state.db.clone(),
     )
+    .with_resolver(state.tool_resolver.clone())
     .with_app_handle(app_handle.clone())
     // 步骤级白名单是权威来源；运行级只保留工具总开关。
     .with_tool_policy(None, turn.tools_enabled)

@@ -51,6 +51,8 @@ pub struct ExecutionRuntime {
     system_prompt: Option<String>,
     /// agent 任务未单独指定时的默认迭代上限。
     max_iterations: Option<usize>,
+    /// 按需解析钩子（MCP 按需连接）；`None` 表示不做按需连接。
+    resolver: Option<Arc<dyn crate::agent::tools::registry::ToolResolver>>,
 }
 
 impl ExecutionRuntime {
@@ -71,7 +73,19 @@ impl ExecutionRuntime {
             tools_enabled: true,
             system_prompt: None,
             max_iterations: None,
+            resolver: None,
         }
+    }
+
+    /// 注入按需解析钩子（MCP 按需连接）。
+    ///
+    /// 解析在调用期进行，且发生在获取注册表锁之前，避免与连接流程互锁。
+    pub fn with_resolver(
+        mut self,
+        resolver: Arc<dyn crate::agent::tools::registry::ToolResolver>,
+    ) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// 绑定 Tauri `AppHandle`，使执行日志可以推送到前端。
