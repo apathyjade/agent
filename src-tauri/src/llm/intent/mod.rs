@@ -4,6 +4,7 @@ pub mod metrics;
 pub mod probe;
 pub mod router;
 pub mod scope;
+pub mod usage;
 
 use std::path::Path;
 

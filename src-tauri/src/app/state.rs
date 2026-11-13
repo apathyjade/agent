@@ -82,6 +82,15 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// 资源使用反馈接收端：把运行时上报的样本写入意图路由器。
+    pub fn usage_sink(
+        &self,
+    ) -> Arc<dyn crate::agent::orchestrator::runtime::ScopeUsageSink> {
+        Arc::new(RouterUsageSink {
+            router: self.intent_router.clone(),
+        })
+    }
+
     /// 构造全部子系统。只应在启动时调用一次。
     ///
     /// 顺序约束：
@@ -228,6 +237,22 @@ impl ToolResolver for McpOnDemandResolver {
                 false
             }
         }
+    }
+}
+
+/// 资源使用反馈接收端：把运行时上报的样本写入意图路由器。
+///
+/// 运行时是同步上下文，路由器用 tokio 锁，因此转发到异步任务执行。
+struct RouterUsageSink {
+    router: Arc<IntentRouter>,
+}
+
+impl crate::agent::orchestrator::runtime::ScopeUsageSink for RouterUsageSink {
+    fn record_usage(&self, scoped: Vec<String>, used: Vec<String>) {
+        let router = self.router.clone();
+        tauri::async_runtime::spawn(async move {
+            router.record_usage(scoped, used).await;
+        });
     }
 }
 

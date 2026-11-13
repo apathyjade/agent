@@ -34,6 +34,13 @@ const RESULT_SUMMARY_CHARS: usize = 100;
 /// 计划来源描述中目标文本最多保留的字符数。
 const GOAL_DESC_CHARS: usize = 50;
 
+/// 资源使用反馈接收端：计划执行成功后上报「收窄可见集合 + 实际调用集合」。
+///
+/// 实现方负责聚合与持久化；运行时只在成功出口调用一次。
+pub trait ScopeUsageSink: Send + Sync {
+    fn record_usage(&self, scoped: Vec<String>, used: Vec<String>);
+}
+
 /// 执行计划的运行时。
 ///
 /// 持有 LLM provider、工具注册表与数据库连接；每次 [`Self::run`] 会按顺序
@@ -53,6 +60,10 @@ pub struct ExecutionRuntime {
     max_iterations: Option<usize>,
     /// 按需解析钩子（MCP 按需连接）；`None` 表示不做按需连接。
     resolver: Option<Arc<dyn crate::agent::tools::registry::ToolResolver>>,
+    /// 资源使用反馈接收端；`None` 表示不采集。
+    usage_sink: Option<Arc<dyn ScopeUsageSink>>,
+    /// 本次运行实际调用过的工具（规范名，去重）。
+    used_tools: std::sync::Mutex<Vec<String>>,
 }
 
 impl ExecutionRuntime {
@@ -74,6 +85,8 @@ impl ExecutionRuntime {
             system_prompt: None,
             max_iterations: None,
             resolver: None,
+            usage_sink: None,
+            used_tools: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -85,6 +98,12 @@ impl ExecutionRuntime {
         resolver: Arc<dyn crate::agent::tools::registry::ToolResolver>,
     ) -> Self {
         self.resolver = Some(resolver);
+        self
+    }
+
+    /// 注入资源使用反馈接收端。
+    pub fn with_usage_sink(mut self, sink: Arc<dyn ScopeUsageSink>) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 
@@ -392,11 +411,42 @@ impl ExecutionRuntime {
         )
         .await;
 
+        self.report_usage().await;
+
         Ok(PlanOutcome {
             plan_id,
             session_id,
             completed,
         })
+    }
+
+    /// 记录一次实际工具调用（按注册表规范名去重）。
+    pub(super) async fn record_tool_use(&self, tool: &str) {
+        let canonical = {
+            let tools = self.tools.lock().await;
+            tools
+                .canonical_name(tool)
+                .unwrap_or_else(|| tool.to_string())
+        };
+        if let Ok(mut used) = self.used_tools.lock() {
+            if !used.iter().any(|item| item == &canonical) {
+                used.push(canonical);
+            }
+        }
+    }
+
+    /// 计划成功后上报使用样本；未设置收窄白名单或接收端时静默跳过。
+    async fn report_usage(&self) {
+        let (Some(sink), Some(scoped)) = (self.usage_sink.as_ref(), self.allowed_tools.as_ref())
+        else {
+            return;
+        };
+        let used = self
+            .used_tools
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        sink.record_usage(scoped.clone(), used);
     }
 
     /// 记录运行开始日志，来源描述中的目标文本按字符截断。

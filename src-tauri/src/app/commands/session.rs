@@ -1675,6 +1675,7 @@ async fn run_deep_turn(
         state.db.clone(),
     )
     .with_resolver(state.tool_resolver.clone())
+    .with_usage_sink(state.usage_sink())
     .with_app_handle(app_handle.clone())
     .with_tool_policy(turn.allowed_tools.clone(), turn.tools_enabled)
     .with_system_prompt(Some(turn.agent_task_system_prompt()))

@@ -174,6 +174,7 @@ pub fn main() {
                 commands::set_session_intent_domain,
                 commands::get_recent_route_traces,
                 commands::get_scope_metrics,
+                commands::get_scope_usage,
                 commands::decompose_message,
                 commands::update_plan_step,
                 commands::remove_plan_step,

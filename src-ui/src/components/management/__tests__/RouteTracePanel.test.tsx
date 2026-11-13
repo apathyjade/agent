@@ -5,10 +5,11 @@ import userEvent from '@testing-library/user-event';
 vi.mock('../../../api/intent', () => ({
   getRecentRouteTraces: vi.fn(),
   getScopeMetrics: vi.fn(),
+  getScopeUsage: vi.fn(),
 }));
 
-import { getRecentRouteTraces, getScopeMetrics } from '../../../api/intent';
-import type { RouteTrace, ScopeMetrics } from '../../../api/intent';
+import { getRecentRouteTraces, getScopeMetrics, getScopeUsage } from '../../../api/intent';
+import type { RouteTrace, ScopeMetrics, ToolUsage } from '../../../api/intent';
 import {
   RouteTracePanel,
   formatMs,
@@ -19,6 +20,7 @@ import {
 
 const getTracesMock = vi.mocked(getRecentRouteTraces);
 const getMetricsMock = vi.mocked(getScopeMetrics);
+const getUsageMock = vi.mocked(getScopeUsage);
 
 function metrics(overrides: Partial<ScopeMetrics> = {}): ScopeMetrics {
   return {
@@ -43,8 +45,7 @@ function metrics(overrides: Partial<ScopeMetrics> = {}): ScopeMetrics {
   };
 }
 
-function trace(overrides: Partial<RouteTrace> = {}): RouteTrace {
-  return {
+function trace(overrides: Partial<RouteTrace> = {}): RouteTrace {  return {
     at: '2026-11-14T02:00:00Z',
     session_id: 'session-1',
     message_excerpt: '帮我导出 CSV',
@@ -65,6 +66,16 @@ function trace(overrides: Partial<RouteTrace> = {}): RouteTrace {
     llm_calls: 2,
     probe_used: false,
     scope: { catalog_size: 12, selected: 4, cached: false, skipped: null },
+    ...overrides,
+  };
+}
+
+function usage(overrides: Partial<ToolUsage> = {}): ToolUsage {
+  return {
+    tool: 'read',
+    scoped_times: 3,
+    used_times: 0,
+    suggested_removal: true,
     ...overrides,
   };
 }
@@ -143,6 +154,7 @@ describe('metric formatting', () => {
 describe('RouteTracePanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getUsageMock.mockResolvedValue([]);
   });
 
   it('lists recent traces with the narrowing summary', async () => {
@@ -195,5 +207,40 @@ describe('RouteTracePanel', () => {
     await user.click(screen.getByTestId('route-trace-open'));
 
     expect(await screen.findByText('还没有路由记录。')).toBeTruthy();
+  });
+
+  it('lists tool usage with removal suggestions', async () => {
+    const user = userEvent.setup();
+    getTracesMock.mockResolvedValue([]);
+    getMetricsMock.mockResolvedValue(metrics({ samples: 0 }));
+    getUsageMock.mockResolvedValue([
+      usage({ tool: 'shell', scoped_times: 5, used_times: 0, suggested_removal: true }),
+      usage({ tool: 'read', scoped_times: 5, used_times: 4, suggested_removal: false }),
+    ]);
+    render(<RouteTracePanel />);
+
+    await user.click(screen.getByTestId('route-trace-open'));
+
+    const rows = await screen.findAllByTestId('usage-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('shell');
+    expect(rows[0].textContent).toContain('纳入 5');
+    expect(rows[0].textContent).toContain('使用 0');
+    expect(rows[1].textContent).toContain('read');
+    expect(rows[1].textContent).toContain('使用 4');
+    expect(screen.getByTestId('usage-suggestion-shell').textContent).toBe('建议移出');
+    expect(screen.getByTestId('usage-suggestion-read').textContent).toBe('保留');
+  });
+
+  it('hides the usage block when there are no samples', async () => {
+    const user = userEvent.setup();
+    getTracesMock.mockResolvedValue([]);
+    getMetricsMock.mockResolvedValue(metrics({ samples: 0 }));
+    render(<RouteTracePanel />);
+
+    await user.click(screen.getByTestId('route-trace-open'));
+
+    await screen.findByText('还没有路由记录。');
+    expect(screen.queryByTestId('scope-usage')).toBeNull();
   });
 });

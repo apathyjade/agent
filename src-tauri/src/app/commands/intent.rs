@@ -727,6 +727,14 @@ pub async fn get_scope_metrics(
     Ok(crate::llm::intent::metrics::ScopeMetrics::from_traces(&traces))
 }
 
+/// 资源使用反馈聚合：每个工具被纳入/实际使用的次数，以及收缩建议。
+#[tauri::command]
+pub async fn get_scope_usage(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::llm::intent::usage::ToolUsage>> {
+    Ok(state.intent_router.usage_summary().await)
+}
+
 /// 列出某个领域下的全部意图（含已禁用的），按 `sort_order` 排序。
 #[tauri::command]
 pub async fn list_intents(

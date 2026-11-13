@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Drawer } from 'antd';
 import { Activity, RefreshCw } from 'lucide-react';
-import { getRecentRouteTraces, getScopeMetrics } from '../../api/intent';
-import type { RouteTrace, ScopeMetrics } from '../../api/intent';
+import { getRecentRouteTraces, getScopeMetrics, getScopeUsage } from '../../api/intent';
+import type { RouteTrace, ScopeMetrics, ToolUsage } from '../../api/intent';
 import { scopeStatusLabel } from '../common/scopeLabels';
 
 /**
@@ -67,18 +67,21 @@ export function RouteTracePanel() {
   const [loading, setLoading] = useState(false);
   const [traces, setTraces] = useState<RouteTrace[]>([]);
   const [metrics, setMetrics] = useState<ScopeMetrics | null>(null);
+  const [usage, setUsage] = useState<ToolUsage[]>([]);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const [nextTraces, nextMetrics] = await Promise.all([
+      const [nextTraces, nextMetrics, nextUsage] = await Promise.all([
         getRecentRouteTraces(),
         getScopeMetrics(),
+        getScopeUsage(),
       ]);
       setTraces(nextTraces);
       setMetrics(nextMetrics);
+      setUsage(nextUsage);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -140,6 +143,40 @@ export function RouteTracePanel() {
             </div>
           )}
         </div>
+
+        {usage.length > 0 && (
+          <div
+            data-testid="scope-usage"
+            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-3 mb-3 text-xs"
+          >
+            <div className="mb-1 text-gray-500 dark:text-gray-400">
+              收缩建议：纳入 ≥ 3 次且从未使用的工具可以考虑移出
+            </div>
+            <div className="space-y-1">
+              {usage.map((row) => (
+                <div
+                  key={row.tool}
+                  data-testid="usage-row"
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 text-gray-600 dark:text-gray-300"
+                >
+                  <span className="font-mono break-all">{row.tool}</span>
+                  <span>纳入 {row.scoped_times}</span>
+                  <span>使用 {row.used_times}</span>
+                  <span
+                    data-testid={`usage-suggestion-${row.tool}`}
+                    className={
+                      row.suggested_removal
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-gray-400 dark:text-gray-500'
+                    }
+                  >
+                    {row.suggested_removal ? '建议移出' : '保留'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {!loading && traces.length === 0 && !error && (
           <p className="text-sm text-gray-400 dark:text-gray-500">还没有路由记录。</p>

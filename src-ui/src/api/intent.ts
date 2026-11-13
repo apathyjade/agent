@@ -242,3 +242,16 @@ export interface ScopeMetrics {
 export async function getScopeMetrics(): Promise<ScopeMetrics> {
   return invoke('get_scope_metrics');
 }
+
+/** 单个工具的资源使用情况与收缩建议。 */
+export interface ToolUsage {
+  tool: string;
+  scoped_times: number;
+  used_times: number;
+  suggested_removal: boolean;
+}
+
+/** Read the aggregated tool usage feedback (debug panel only). */
+export async function getScopeUsage(): Promise<ToolUsage[]> {
+  return invoke('get_scope_usage');
+}

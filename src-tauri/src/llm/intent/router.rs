@@ -14,6 +14,7 @@ use crate::llm::intent::probe::probe;
 use crate::llm::intent::scope::{
     self, CatalogTool, IntentScopeV1, ResourceCatalog, ScopeDraft,
 };
+use crate::llm::intent::usage::{self, UsageSample};
 use crate::llm::intent::{
     DecisionEvidence, DecisionSource, DecomposedIntent, Decomposition, IntentCandidate,
     IntentConfig, IntentResult, PathSelection, RouteContext, RouteTrace, RouterConfig, ScopeStatus,
@@ -34,6 +35,9 @@ const SCOPE_NARROW_THRESHOLD: usize = 8;
 
 /// 剩余路由预算低于该值时跳过第二级收窄。
 const SCOPE_MIN_BUDGET_MS: u64 = 800;
+
+/// 进程内保留的资源使用样本条数。
+const USAGE_LIMIT: usize = 200;
 
 /// 一次路由所需的全量数据快照：领域 id → 名称，以及所有启用意图。
 struct RoutingData {
@@ -57,6 +61,8 @@ pub struct IntentRouter {
     catalog: std::sync::RwLock<ResourceCatalog>,
     /// 第二级收窄结果缓存，键为 `domain|intent_ids|catalog_sig`。
     scope_cache: std::sync::Mutex<HashMap<String, ScopeDraft>>,
+    /// 资源使用样本环形缓冲：收窄给了什么、实际用了什么。
+    usage: Mutex<VecDeque<UsageSample>>,
 }
 
 impl IntentRouter {
@@ -79,6 +85,7 @@ impl IntentRouter {
             traces: Mutex::new(VecDeque::new()),
             catalog: std::sync::RwLock::new(ResourceCatalog::default()),
             scope_cache: std::sync::Mutex::new(HashMap::new()),
+            usage: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -134,6 +141,33 @@ impl IntentRouter {
     pub async fn recent_traces(&self) -> Vec<RouteTrace> {
         let traces = self.traces.lock().await;
         traces.iter().cloned().collect()
+    }
+
+    /// 记录一次资源使用样本（收窄可见集合 + 实际调用集合）。
+    ///
+    /// 由执行运行时在计划成功后回调；只保留最近 `USAGE_LIMIT` 条。
+    pub async fn record_usage(&self, scoped: Vec<String>, used: Vec<String>) {
+        if scoped.is_empty() {
+            return;
+        }
+        let mut usage = self.usage.lock().await;
+        usage.push_front(UsageSample { scoped, used });
+        usage.truncate(USAGE_LIMIT);
+    }
+
+    /// 读取使用样本快照，最新的在前。
+    pub async fn recent_usage(&self) -> Vec<UsageSample> {
+        let usage = self.usage.lock().await;
+        usage.iter().cloned().collect()
+    }
+
+    /// 聚合使用样本，给出每个工具的使用情况与收缩建议。
+    pub async fn usage_summary(&self) -> Vec<usage::ToolUsage> {
+        let samples: Vec<UsageSample> = {
+            let usage = self.usage.lock().await;
+            usage.iter().cloned().collect()
+        };
+        usage::aggregate(&samples)
     }
 
     /// 根据会话限制与意图限制求最终工具列表。

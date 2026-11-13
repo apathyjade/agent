@@ -215,6 +215,8 @@ impl ExecutionRuntime {
 
         // 先做策略校验，避免无谓地触碰工具注册表。
         self.validate_tool_call(tool).await?;
+        // 校验通过即视为使用（失败重试不重复计数）。
+        self.record_tool_use(tool).await;
 
         let max_retries = retry.as_ref().map(|r| r.max).unwrap_or(1);
         let delay = retry.as_ref().map(|r| r.delay_seconds).unwrap_or(0);
