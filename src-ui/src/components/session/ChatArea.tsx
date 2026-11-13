@@ -105,6 +105,7 @@ export function ChatArea() {
   const planConfirmOpen = useStore((s) => s.planConfirmOpen);
   const planId = useStore((s) => s.planId);
   const planIntents = useStore((s) => s.planIntents);
+  const planScope = useStore((s) => s.planScope);
   const planConfirmLoading = useStore((s) => s.planConfirmLoading);
   const confirmPlan = useStore((s) => s.confirmPlan);
   const cancelPlanConfirmation = useStore((s) => s.cancelPlanConfirmation);
@@ -409,6 +410,7 @@ export function ChatArea() {
         open={planConfirmOpen}
         planId={planId}
         intents={planIntents}
+        scope={planScope}
         loading={planConfirmLoading}
         onConfirm={confirmPlan}
         onCancel={cancelPlanConfirmation}

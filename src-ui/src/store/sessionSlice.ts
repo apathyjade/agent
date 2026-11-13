@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent, ExecutionLogEntry, ToolInfo, SystemPrompt } from '../types';
 import type { IntentResolvedEvent, SessionIntentState } from '../api/intent';
-import type { DecomposedIntentPayload, PlanConfirmIntent } from '../api/plan';
+import type { DecomposedIntentPayload, PlanConfirmIntent, ScopePayload } from '../api/plan';
 import { buildPlanConfirmIntents } from '../api/plan';
 import * as api from '../api/tauri';
 
@@ -30,6 +30,8 @@ export interface SessionSlice {
   planIntents: PlanConfirmIntent[];
   /** 拆解原始 payload，编辑/删除后用于重建意图名与探针证据。 */
   planPayloadIntents: DecomposedIntentPayload[];
+  /** 本回合资源作用域快照（只读）；`null` 表示尚未拆解。 */
+  planScope: ScopePayload | null;
   /** 最近一次拿到的计划快照（确认时写入 `activePlan`）。 */
   pendingPlan: ExecutionPlan | null;
   planConfirmOpen: boolean;
@@ -104,6 +106,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   planId: null,
   planIntents: [],
   planPayloadIntents: [],
+  planScope: null,
   pendingPlan: null,
   planConfirmOpen: false,
   planConfirmLoading: false,
@@ -171,6 +174,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
         currentTurnIntent: isCurrent ? null : state.currentTurnIntent,
         planId: isCurrent ? null : state.planId,
         planIntents: isCurrent ? [] : state.planIntents,
+        planScope: isCurrent ? null : state.planScope,
         planConfirmOpen: isCurrent ? false : state.planConfirmOpen,
         planDraftContent: isCurrent ? null : state.planDraftContent,
         loading: false,
@@ -233,6 +237,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       currentTurnIntent: null,
       planId: null,
       planIntents: [],
+      planScope: null,
       planConfirmOpen: false,
       planDraftContent: null,
     });
@@ -324,6 +329,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
         planId: null,
         planIntents: [],
         planPayloadIntents: [],
+        planScope: null,
         pendingPlan: null,
         planConfirmOpen: false,
         planConfirmLoading: false,
@@ -385,6 +391,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
         planId: result.plan_id,
         planDraftContent: content,
         planPayloadIntents: result.intents,
+        planScope: result.scope ?? null,
         planIntents: buildPlanConfirmIntents(plan, result.intents),
         pendingPlan: plan,
         planConfirmOpen: true,
@@ -413,6 +420,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       planId: null,
       planIntents: [],
       planPayloadIntents: [],
+      planScope: null,
       pendingPlan: null,
       planDraftContent: null,
     });
@@ -438,6 +446,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       planId: null,
       planIntents: [],
       planPayloadIntents: [],
+      planScope: null,
       pendingPlan: null,
       planDraftContent: null,
       currentTurnIntent: null,
@@ -463,6 +472,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       planId: null,
       planIntents: [],
       planPayloadIntents: [],
+      planScope: null,
       pendingPlan: null,
       currentTurnIntent: null,
     });
