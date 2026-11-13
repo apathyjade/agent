@@ -214,7 +214,7 @@ impl ToolResolver for McpOnDemandResolver {
             return false;
         }
 
-        match self.mcp.connect(&config).await {
+        match self.mcp.connect_if_absent(&config).await {
             Ok(()) => {
                 let tools = self.tools.lock().await;
                 tools.canonical_name(name).is_some()
