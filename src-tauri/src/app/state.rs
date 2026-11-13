@@ -301,7 +301,11 @@ fn build_intent_router(
     router.set_catalog(ResourceCatalog::from_tools(
         builtin_tools
             .into_iter()
-            .map(|info| CatalogTool::new(info.name, info.source).with_enabled(info.enabled)),
+            .map(|info| {
+                CatalogTool::new(info.name, info.source)
+                    .with_enabled(info.enabled)
+                    .with_cost(crate::llm::prompt::composer::estimate_tokens(&info.description))
+            }),
     ));
 
     let warm_router = router.clone();

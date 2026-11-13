@@ -390,6 +390,10 @@ pub struct ScopeTrace {
     pub cached: bool,
     /// 未收窄的原因（`None` 表示收窄成功）。
     pub skipped: Option<String>,
+    /// 目录全部启用工具的估算 token 成本。
+    pub catalog_tokens: usize,
+    /// 收窄后可见工具的估算 token 成本。
+    pub selected_tokens: usize,
 }
 
 /// 留在进程内环形缓冲里的一条拆解决策。

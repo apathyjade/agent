@@ -227,12 +227,15 @@ export interface ScopeMetrics {
   not_requested: number;
   selected_total: number;
   catalog_total: number;
+  catalog_tokens_total: number;
+  selected_tokens_total: number;
   avg_elapsed_ms: number;
   avg_llm_calls: number;
   applied_rate: number;
   cache_rate: number;
   skip_rate: number;
   selected_ratio: number;
+  token_saving_rate: number;
 }
 
 /** Read the aggregated scope metrics of the recent traces (debug panel only). */

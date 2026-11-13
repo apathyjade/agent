@@ -105,6 +105,12 @@ impl PromptBudget {
     }
 }
 
+/// 字符数折算成 token 数（向上取整），沿用默认系数。
+pub fn estimate_tokens(text: &str) -> usize {
+    let chars = text.chars().count();
+    ((chars as f64) / DEFAULT_CHARS_PER_TOKEN).ceil() as usize
+}
+
 /// 组装结果。
 #[derive(Debug, Clone, Default)]
 pub struct ComposedPrompt {

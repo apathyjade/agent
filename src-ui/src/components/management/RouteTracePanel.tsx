@@ -46,6 +46,11 @@ export function metricItems(metrics: ScopeMetrics | null): MetricItem[] {
       value: formatRate(metrics.selected_ratio, 1),
       testid: 'metric-selected-ratio',
     },
+    {
+      label: '上下文节省',
+      value: formatRate(metrics.token_saving_rate),
+      testid: 'metric-token-saving',
+    },
     { label: '缓存', value: formatRate(metrics.cache_rate), testid: 'metric-cache-rate' },
     { label: '跳过', value: formatRate(metrics.skip_rate), testid: 'metric-skip-rate' },
     { label: '平均耗时', value: formatMs(metrics.avg_elapsed_ms), testid: 'metric-avg-elapsed' },

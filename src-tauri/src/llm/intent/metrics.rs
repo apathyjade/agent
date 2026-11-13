@@ -27,6 +27,10 @@ pub struct ScopeMetrics {
     pub selected_total: usize,
     /// 收窄成功样本的目录规模总数。
     pub catalog_total: usize,
+    /// 收窄成功样本的目录 token 成本总数。
+    pub catalog_tokens_total: usize,
+    /// 收窄成功样本的可见 token 成本总数。
+    pub selected_tokens_total: usize,
     /// 全部样本的平均路由耗时（毫秒）。
     pub avg_elapsed_ms: f64,
     /// 全部样本的平均 LLM 调用次数。
@@ -39,6 +43,8 @@ pub struct ScopeMetrics {
     pub skip_rate: f64,
     /// 平均选中比 = selected_total / catalog_total（仅收窄成功的样本）。
     pub selected_ratio: f64,
+    /// 工具描述上下文节省率 = 1 - selected_tokens_total / catalog_tokens_total。
+    pub token_saving_rate: f64,
 }
 
 impl ScopeMetrics {
@@ -53,12 +59,15 @@ impl ScopeMetrics {
             not_requested: 0,
             selected_total: 0,
             catalog_total: 0,
+            catalog_tokens_total: 0,
+            selected_tokens_total: 0,
             avg_elapsed_ms: 0.0,
             avg_llm_calls: 0.0,
             applied_rate: 0.0,
             cache_rate: 0.0,
             skip_rate: 0.0,
             selected_ratio: 0.0,
+            token_saving_rate: 0.0,
         }
     }
 
@@ -92,6 +101,8 @@ impl ScopeMetrics {
                         }
                         metrics.selected_total += scope.selected;
                         metrics.catalog_total += scope.catalog_size;
+                        metrics.catalog_tokens_total += scope.catalog_tokens;
+                        metrics.selected_tokens_total += scope.selected_tokens;
                     }
                 },
             }
@@ -109,6 +120,12 @@ impl ScopeMetrics {
         metrics.skip_rate = metrics.skipped as f64 / samples;
         if metrics.catalog_total > 0 {
             metrics.selected_ratio = metrics.selected_total as f64 / metrics.catalog_total as f64;
+        }
+        if metrics.catalog_tokens_total > 0 {
+            let saved =
+                1.0 - metrics.selected_tokens_total as f64 / metrics.catalog_tokens_total as f64;
+            // 收窄理论上不会增加可见成本；夹到 [0, 1] 防止异常数据。
+            metrics.token_saving_rate = saved.clamp(0.0, 1.0);
         }
 
         metrics
@@ -143,6 +160,24 @@ mod tests {
             selected,
             cached,
             skipped: None,
+            catalog_tokens: 0,
+            selected_tokens: 0,
+        })
+    }
+
+    fn applied_with_tokens(
+        selected: usize,
+        catalog_size: usize,
+        catalog_tokens: usize,
+        selected_tokens: usize,
+    ) -> Option<ScopeTrace> {
+        Some(ScopeTrace {
+            catalog_size,
+            selected,
+            cached: false,
+            skipped: None,
+            catalog_tokens,
+            selected_tokens,
         })
     }
 
@@ -152,6 +187,8 @@ mod tests {
             selected: 0,
             cached: false,
             skipped: Some(reason.to_string()),
+            catalog_tokens: 0,
+            selected_tokens: 0,
         })
     }
 
@@ -207,8 +244,30 @@ mod tests {
     }
 
     #[test]
-    fn mixed_samples_report_each_bucket() {
+    fn token_saving_is_derived_from_catalog_and_selected_costs() {
         let traces = vec![
+            trace(applied_with_tokens(2, 10, 400, 100), 10, 1),
+            trace(applied_with_tokens(1, 10, 400, 100), 10, 1),
+        ];
+
+        let metrics = ScopeMetrics::from_traces(&traces);
+
+        assert_eq!(metrics.catalog_tokens_total, 800);
+        assert_eq!(metrics.selected_tokens_total, 200);
+        assert_eq!(metrics.token_saving_rate, 0.75);
+    }
+
+    #[test]
+    fn token_saving_is_zero_without_costs() {
+        let traces = vec![trace(applied(2, 10, false), 10, 1)];
+
+        let metrics = ScopeMetrics::from_traces(&traces);
+
+        assert_eq!(metrics.token_saving_rate, 0.0);
+    }
+
+    #[test]
+    fn mixed_samples_report_each_bucket() {        let traces = vec![
             trace(applied(3, 12, false), 50, 2),
             trace(skipped("skipped_no_catalog"), 60, 1),
             trace(None, 70, 0),

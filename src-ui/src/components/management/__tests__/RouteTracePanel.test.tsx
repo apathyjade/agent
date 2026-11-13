@@ -30,12 +30,15 @@ function metrics(overrides: Partial<ScopeMetrics> = {}): ScopeMetrics {
     not_requested: 1,
     selected_total: 6,
     catalog_total: 20,
+    catalog_tokens_total: 800,
+    selected_tokens_total: 200,
     avg_elapsed_ms: 150.4,
     avg_llm_calls: 2,
     applied_rate: 1,
     cache_rate: 0.5,
     skip_rate: 0.25,
     selected_ratio: 0.3,
+    token_saving_rate: 0.75,
     ...overrides,
   };
 }
@@ -115,11 +118,20 @@ describe('metric formatting', () => {
       'metric-samples',
       'metric-applied-rate',
       'metric-selected-ratio',
+      'metric-token-saving',
       'metric-cache-rate',
       'metric-skip-rate',
       'metric-avg-elapsed',
     ]);
-    expect(items.map((item) => item.value)).toEqual(['4', '100%', '30.0%', '50%', '25%', '150 ms']);
+    expect(items.map((item) => item.value)).toEqual([
+      '4',
+      '100%',
+      '30.0%',
+      '75%',
+      '50%',
+      '25%',
+      '150 ms',
+    ]);
   });
 
   it('returns no items for empty or missing metrics', () => {
@@ -159,6 +171,7 @@ describe('RouteTracePanel', () => {
     expect(screen.getByTestId('metric-samples').textContent).toBe('4');
     expect(screen.getByTestId('metric-applied-rate').textContent).toBe('100%');
     expect(screen.getByTestId('metric-selected-ratio').textContent).toBe('30.0%');
+    expect(screen.getByTestId('metric-token-saving').textContent).toBe('75%');
     expect(screen.getByTestId('metric-avg-elapsed').textContent).toBe('150 ms');
   });
 

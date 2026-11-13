@@ -580,6 +580,30 @@ impl IntentRouter {
         })
     }
 
+    /// 估算本次收窄前后的工具描述 token 成本；未收窄时两者都为 0。
+    fn scope_token_costs(&self, decomposition: &Decomposition) -> (usize, usize) {
+        let Some(draft) = decomposition.scope.as_ref() else {
+            return (0, 0);
+        };
+        let catalog = self
+            .catalog
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let enabled: Vec<&CatalogTool> = catalog.tools().iter().filter(|tool| tool.enabled).collect();
+        let catalog_tokens = enabled.iter().map(|tool| tool.est_tokens).sum::<usize>();
+        let selected_tokens = match &draft.tools {
+            // `None` 表示不限制，等于全量可见，没有节省。
+            None => catalog_tokens,
+            Some(ids) => enabled
+                .iter()
+                .filter(|tool| ids.iter().any(|id| id == &tool.id))
+                .map(|tool| tool.est_tokens)
+                .sum(),
+        };
+        (catalog_tokens, selected_tokens)
+    }
+
     /// 把拆解结果写入轨迹环形缓冲（最多保留 `TRACE_LIMIT` 条）。
     ///
     /// 轨迹记录完整意图列表，与 `intent_resolved` 事件保持同一口径。
@@ -596,6 +620,8 @@ impl IntentRouter {
                 uncertain: item.uncertain,
             })
             .collect();
+
+        let (catalog_tokens, selected_tokens) = self.scope_token_costs(decomposition);
 
         let trace = RouteTrace {
             at: Utc::now().to_rfc3339(),
@@ -620,12 +646,16 @@ impl IntentRouter {
                     selected,
                     cached,
                     skipped: None,
+                    catalog_tokens,
+                    selected_tokens,
                 }),
                 skipped => Some(ScopeTrace {
                     catalog_size: 0,
                     selected: 0,
                     cached: false,
                     skipped: Some(skipped.label().to_string()),
+                    catalog_tokens: 0,
+                    selected_tokens: 0,
                 }),
             },
         };
