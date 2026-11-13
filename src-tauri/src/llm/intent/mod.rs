@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::db::models::Message;
 
-use self::scope::ScopeDraft;
+use self::scope::{ResolvedScope, ScopeDraft};
 
 /// 路径选择：由哪套 agent 系统处理这条消息。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -73,6 +73,8 @@ pub struct RouteContext<'a> {
     pub pinned: bool,
     /// 可选只读探针使用的项目根。
     pub project_root: Option<&'a Path>,
+    /// 会话级工具白名单；`None` 表示不限制。参与本回合作用域解析。
+    pub session_tools: Option<&'a [String]>,
 }
 
 /// 最终决策由哪个阶段产出。
@@ -179,6 +181,8 @@ pub struct Decomposition {
     pub scope: Option<ScopeDraft>,
     /// 收窄阶段的状态，供轨迹与调试面板展示。
     pub scope_status: ScopeStatus,
+    /// 解析后的最终作用域（工具位）；`None` 表示未解析（调用方沿用旧逻辑）。
+    pub resolved: Option<ResolvedScope>,
 }
 
 /// 第二级路由（资源收窄）的结局。
@@ -233,6 +237,7 @@ impl Decomposition {
             evidence,
             scope: None,
             scope_status: ScopeStatus::NotRequested,
+            resolved: None,
         }
     }
 
@@ -258,6 +263,7 @@ impl Decomposition {
             evidence,
             scope: None,
             scope_status: ScopeStatus::NotRequested,
+            resolved: None,
         }
     }
 

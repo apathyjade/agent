@@ -11,7 +11,9 @@ use crate::llm::embedding::EmbeddingService;
 use crate::llm::intent::classifier::{DecomposeOutcome, IntentDecomposer};
 use crate::llm::intent::index::{intent_units, IntentVectorIndex};
 use crate::llm::intent::probe::probe;
-use crate::llm::intent::scope::{CatalogTool, ResourceCatalog, ScopeDraft};
+use crate::llm::intent::scope::{
+    self, CatalogTool, IntentScopeV1, ResourceCatalog, ScopeDraft,
+};
 use crate::llm::intent::{
     DecisionEvidence, DecisionSource, DecomposedIntent, Decomposition, IntentCandidate,
     IntentConfig, IntentResult, PathSelection, RouteContext, RouteTrace, RouterConfig, ScopeStatus,
@@ -147,6 +149,67 @@ impl IntentRouter {
         intersect_tools(session_tools, intent_tools)
     }
 
+    /// 解析本回合的最终作用域：`会话 ∩ 意图 scope ∩ 收窄建议`。
+    ///
+    /// 没有目录、零意图或三层都没有任何声明时保持 `resolved = None`，调用方
+    /// 沿用旧的白名单逻辑，因此既有行为不变。
+    async fn resolve_scope(&self, ctx: &RouteContext<'_>, decomposition: &mut Decomposition) {
+        if decomposition.intents.is_empty() {
+            return;
+        }
+        let catalog = self
+            .catalog
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        if catalog.tools().is_empty() {
+            return;
+        }
+
+        let mut scopes: Vec<IntentScopeV1> = Vec::new();
+        for item in &decomposition.intents {
+            let stored = {
+                let db = self.db.lock().await;
+                db.get_scope(
+                    crate::core::db::scope_repo::OWNER_INTENT,
+                    &item.intent.id,
+                )
+                .ok()
+                .flatten()
+            };
+            let scope = stored
+                .and_then(|json| serde_json::from_str::<IntentScopeV1>(&json).ok())
+                .or_else(|| {
+                    item.intent
+                        .config
+                        .enabled_tools
+                        .as_ref()
+                        .map(|tools| IntentScopeV1::allow_exact(&normalize_tool_names(tools.clone())))
+                });
+            if let Some(scope) = scope {
+                scopes.push(scope);
+            }
+        }
+
+        let session_scope = ctx
+            .session_tools
+            .map(|tools| IntentScopeV1::allow_exact(&normalize_tool_names(tools.to_vec())));
+        if session_scope.is_none() && scopes.is_empty() && decomposition.scope.is_none() {
+            return;
+        }
+
+        let intent_refs: Vec<&IntentScopeV1> = scopes.iter().collect();
+        decomposition.resolved = Some(scope::resolve(
+            &catalog,
+            scope::ScopeLayers {
+                session: session_scope.as_ref(),
+                intents: &intent_refs,
+                draft: decomposition.scope.as_ref(),
+                ..scope::ScopeLayers::default()
+            },
+        ));
+    }
+
     /// 把一条消息拆解为零个或多个意图。永不返回 `Err`：任何失败、超时或
     /// 没有候选都降级为零意图（普通聊天兜底），保证消息仍能被回答。
     ///
@@ -155,6 +218,7 @@ impl IntentRouter {
         let started = Instant::now();
         let mut decomposition = self.decompose_inner(&ctx).await;
         self.apply_scope_draft(&ctx, &mut decomposition, started).await;
+        self.resolve_scope(&ctx, &mut decomposition).await;
         decomposition.evidence.elapsed_ms = started.elapsed().as_millis() as u64;
         self.record_trace(&decomposition, &ctx).await;
         decomposition
@@ -929,6 +993,7 @@ mod tests {
             prior_domain: domain,
             pinned: domain.is_some(),
             project_root,
+            session_tools: None,
         }
     }
 
@@ -1691,6 +1756,7 @@ mod tests {
                     prior_domain: Some("builtin.software_dev"),
                     pinned: true,
                     project_root: None,
+                    session_tools: None,
                 })
                 .await;
             latencies.push(started.elapsed().as_millis() as u64);

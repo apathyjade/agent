@@ -83,10 +83,16 @@ pub async fn assemble_plan(
 
     for item in &decomposition.intents {
         let policy = IntentPolicy::from(item);
-        let allowed_tools = intersect_tools(
-            ctx.session_tools.clone(),
-            policy.intent.config.enabled_tools.as_ref(),
-        );
+        // 路由器已解析出本回合作用域时以它为准（已含会话、意图与收窄建议）；
+        // 未解析时沿用旧的白名单交集，行为不变。
+        let allowed_tools = match decomposition.resolved.as_ref() {
+            // 路由器已解析出本回合作用域（会话 ∩ 意图 ∩ 收窄建议），直接作为基线。
+            Some(resolved) => Some(resolved.tools.clone()),
+            None => intersect_tools(
+                ctx.session_tools.clone(),
+                policy.intent.config.enabled_tools.as_ref(),
+            ),
+        };
 
         if policy.intent.path == PathSelection::Deep {
             match expander

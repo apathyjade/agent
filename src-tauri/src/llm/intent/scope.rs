@@ -111,6 +111,18 @@ impl IntentScopeV1 {
     ///
     /// 空列表返回 `None`（沿用「不限制」语义）；非空返回 `Allow` + 同名精确
     /// 选择器，保证缺少 scope 数据的旧库行为不变。
+    /// 把一组工具名表达成「精确允许」的 scope（空列表 = 没有工具）。
+    pub fn allow_exact(tools: &[String]) -> Self {
+        Self {
+            tools: ToolScope {
+                mode: ScopeMode::Allow,
+                selectors: tools.to_vec(),
+                ..ToolScope::default()
+            },
+            ..Self::default()
+        }
+    }
+
     pub fn from_allowed_tools(tools: &[String]) -> Option<Self> {
         if tools.is_empty() {
             return None;
@@ -1031,6 +1043,13 @@ mod tests {
         let scope = IntentScopeV1::from_allowed_tools(&["read_file".to_string()]).unwrap();
         assert_eq!(scope.tools.mode, ScopeMode::Allow);
         assert_eq!(scope.tools.selectors, vec!["read_file".to_string()]);
+    }
+
+    #[test]
+    fn allow_exact_keeps_empty_list_as_allow() {
+        let scope = IntentScopeV1::allow_exact(&[]);
+        assert_eq!(scope.tools.mode, ScopeMode::Allow);
+        assert!(scope.tools.selectors.is_empty());
     }
 
     #[test]

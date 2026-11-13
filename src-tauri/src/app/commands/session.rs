@@ -944,6 +944,7 @@ pub(crate) async fn decompose_with_session(
         Some(id) => recent_history(messages, id),
         None => tail_history(messages),
     };
+    let session_tools = session_enabled_tools(session);
     router
         .decompose(RouteContext {
             session_id,
@@ -952,6 +953,7 @@ pub(crate) async fn decompose_with_session(
             prior_domain: session.intent_domain_id.as_deref(),
             pinned,
             project_root: project_root.as_deref(),
+            session_tools: session_tools.as_deref(),
         })
         .await
 }
