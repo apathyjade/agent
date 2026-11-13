@@ -2,6 +2,7 @@ pub mod classifier;
 pub mod index;
 pub mod probe;
 pub mod router;
+pub mod scope;
 
 use std::path::Path;
 
