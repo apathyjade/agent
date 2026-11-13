@@ -16,7 +16,7 @@ use crate::core::error::{AppError, Result};
 use crate::features::workflow::models::{
     StepDef, StepProgress, TriggerDef, WorkflowDef, WorkflowRunRecord,
 };
-use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::{ToolRegistry, ToolResolver};
 
 /// 单个工作流允许的最大步骤数，防止配置错误导致无限执行。
 const MAX_STEPS: usize = 50;
@@ -29,6 +29,10 @@ pub struct PipelineEngine {
     db: Arc<Mutex<crate::core::db::repository::Database>>,
     providers: Arc<Mutex<ProviderRegistry>>,
     event_tx: tokio::sync::mpsc::Sender<StepProgress>,
+    /// 本次运行的工具有效白名单；`None` 表示不限制。
+    allowed_tools: Option<Vec<String>>,
+    /// 按需解析钩子（MCP 按需连接）；`None` 表示不做按需连接。
+    resolver: Option<Arc<dyn ToolResolver>>,
 }
 
 impl PipelineEngine {
@@ -39,7 +43,26 @@ impl PipelineEngine {
         providers: Arc<Mutex<ProviderRegistry>>,
         event_tx: tokio::sync::mpsc::Sender<StepProgress>,
     ) -> Self {
-        Self { tools, db, providers, event_tx }
+        Self {
+            tools,
+            db,
+            providers,
+            event_tx,
+            allowed_tools: None,
+            resolver: None,
+        }
+    }
+
+    /// 收窄本次运行的可用工具；`None` 表示不限制。
+    pub fn with_scope(mut self, allowed_tools: Option<Vec<String>>) -> Self {
+        self.allowed_tools = allowed_tools;
+        self
+    }
+
+    /// 注入按需解析钩子；解析在获取注册表锁之前调用，避免互锁。
+    pub fn with_resolver(mut self, resolver: Arc<dyn ToolResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// 执行整条工作流，返回按步骤 id 索引的结果。
@@ -99,11 +122,30 @@ impl PipelineEngine {
                             *timeout_seconds,
                             || {
                                 let tools = self.tools.clone();
+                                let resolver = self.resolver.clone();
+                                let allowed = self.allowed_tools.clone();
                                 let tool = tool.clone();
                                 let params = rendered_params.clone();
                                 async move {
+                                    // 按需连接：未注册时先解析；解析内部会锁注册表，
+                                    // 必须先放锁再调用。
+                                    if let Some(resolver) = resolver {
+                                        let missing = {
+                                            let registry = tools.lock().await;
+                                            registry.canonical_name(&tool).is_none()
+                                        };
+                                        if missing {
+                                            resolver.resolve(&tool).await;
+                                        }
+                                    }
                                     let tools = tools.lock().await;
-                                    tools.execute(&tool, params).await
+                                    tools
+                                        .execute_with_policy(
+                                            &tool,
+                                            params,
+                                            allowed.as_deref(),
+                                        )
+                                        .await
                                 }
                             },
                         )

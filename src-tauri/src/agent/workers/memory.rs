@@ -361,6 +361,7 @@ mod tests {
             model_id: None,
             max_tokens: None,
             temperature: None,
+            allowed_tools: None,
             context: None,
         };
         let wr = worker.execute(task).await.expect("execute should succeed");

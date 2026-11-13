@@ -152,6 +152,7 @@ impl AppState {
             providers_arc.clone(),
             db_arc.clone(),
             tools_arc.clone(),
+            tool_resolver.clone(),
         ));
 
         Ok(Self {
@@ -319,6 +320,7 @@ fn build_orchestrator(
     providers: Arc<Mutex<ProviderRegistry>>,
     db: Arc<Mutex<Database>>,
     tools: Arc<Mutex<ToolRegistry>>,
+    resolver: Arc<dyn ToolResolver>,
 ) -> OrchestratorAgent {
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(Box::new(ThinkerWorker::new(providers.clone())));
@@ -327,7 +329,9 @@ fn build_orchestrator(
     dispatcher.register(Box::new(ShellWorker::new(providers.clone())));
     dispatcher.register(Box::new(WebWorker));
     dispatcher.register(Box::new(MemoryWorker::new(db)));
-    dispatcher.register(Box::new(MCPBridgeWorker::new(providers.clone(), tools)));
+    dispatcher.register(Box::new(
+        MCPBridgeWorker::new(providers.clone(), tools).with_resolver(resolver),
+    ));
 
     let critic = Arc::new(CriticAgent::new(providers));
     OrchestratorAgent::new(dispatcher, critic)
