@@ -38,6 +38,8 @@ pub fn main() {
                 commands::send_message,
                 commands::send_message_stream,
                 commands::get_messages,
+                commands::get_session_turn_logs,
+                commands::get_session_turn_log,
                 commands::save_request_context,
                 commands::get_request_context,
                 commands::execute_plan,

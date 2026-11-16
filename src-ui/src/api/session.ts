@@ -51,6 +51,7 @@ export async function sendMessageStream(
   toolsEnabled?: boolean,
   activePersonaId?: string,
   planId?: string,
+  turnId?: string,
 ): Promise<string> {
   const unlisten = await listen<StreamChunk>('stream_chunk', (event) => {
     onChunk(event.payload);
@@ -63,6 +64,7 @@ export async function sendMessageStream(
       toolsEnabled,
       activePersonaId: activePersonaId ?? null,
       planId: planId ?? null,
+      turnId: turnId ?? null,
     });
     return result;
   } finally {
@@ -96,8 +98,8 @@ export async function unarchiveSession(id: string): Promise<void> {
 
 // ── Execution Commands ──
 
-export async function executePlan(sessionId: string, planJson: string): Promise<void> {
-  return invoke('execute_plan', { sessionId, planJson });
+export async function executePlan(sessionId: string, planJson: string, turnId?: string): Promise<void> {
+  return invoke('execute_plan', { sessionId, planJson, turnId: turnId ?? null });
 }
 
 export async function pauseExecution(sessionId: string): Promise<void> {
@@ -118,4 +120,71 @@ export async function getExecutionStatus(sessionId: string): Promise<string | nu
 
 export async function getPlanDetail(planId: string): Promise<PlanDetail | null> {
   return invoke('get_plan_detail', { planId });
+}
+
+// ── Turn log ──
+
+export type TurnLogStage =
+  | 'question'
+  | 'understand'
+  | 'plan'
+  | 'confirm'
+  | 'route'
+  | 'prepare'
+  | 'execute'
+  | 'review'
+  | 'answer'
+  | 'notice';
+
+export type TurnLogLevel = 'info' | 'warn' | 'error';
+
+export interface TurnLogEntry {
+  seq: number;
+  at: string;
+  stage: TurnLogStage;
+  level: TurnLogLevel;
+  title: string;
+  summary: string;
+  elapsed_ms: number | null;
+  detail?: unknown;
+}
+
+export interface TurnLogSummary {
+  turn_id: string;
+  session_id: string;
+  status: 'completed' | 'failed' | 'cancelled';
+  path: 'fast' | 'deep' | 'planned' | 'autonomous' | 'unknown';
+  question: string;
+  model_id: string | null;
+  persona_name: string | null;
+  started_at: string;
+  total_ms: number | null;
+  entry_count: number;
+}
+
+export type TurnLogRecord = TurnLogSummary & {
+  finished_at: string | null;
+  entries: TurnLogEntry[];
+};
+
+/** 实时推送的 session_log 事件负载（detail 为空）。 */
+export interface SessionLogEvent {
+  session_id: string;
+  turn_id: string;
+  entry: TurnLogEntry;
+}
+
+/** 回合结束时推送的 session_log_done 事件负载。 */
+export interface SessionLogDoneEvent {
+  session_id: string;
+  turn_id: string;
+  status: TurnLogRecord['status'];
+}
+
+export async function getSessionTurnLogs(sessionId: string): Promise<TurnLogSummary[]> {
+  return invoke('get_session_turn_logs', { sessionId });
+}
+
+export async function getSessionTurnLog(turnId: string): Promise<TurnLogRecord | null> {
+  return invoke('get_session_turn_log', { turnId });
 }

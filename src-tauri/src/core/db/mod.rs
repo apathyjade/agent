@@ -13,3 +13,4 @@ pub mod plan_repo;
 pub mod repository;
 pub mod scope_repo;
 pub mod session_repo;
+pub mod turn_log_repo;

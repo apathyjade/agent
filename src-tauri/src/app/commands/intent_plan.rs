@@ -681,7 +681,12 @@ pub async fn decompose_message(
     state: State<'_, AppState>,
     session_id: String,
     content: String,
+    turn_id: Option<String>,
 ) -> Result<DecomposeMessageResult> {
+    // 前端提交时生成 turn_id 并贯穿确认流程；缺省时后端自建。
+    let turn_id = state
+        .turn_logs
+        .begin(&session_id, turn_id.as_deref(), &content, true);
     let (session, messages) = {
         let db = state.db.lock().await;
         let session = db
@@ -706,6 +711,64 @@ pub async fn decompose_message(
     .decomposition;
     emit_intent_resolved(state.inner(), &session_id, &decomposition);
 
+    // understand：把拆解结论写成一条人话摘要（零意图与降级分开表述）。
+    let intent_count = decomposition.intents.len();
+    if decomposition.source == DecisionSource::Unavailable {
+        crate::app::commands::session::log_turn(
+            state.inner(),
+            Some(&turn_id),
+            "understand",
+            "warn",
+            "理解与拆解",
+            "意图拆解不可用，按普通对话处理",
+            Some(serde_json::json!({
+                "llm_calls": decomposition.evidence.llm_calls,
+                "elapsed_ms": decomposition.evidence.elapsed_ms,
+            })),
+        );
+    } else if intent_count == 0 {
+        crate::app::commands::session::log_turn(
+            state.inner(),
+            Some(&turn_id),
+            "understand",
+            "info",
+            "理解与拆解",
+            "未识别到明确意图，按普通对话处理",
+            Some(serde_json::json!({
+                "candidates": decomposition
+                    .candidates
+                    .iter()
+                    .map(|candidate| serde_json::json!({
+                        "intent_id": candidate.intent_id,
+                        "score": candidate.score,
+                    }))
+                    .collect::<Vec<_>>(),
+            })),
+        );
+    } else {
+        crate::app::commands::session::log_turn(
+            state.inner(),
+            Some(&turn_id),
+            "understand",
+            "info",
+            "理解与拆解",
+            format!(
+                "识别到 {} 个意图 · {}ms",
+                intent_count, decomposition.evidence.elapsed_ms
+            ),
+            Some(serde_json::json!({
+                "intents": decomposition.intents.iter().map(|item| serde_json::json!({
+                    "id": item.intent.id,
+                    "name": item.intent.name,
+                    "confidence": item.confidence,
+                })).collect::<Vec<_>>(),
+                "confidence": decomposition.confidence,
+                "uncertain": decomposition.uncertain,
+                "scope": decomposition.scope_status.label(),
+            })),
+        );
+    }
+
     let session_tools = session_enabled_tools(&session);
     let intents: Vec<DecomposedIntentPayload> = decomposition
         .intents
@@ -722,6 +785,26 @@ pub async fn decompose_message(
         &planner,
     )
     .await?;
+
+    // plan：有步骤时记录并绑定到回合；`cancel_plan` 据此结束本回合。
+    if let Some(plan) = &cached {
+        state.turn_logs.bind_plan(&turn_id, &plan.id);
+        crate::app::commands::session::log_turn(
+            state.inner(),
+            Some(&turn_id),
+            "plan",
+            "info",
+            "生成执行计划",
+            format!("{} 步，等待确认", plan.steps.len()),
+            Some(serde_json::json!({
+                "plan_id": plan.id,
+                "steps": plan.steps.iter().map(|step| serde_json::json!({
+                    "label": step.label,
+                    "intent": step.intent_id,
+                })).collect::<Vec<_>>(),
+            })),
+        );
+    }
 
     Ok(DecomposeMessageResult {
         plan_id: cached.as_ref().map(|plan| plan.id.clone()),
@@ -765,8 +848,29 @@ pub async fn remove_plan_step(
 /// 丢弃一个待确认计划（取消 = 该条消息不发送）。
 #[tauri::command]
 pub async fn cancel_plan(state: State<'_, AppState>, plan_id: String) -> Result<()> {
-    let db = state.db.lock().await;
-    cancel_pending_plan(&db, &plan_id)
+    // 先按 plan_id 找到关联回合（不存在则只在库上取消，日志静默跳过）。
+    let turn_id = state.turn_logs.turn_for_plan(&plan_id);
+    {
+        let db = state.db.lock().await;
+        cancel_pending_plan(&db, &plan_id)?;
+    }
+
+    if let Some(turn_id) = turn_id {
+        crate::app::commands::session::log_turn(
+            state.inner(),
+            Some(&turn_id),
+            "notice",
+            "warn",
+            "确认计划时取消",
+            "用户取消了计划，本条消息未发送",
+            None,
+        );
+        state
+            .turn_logs
+            .finish(&state.db, &turn_id, "cancelled", "planned")
+            .await;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

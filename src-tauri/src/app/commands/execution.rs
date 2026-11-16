@@ -24,9 +24,32 @@ pub async fn execute_plan(
     state: State<'_, AppState>,
     session_id: String,
     plan_json: String,
+    turn_id: Option<String>,
 ) -> Result<(), String> {
     let plan: ExecutionPlan =
         serde_json::from_str(&plan_json).map_err(|e| format!("Invalid plan JSON: {}", e))?;
+
+    // 回合日志：自主执行由后端开启回合（前端未提供 id 时生成），
+    // 结束后无论成败都落一条完整记录。
+    let question = plan
+        .steps
+        .first()
+        .map(|step| step.label.clone())
+        .unwrap_or_else(|| "执行计划".to_string());
+    let turn_id = state
+        .turn_logs
+        .begin(&session_id, turn_id.as_deref(), &question, true);
+    state.turn_logs.set_path(&turn_id, "autonomous");
+    state.turn_logs.bind_plan(&turn_id, &plan.id);
+    let step_labels: Vec<String> = plan.steps.iter().map(|step| step.label.clone()).collect();
+    state.turn_logs.push(
+        &turn_id,
+        "confirm",
+        "info",
+        "开始执行计划",
+        &format!("共 {} 步", plan.steps.len()),
+        Some(serde_json::json!({ "plan_id": plan.id, "steps": step_labels })),
+    );
 
     let handle = ExecutionHandle::new(session_id.clone(), plan.id.clone());
 
@@ -42,11 +65,24 @@ pub async fn execute_plan(
     let cf = handle.cancel_flag.clone();
     let pf = handle.pause_flag.clone();
     let app_handle = state.app_handle.clone();
+    let turn_logs = state.turn_logs.clone();
+    let db = state.db.clone();
 
     tokio::spawn(async move {
         match runtime.execute(plan, event_tx, cf, pf).await {
             Ok(()) => {
                 log::info!("Plan {} completed successfully", plan_id);
+                turn_logs.push(
+                    &turn_id,
+                    "review",
+                    "info",
+                    "计划执行完成",
+                    "全部步骤执行结束",
+                    Some(serde_json::json!({ "plan_id": plan_id })),
+                );
+                turn_logs
+                    .finish(&db, &turn_id, "completed", "autonomous")
+                    .await;
             }
             Err(e) => {
                 log::error!("Plan {} failed: {}", plan_id, e);
@@ -55,6 +91,15 @@ pub async fn execute_plan(
                     PlanProgressEvent::new(plan_id.clone(), sid.clone(), "plan_failed", 0, 0)
                         .with_error(e.to_string()),
                 );
+                turn_logs.push(
+                    &turn_id,
+                    "notice",
+                    "error",
+                    "计划执行失败",
+                    &e.to_string(),
+                    Some(serde_json::json!({ "plan_id": plan_id })),
+                );
+                turn_logs.finish(&db, &turn_id, "failed", "autonomous").await;
             }
         }
     });
@@ -116,13 +161,38 @@ pub async fn cancel_execution(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut executions = state.active_executions.lock().await;
-    if let Some(exec) = executions.remove(&session_id) {
-        exec.cancel();
-        Ok(())
-    } else {
-        Err("No active execution for this session".to_string())
+    // 先释放 executions 锁再 await 写库，避免与 finish 抢锁。
+    let cancelled = {
+        let mut executions = state.active_executions.lock().await;
+        match executions.remove(&session_id) {
+            Some(exec) => {
+                exec.cancel();
+                true
+            }
+            None => false,
+        }
+    };
+
+    if !cancelled {
+        return Err("No active execution for this session".to_string());
     }
+
+    if let Some(turn_id) = state.turn_logs.turn_for_session(&session_id) {
+        state.turn_logs.push(
+            &turn_id,
+            "notice",
+            "warn",
+            "执行已取消",
+            "用户取消了自主执行",
+            None,
+        );
+        state
+            .turn_logs
+            .finish(&state.db, &turn_id, "cancelled", "autonomous")
+            .await;
+    }
+
+    Ok(())
 }
 
 /// 读取会话持久化的执行状态 JSON（`{"type":"idle"}` 等）；会话不存在时返回 `Ok(None)`。

@@ -95,6 +95,7 @@ impl Database {
     ///
     /// 四条 DELETE 语句**没有包在事务中**：极端失败情况下可能只删掉一部分。
     pub fn delete_session(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM session_turn_logs WHERE session_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM session_summaries WHERE session_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;

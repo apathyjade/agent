@@ -55,7 +55,7 @@ describe('sessionSlice plan confirmation', () => {
     const outcome = await store.getState().requestPlan('今天天气怎么样');
 
     expect(outcome).toBe('chat');
-    expect(apiMock.decomposeMessage).toHaveBeenCalledWith('session-1', '今天天气怎么样');
+    expect(apiMock.decomposeMessage).toHaveBeenCalledWith('session-1', '今天天气怎么样', expect.any(String));
     expect(apiMock.getPlanDetail).not.toHaveBeenCalled();
     expect(store.getState().planConfirmOpen).toBe(false);
     expect(store.getState().planId).toBeNull();

@@ -65,8 +65,9 @@ export interface PlanConfirmIntent {
 export async function decomposeMessage(
   sessionId: string,
   content: string,
+  turnId?: string,
 ): Promise<DecomposeMessageResult> {
-  return invoke('decompose_message', { sessionId, content });
+  return invoke('decompose_message', { sessionId, content, turnId: turnId ?? null });
 }
 
 /** 改写待确认步骤的指令，返回更新后的计划。 */

@@ -6,6 +6,7 @@ import {
   XCircle,
   ArrowDown,
   FileText,
+  History,
 } from 'lucide-react';
 import { useStore } from '../../store';
 import { MessageBubble } from './MessageBubble';
@@ -16,6 +17,7 @@ import { PlanConfirmDialog } from './PlanConfirmDialog';
 import { SessionIntentSelector } from './SessionIntentSelector';
 import { IntentResolvedBadge, IntentUncertaintyNotice } from './IntentResolvedBadge';
 import { ToolApprovalDialog } from './ToolApprovalDialog';
+import { SessionLogDrawer } from './SessionLogDrawer';
 import type { Message } from '../../types';
 
 const StreamingMessage = memo(function StreamingMessage({
@@ -100,6 +102,7 @@ export function ChatArea() {
   const summaries = useStore((s) => s.summaries);
   const fetchSummaries = useStore((s) => s.fetchSummaries);
   const currentTurnIntent = useStore((s) => s.currentTurnIntent);
+  const openSessionLog = useStore((s) => s.openSessionLog);
 
   // 拆解确认卡（受控）
   const planConfirmOpen = useStore((s) => s.planConfirmOpen);
@@ -226,6 +229,15 @@ export function ChatArea() {
           })()}
         </div>
         <div className="flex items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500 flex-shrink-0 ml-3">
+          <button
+            type="button"
+            onClick={openSessionLog}
+            title="会话日志"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400"
+          >
+            <History size={12} />
+            会话日志
+          </button>
           <span>{messages.length} 条消息</span>
           {isStreaming && (
             <span className="flex items-center gap-1 text-purple-600">
@@ -418,6 +430,9 @@ export function ChatArea() {
         onRemoveIntent={removePlanIntent}
         onUpdateInstruction={updatePlanIntent}
       />
+
+      {/* 会话日志抽屉 */}
+      <SessionLogDrawer />
 
       {/* Input area */}
       <div className="border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-900 flex-shrink-0 transition-colors">

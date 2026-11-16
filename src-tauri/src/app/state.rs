@@ -7,8 +7,10 @@
 //! 这里只做依赖装配，不含业务规则。构造顺序有依赖关系，见 [`AppState::new`]。
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use tauri::AppHandle;
+use std::sync::{Arc, Mutex as StdMutex};
+use chrono::{DateTime, Utc};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 use crate::app::config::AppConfig;
@@ -79,6 +81,8 @@ pub struct AppState {
     pub active_executions: Arc<Mutex<HashMap<String, ExecutionHandle>>>,
     /// 人工确认通道，供 `respond_tool_approval` 命令使用。
     pub approval: Arc<crate::agent::tools::approval::ToolApprovalService>,
+    /// 回合日志收集器：回合进行中只存内存，回合结束才落库。
+    pub turn_logs: Arc<TurnLogBook>,
 }
 
 impl AppState {
@@ -181,7 +185,373 @@ impl AppState {
             orchestrator,
             active_executions: Arc::new(Mutex::new(HashMap::new())),
             approval,
+            turn_logs: Arc::new(TurnLogBook::new(app_handle.clone())),
         })
+    }
+}
+
+/// 单回合最多保留的条目数。
+const TURN_LOG_MAX_ENTRIES: usize = 200;
+/// 单条 `detail` 序列化后的字节上限。
+const TURN_LOG_MAX_DETAIL_BYTES: usize = 8 * 1024;
+/// 整份 `entries_json` 的字节上限。
+const TURN_LOG_MAX_JSON_BYTES: usize = 512 * 1024;
+
+/// 回合日志的内存缓冲。`emit` 为 false 时只落库、不推实时事件。
+struct TurnLogBuffer {
+    session_id: String,
+    question: String,
+    path: String,
+    model_id: Option<String>,
+    persona_name: Option<String>,
+    /// 该回合关联的待确认计划（用于 `cancel_plan` 定位回合）。
+    plan_id: Option<String>,
+    started_at: DateTime<Utc>,
+    emit: bool,
+    entries: Vec<crate::core::db::models::TurnLogEntry>,
+}
+
+/// 回合日志收集器：`begin` 建缓冲，`push` 追加并推事件，`finish` 落库并清理。
+///
+/// 用 `std::sync::Mutex` 而不是 tokio 锁：临界区只做内存操作，绝不能跨
+/// `.await` 持锁；`finish` 先取出并克隆条目，释放锁后才 await 写库。
+pub struct TurnLogBook {
+    /// 为 `None` 时（单测）不推事件。
+    app: Option<AppHandle>,
+    buffers: StdMutex<HashMap<String, TurnLogBuffer>>,
+}
+
+impl TurnLogBook {
+    /// 生产环境构造：实时事件发往前端。
+    pub fn new(app: AppHandle) -> Self {
+        Self {
+            app: Some(app),
+            buffers: StdMutex::new(HashMap::new()),
+        }
+    }
+
+    /// 无事件通道的构造，仅供单测使用。
+    #[cfg(test)]
+    pub fn headless() -> Self {
+        Self {
+            app: None,
+            buffers: StdMutex::new(HashMap::new()),
+        }
+    }
+
+    /// 开始（或复用）一个回合，返回 `turn_id`。
+    ///
+    /// 同一 `turn_id` 已存在时直接复用，不覆盖已有条目：前端在
+    /// `decompose_message` → 确认 → `send_message_stream` 之间复用同一个 id。
+    /// 缺省时后端生成 UUID。`emit` 只在新建缓冲时生效。
+    pub fn begin(
+        &self,
+        session_id: &str,
+        turn_id: Option<&str>,
+        question: &str,
+        emit: bool,
+    ) -> String {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(id) = turn_id {
+            if buffers.contains_key(id) {
+                return id.to_string();
+            }
+        }
+
+        let id = turn_id
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        buffers.insert(
+            id.clone(),
+            TurnLogBuffer {
+                session_id: session_id.to_string(),
+                question: truncate_chars(question, 200),
+                path: "unknown".to_string(),
+                model_id: None,
+                persona_name: None,
+                plan_id: None,
+                started_at: Utc::now(),
+                emit,
+                entries: Vec::new(),
+            },
+        );
+        drop(buffers);
+
+        // 回合的第一条永远是「收到提问」，完整正文只进 detail。
+        self.push(
+            &id,
+            "question",
+            "info",
+            "收到提问",
+            &truncate_chars(question, 60),
+            Some(json!(question)),
+        );
+        id
+    }
+
+    /// 追加一条日志；`detail` 会按 8KB 上限截断。
+    ///
+    /// 实时事件里的 `detail` 一律置空：前端展开明细时再按 `turn_id` 拉完整记录。
+    pub fn push(
+        &self,
+        turn_id: &str,
+        stage: &str,
+        level: &str,
+        title: &str,
+        summary: &str,
+        detail: Option<Value>,
+    ) {
+        let (payload, emit) = {
+            let mut buffers = self
+                .buffers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(buffer) = buffers.get_mut(turn_id) else {
+                return;
+            };
+            // 超过条数上限后直接丢弃：截断提示会在 finish 时补一条。
+            if buffer.entries.len() >= TURN_LOG_MAX_ENTRIES {
+                return;
+            }
+
+            let now = Utc::now();
+            let entry = crate::core::db::models::TurnLogEntry {
+                seq: buffer.entries.len() as u32 + 1,
+                at: now.to_rfc3339(),
+                stage: stage.to_string(),
+                level: level.to_string(),
+                title: title.to_string(),
+                summary: summary.to_string(),
+                elapsed_ms: Some(
+                    (now - buffer.started_at).num_milliseconds().max(0) as u64,
+                ),
+                detail: sanitize_detail(detail),
+            };
+            let mut event_entry = entry.clone();
+            event_entry.detail = None;
+            buffer.entries.push(entry);
+
+            (
+                json!({
+                    "session_id": buffer.session_id,
+                    "turn_id": turn_id,
+                    "entry": event_entry,
+                }),
+                buffer.emit,
+            )
+        };
+
+        if emit {
+            if let Some(app) = &self.app {
+                let _ = app.emit("session_log", payload);
+            }
+        }
+    }
+
+    /// 记录本次回合的模型与人设，供摘要展示。
+    pub fn set_meta(&self, turn_id: &str, model_id: Option<&str>, persona: Option<&str>) {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(buffer) = buffers.get_mut(turn_id) {
+            if let Some(model_id) = model_id {
+                buffer.model_id = Some(model_id.to_string());
+            }
+            if let Some(persona) = persona {
+                buffer.persona_name = Some(persona.to_string());
+            }
+        }
+    }
+
+    /// 记录本回合的执行路径（fast/deep/planned/autonomous）。
+    pub fn set_path(&self, turn_id: &str, path: &str) {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(buffer) = buffers.get_mut(turn_id) {
+            buffer.path = path.to_string();
+        }
+    }
+
+    /// 把待确认计划绑定到回合，`cancel_plan` 据此找到要关闭的回合。
+    pub fn bind_plan(&self, turn_id: &str, plan_id: &str) {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(buffer) = buffers.get_mut(turn_id) {
+            buffer.plan_id = Some(plan_id.to_string());
+        }
+    }
+
+    /// 按会话查找进行中的回合（同一会话同时只应有一个）。
+    pub fn turn_for_session(&self, session_id: &str) -> Option<String> {
+        let buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffers
+            .iter()
+            .find(|(_, buffer)| buffer.session_id == session_id)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// 按计划查找关联回合。
+    pub fn turn_for_plan(&self, plan_id: &str) -> Option<String> {
+        let buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffers
+            .iter()
+            .find(|(_, buffer)| buffer.plan_id.as_deref() == Some(plan_id))
+            .map(|(id, _)| id.clone())
+    }
+
+    /// 结束回合：截断超限内容、写库、推 `session_log_done`、移除缓冲。
+    ///
+    /// 重复调用幂等：第二次找不到缓冲即静默返回 `false`。写库失败只记
+    /// `warn`，不影响回答返回。
+    pub async fn finish(
+        &self,
+        db: &Arc<Mutex<crate::core::db::repository::Database>>,
+        turn_id: &str,
+        status: &str,
+        path: &str,
+    ) -> bool {
+        let record = {
+            let mut buffers = self
+                .buffers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(mut buffer) = buffers.remove(turn_id) else {
+                return false;
+            };
+
+            enforce_limits(&mut buffer.entries);
+            let finished_at = Utc::now();
+            let path = if path.is_empty() || path == "unknown" {
+                buffer.path.clone()
+            } else {
+                path.to_string()
+            };
+
+            (
+                crate::core::db::models::TurnLogRecord {
+                    turn_id: turn_id.to_string(),
+                    session_id: buffer.session_id.clone(),
+                    status: status.to_string(),
+                    path,
+                    question: buffer.question,
+                    model_id: buffer.model_id,
+                    persona_name: buffer.persona_name,
+                    started_at: buffer.started_at.to_rfc3339(),
+                    finished_at: Some(finished_at.to_rfc3339()),
+                    total_ms: Some(
+                        (finished_at - buffer.started_at).num_milliseconds().max(0) as u64,
+                    ),
+                    entry_count: buffer.entries.len() as i64,
+                    entries: buffer.entries,
+                },
+                buffer.emit,
+            )
+        };
+
+        let (record, emit) = record;
+
+        if emit {
+            if let Some(app) = &self.app {
+                let _ = app.emit(
+                    "session_log_done",
+                    json!({
+                        "session_id": record.session_id,
+                        "turn_id": record.turn_id,
+                        "status": record.status,
+                    }),
+                );
+            }
+        }
+
+        let db = db.lock().await;
+        if let Err(e) = db.insert_turn_log(&record) {
+            log::warn!("failed to persist turn log {}: {}", record.turn_id, e);
+        }
+        true
+    }
+}
+
+/// 字符级截断（避免切断 UTF-8）。
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    text.chars().take(limit).collect()
+}
+
+/// 单条 `detail` 超过 8KB 时替换为截断说明，保留前 2000 字预览。
+fn sanitize_detail(detail: Option<Value>) -> Option<Value> {
+    let value = detail?;
+    let size = serde_json::to_vec(&value).map(|v| v.len()).unwrap_or(0);
+    if size <= TURN_LOG_MAX_DETAIL_BYTES {
+        return Some(value);
+    }
+    let preview = match &value {
+        Value::String(text) => truncate_chars(text, 2000),
+        other => truncate_chars(&other.to_string(), 2000),
+    };
+    Some(json!({
+        "truncated": true,
+        "bytes": size,
+        "preview": preview,
+    }))
+}
+
+/// 截断提示条目：`seq` 为 0，表示不是真实的执行步骤。
+fn truncation_notice() -> crate::core::db::models::TurnLogEntry {
+    crate::core::db::models::TurnLogEntry {
+        seq: 0,
+        at: Utc::now().to_rfc3339(),
+        stage: "notice".to_string(),
+        level: "warn".to_string(),
+        title: "日志已截断".to_string(),
+        summary: "内容过多，只保留最近的记录".to_string(),
+        elapsed_ms: None,
+        detail: None,
+    }
+}
+
+/// 施加条数与体积上限：超限丢最旧的条目，并追加一条 notice。
+fn enforce_limits(entries: &mut Vec<crate::core::db::models::TurnLogEntry>) {
+    let mut truncated = false;
+
+    if entries.len() > TURN_LOG_MAX_ENTRIES {
+        entries.truncate(TURN_LOG_MAX_ENTRIES - 1);
+        truncated = true;
+    }
+
+    loop {
+        let size = serde_json::to_vec(entries).map(|v| v.len()).unwrap_or(0);
+        if size <= TURN_LOG_MAX_JSON_BYTES || entries.is_empty() {
+            break;
+        }
+        let drop_n = (entries.len() / 4).max(1);
+        entries.drain(..drop_n);
+        truncated = true;
+    }
+
+    if truncated {
+        entries.push(truncation_notice());
+        while serde_json::to_vec(entries).map(|v| v.len()).unwrap_or(0) > TURN_LOG_MAX_JSON_BYTES
+            && entries.len() > 1
+        {
+            entries.remove(0);
+        }
     }
 }
 
@@ -412,5 +782,89 @@ mod tests {
             embedding_api_key(&[model("o", ModelProvider::OpenAI, "", true)]),
             None
         );
+    }
+
+    // ── 回合日志 ──
+
+    use super::{
+        enforce_limits, sanitize_detail, TurnLogBook, TURN_LOG_MAX_ENTRIES,
+        TURN_LOG_MAX_JSON_BYTES,
+    };
+    use crate::core::db::models::TurnLogEntry;
+    use std::sync::Arc;
+
+    fn entry(seq: u32, detail: Option<serde_json::Value>) -> TurnLogEntry {
+        TurnLogEntry {
+            seq,
+            at: "2026-01-01T00:00:00Z".to_string(),
+            stage: "execute".to_string(),
+            level: "info".to_string(),
+            title: "调用工具".to_string(),
+            summary: "成功".to_string(),
+            elapsed_ms: Some(10),
+            detail,
+        }
+    }
+
+    #[test]
+    fn enforce_limits_caps_entry_count_and_appends_notice() {
+        let mut entries: Vec<TurnLogEntry> = (1..=250).map(|seq| entry(seq, None)).collect();
+        enforce_limits(&mut entries);
+
+        assert!(entries.len() <= TURN_LOG_MAX_ENTRIES, "条数必须收敛到上限");
+        let last = entries.last().expect("至少保留一条");
+        assert_eq!(last.stage, "notice");
+        assert_eq!(last.title, "日志已截断");
+    }
+
+    #[test]
+    fn enforce_limits_caps_serialized_size() {
+        let big = serde_json::json!({ "text": "x".repeat(20_000) });
+        let mut entries: Vec<TurnLogEntry> = (1..=100).map(|seq| entry(seq, Some(big.clone()))).collect();
+        enforce_limits(&mut entries);
+
+        let size = serde_json::to_vec(&entries).map(|v| v.len()).unwrap_or(0);
+        assert!(size <= TURN_LOG_MAX_JSON_BYTES, "整份 entries_json 必须 ≤512KB");
+        assert_eq!(entries.last().expect("至少保留一条").stage, "notice");
+    }
+
+    #[test]
+    fn sanitize_detail_truncates_oversized_payload() {
+        let detail = sanitize_detail(Some(serde_json::json!({ "text": "x".repeat(20_000) })))
+            .expect("仍应保留截断说明");
+        assert_eq!(detail["truncated"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn finish_is_idempotent_and_persists_once() {
+        let book = TurnLogBook::headless();
+        let db = Arc::new(tokio::sync::Mutex::new(
+            crate::core::db::repository::Database::new_test().unwrap(),
+        ));
+
+        let turn_id = book.begin("s1", Some("t1"), "你好", false);
+        book.push(&turn_id, "answer", "info", "输出回答", "2 字", None);
+
+        assert!(book.finish(&db, &turn_id, "completed", "fast").await);
+        assert!(!book.finish(&db, &turn_id, "completed", "fast").await, "重复 finish 必须静默返回");
+
+        let record = db
+            .lock()
+            .await
+            .get_turn_log("t1")
+            .unwrap()
+            .expect("必须写库");
+        assert_eq!(record.status, "completed");
+        assert_eq!(record.entry_count, 2, "含 question 与 answer 两条");
+    }
+
+    #[tokio::test]
+    async fn begin_reuses_existing_turn() {
+        let book = TurnLogBook::headless();
+        let first = book.begin("s1", Some("t1"), "你好", false);
+        let second = book.begin("s1", Some("t1"), "你好", false);
+        assert_eq!(first, second);
+
+        assert_eq!(book.turn_for_session("s1").as_deref(), Some("t1"));
     }
 }

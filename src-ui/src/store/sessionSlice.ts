@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { Session, Message, SessionMode, ExecStatus, ExecutionPlan, PlanProgressEvent, ExecutionLogEntry, ToolInfo, SystemPrompt } from '../types';
 import type { IntentResolvedEvent, SessionIntentState } from '../api/intent';
 import type { DecomposedIntentPayload, PlanConfirmIntent, ScopePayload } from '../api/plan';
+import type { SessionLogEvent, TurnLogEntry, TurnLogSummary } from '../api/session';
 import { buildPlanConfirmIntents } from '../api/plan';
 import * as api from '../api/tauri';
 
@@ -38,6 +39,21 @@ export interface SessionSlice {
   planConfirmLoading: boolean;
   /** 等待确认的原始消息；取消即不发送。 */
   planDraftContent: string | null;
+
+  // ── 会话日志（回合时间线）──
+  /** 本回合 id；由 `beginTurn` 生成并贯穿拆解 / 流式 / 执行。 */
+  activeTurnId: string | null;
+  /** 当前回合实时条目（随 `session_log` 事件追加）。 */
+  liveTurnLog: { turnId: string; entries: TurnLogEntry[] } | null;
+  sessionLogs: TurnLogSummary[];
+  sessionLogOpen: boolean;
+
+  beginTurn: () => string;
+  appendLiveLog: (payload: SessionLogEvent) => void;
+  clearLiveLog: () => void;
+  fetchSessionLogs: () => Promise<void>;
+  openSessionLog: () => void;
+  closeSessionLog: () => void;
 
   requestPlan: (content: string) => Promise<'chat' | 'confirm'>;
   confirmPlan: () => Promise<void>;
@@ -111,6 +127,10 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
   planConfirmOpen: false,
   planConfirmLoading: false,
   planDraftContent: null,
+  activeTurnId: null,
+  liveTurnLog: null,
+  sessionLogs: [],
+  sessionLogOpen: false,
 
   fetchSessions: async () => {
     get().setLoading(true);
@@ -342,6 +362,48 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
 
   setCurrentTurnIntent: (intent) => set({ currentTurnIntent: intent }),
 
+  // ── 会话日志 ──
+
+  beginTurn: () => {
+    const turnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    set({ activeTurnId: turnId, liveTurnLog: { turnId, entries: [] } });
+    return turnId;
+  },
+
+  appendLiveLog: (payload) => {
+    // 跨会话事件直接丢弃：抽屉只看当前会话。
+    if (payload.session_id !== get().currentSession?.id) return;
+    set((state: any) => {
+      const live = state.liveTurnLog;
+      const entries = live && live.turnId === payload.turn_id
+        ? [...live.entries, payload.entry]
+        : [payload.entry];
+      return { liveTurnLog: { turnId: payload.turn_id, entries } };
+    });
+  },
+
+  clearLiveLog: () => set({ liveTurnLog: null }),
+
+  fetchSessionLogs: async () => {
+    const sessionId = get().currentSession?.id;
+    if (!sessionId) return;
+    try {
+      const logs = await api.getSessionTurnLogs(sessionId);
+      set({ sessionLogs: logs });
+    } catch (err) {
+      console.error('Failed to fetch session turn logs:', err);
+    }
+  },
+
+  openSessionLog: () => {
+    set({ sessionLogOpen: true });
+    void get().fetchSessionLogs();
+  },
+
+  closeSessionLog: () => set({ sessionLogOpen: false }),
+
   // ── 拆解确认（plan）──
 
   requestPlan: async (content) => {
@@ -354,7 +416,8 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
 
     set({ planConfirmLoading: true, error: null });
     try {
-      const result = await api.decomposeMessage(session.id, content);
+      const turnId = get().activeTurnId ?? get().beginTurn();
+      const result = await api.decomposeMessage(session.id, content, turnId);
       // 分解器不可用（超时 / 调用失败）：不弹确认卡，也不缓存——提示用户，
       // 本条消息照常按普通聊天发送，下一条消息会重试拆解。
       if (result.unavailable) {
@@ -450,6 +513,8 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       pendingPlan: null,
       planDraftContent: null,
       currentTurnIntent: null,
+      activeTurnId: null,
+      liveTurnLog: null,
     });
   },
 
@@ -566,7 +631,7 @@ export const createSessionSlice: StateCreator<any, [], [], SessionSlice> = (set,
       activePlan: plan,
     });
     try {
-      await api.executePlan(sessionId, JSON.stringify(plan));
+      await api.executePlan(sessionId, JSON.stringify(plan), get().activeTurnId ?? undefined);
     } catch (err) {
       set({ executionStatus: { type: 'failed', step_index: 0, error: String(err) } });
     }

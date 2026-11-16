@@ -323,6 +323,24 @@ impl Database {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (owner_kind, owner_id)
             );
+
+            CREATE TABLE IF NOT EXISTS session_turn_logs (
+                turn_id      TEXT PRIMARY KEY,
+                session_id   TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                path         TEXT NOT NULL,
+                question     TEXT NOT NULL,
+                model_id     TEXT,
+                persona_name TEXT,
+                started_at   TEXT NOT NULL,
+                finished_at  TEXT,
+                total_ms     INTEGER,
+                entry_count  INTEGER NOT NULL DEFAULT 0,
+                entries_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_turn_logs_session
+                ON session_turn_logs(session_id, started_at DESC);
             ",
         )?;
 

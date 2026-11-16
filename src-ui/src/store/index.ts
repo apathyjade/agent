@@ -82,6 +82,8 @@ export const useStore = create<AppState>()((set, get, store) => ({
     const { currentSession } = get();
     if (!currentSession) return;
 
+    const turnId = get().activeTurnId ?? get().beginTurn();
+
     const userMessage: Message = {
       id: Date.now().toString(),
       session_id: currentSession.id,
@@ -181,9 +183,12 @@ export const useStore = create<AppState>()((set, get, store) => ({
         toolsEnabled,
         activePersonaId,
         planId,
+        turnId,
       );
+      // 回合结束：实时区收起，事件侧（session_log_done）负责刷新历史列表。
+      set({ activeTurnId: null, liveTurnLog: null });
     } catch (err) {
-      set({ error: String(err), loading: false, isStreaming: false });
+      set({ error: String(err), loading: false, isStreaming: false, activeTurnId: null, liveTurnLog: null });
     }
   },
 }));

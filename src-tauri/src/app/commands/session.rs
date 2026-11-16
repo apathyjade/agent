@@ -425,36 +425,79 @@ pub async fn send_message(
         tools_enabled,
         active_persona_id,
         None,
+        None,
+        // 非流式入口（脚本）只落库，不推实时日志事件。
+        false,
     )
     .await?;
 
-    let assistant_msg = match turn.path {
-        PathSelection::Fast => {
-            let outcome = execute_fast_non_streaming(state.inner(), &turn).await?;
-            let mut rows = transcript_rows(&session_id, &outcome.messages);
+    let result: Result<DbMessage> = async {
+        match turn.path {
+            PathSelection::Fast => {
+                let outcome = execute_fast_non_streaming(state.inner(), &turn).await?;
+                let mut rows = transcript_rows(&session_id, &outcome.messages);
 
-            // transcript 的最后一条 assistant 就是最终回答；没有 transcript
-            // （纯文本回答）时才补一条兜底行。
-            let final_row = match rows.last() {
-                Some(row) if row.role == "assistant" => rows.pop().expect("刚检查过非空"),
-                _ => assistant_row(&session_id, outcome.output.clone()),
-            };
+                // transcript 的最后一条 assistant 就是最终回答；没有 transcript
+                // （纯文本回答）时才补一条兜底行。
+                let final_row = match rows.last() {
+                    Some(row) if row.role == "assistant" => rows.pop().expect("刚检查过非空"),
+                    _ => assistant_row(&session_id, outcome.output.clone()),
+                };
 
-            persist_transcript_rows(state.inner(), &rows).await;
-            {
-                let db = state.db.lock().await;
-                db.insert_message(&final_row)?;
+                persist_transcript_rows(state.inner(), &rows).await;
+                {
+                    let db = state.db.lock().await;
+                    db.insert_message(&final_row)?;
+                }
+                Ok(final_row)
             }
-            final_row
+            PathSelection::Deep => {
+                let content = execute_deep_non_streaming(state.inner(), &turn).await?;
+                let row = assistant_row(&session_id, content);
+                let db = state.db.lock().await;
+                db.insert_message(&row)?;
+                Ok(row)
+            }
         }
-        PathSelection::Deep => {
-            let content = execute_deep_non_streaming(state.inner(), &turn).await?;
-            let row = assistant_row(&session_id, content);
-            let db = state.db.lock().await;
-            db.insert_message(&row)?;
-            row
+    }
+    .await;
+
+    match &result {
+        Ok(row) => {
+            log_turn(
+                state.inner(),
+                Some(&turn.turn_id),
+                "answer",
+                "info",
+                "输出回答",
+                format!("{} 字（非流式）", row.content.chars().count()),
+                Some(serde_json::json!({
+                    "preview": clip_text(&row.content, 200),
+                })),
+            );
+            state
+                .turn_logs
+                .finish(&state.db, &turn.turn_id, "completed", path_label(turn.path))
+                .await;
         }
-    };
+        Err(e) => {
+            log_turn(
+                state.inner(),
+                Some(&turn.turn_id),
+                "notice",
+                "error",
+                "回合失败",
+                e.to_string(),
+                Some(serde_json::json!({ "error": e.to_string() })),
+            );
+            state
+                .turn_logs
+                .finish(&state.db, &turn.turn_id, "failed", path_label(turn.path))
+                .await;
+        }
+    }
+
+    let assistant_msg = result?;
 
     spawn_lifecycle_hooks(state.inner(), &session_id, &turn.session.model_id);
 
@@ -476,7 +519,63 @@ pub async fn send_message_stream(
     tools_enabled: Option<bool>,
     active_persona_id: Option<String>,
     plan_id: Option<String>,
+    turn_id: Option<String>,
 ) -> Result<String> {
+    // 外层持有回合 id：内部函数体返回 `Ok/Err` 时都能收尾（写库 + 推 done）。
+    let turn_id = state
+        .turn_logs
+        .begin(&session_id, turn_id.as_deref(), &content, true);
+
+    let result = run_stream_turn(
+        state.inner(),
+        &app_handle,
+        session_id.clone(),
+        content,
+        tools_enabled,
+        active_persona_id,
+        plan_id,
+        &turn_id,
+    )
+    .await;
+
+    match result {
+        Ok((full_content, path)) => {
+            state
+                .turn_logs
+                .finish(&state.db, &turn_id, "completed", &path)
+                .await;
+            Ok(full_content)
+        }
+        Err(e) => {
+            log_turn(
+                state.inner(),
+                Some(&turn_id),
+                "notice",
+                "error",
+                "回合失败",
+                e.to_string(),
+                Some(serde_json::json!({ "error": e.to_string() })),
+            );
+            state
+                .turn_logs
+                .finish(&state.db, &turn_id, "failed", "unknown")
+                .await;
+            Err(e)
+        }
+    }
+}
+
+/// [`send_message_stream`] 的实际回合体：成功后返回回答与路径标签。
+async fn run_stream_turn(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    session_id: String,
+    content: String,
+    tools_enabled: Option<bool>,
+    active_persona_id: Option<String>,
+    plan_id: Option<String>,
+    turn_id: &str,
+) -> Result<(String, String)> {
     // 路由真正完成时才 emit `intent_resolved`；不要在工作开始前就先播报
     // 一个「分类中」的阶段。
 
@@ -493,12 +592,14 @@ pub async fn send_message_stream(
     // 两个入口共用同一个解析器：流式与非流式的路由、配方、模型与上下文
     // 不可能出现差异。
     let turn = prepare_turn(
-        state.inner(),
+        state,
         &session_id,
         &content,
         tools_enabled,
         active_persona_id,
         plan_id.as_deref(),
+        Some(turn_id),
+        true,
     )
     .await?;
 
@@ -521,7 +622,7 @@ pub async fn send_message_stream(
             "planner",
             format!("执行已确认的计划: {plan_id}"),
         );
-        execute_planned_turn(state.inner(), &app_handle, &turn, plan_id).await?
+        execute_planned_turn(state, app_handle, &turn, plan_id).await?
     } else {
         match turn.path {
             PathSelection::Deep => {
@@ -536,11 +637,11 @@ pub async fn send_message_stream(
                     "planner",
                     format!("路由到深度执行: intent={intent_label}"),
                 );
-                emit_phase(&app_handle, "deep_think");
-                execute_deep_streaming(state.inner(), &app_handle, &turn).await?
+                emit_phase(app_handle, "deep_think");
+                execute_deep_streaming(state, app_handle, &turn).await?
             }
             PathSelection::Fast => {
-                execute_fast_streaming(state.inner(), &app_handle, &turn).await?
+                execute_fast_streaming(state, app_handle, &turn).await?
             }
         }
     };
@@ -561,9 +662,30 @@ pub async fn send_message_stream(
     db.insert_message(&assistant_msg)?;
     drop(db);
 
-    spawn_lifecycle_hooks(state.inner(), &session_id, &turn.session.model_id);
+    spawn_lifecycle_hooks(state, &session_id, &turn.session.model_id);
 
-    Ok(full_content)
+    let path = if plan_id.is_some() {
+        "planned".to_string()
+    } else {
+        path_label(turn.path).to_string()
+    };
+    log_turn(
+        state,
+        Some(turn_id),
+        "answer",
+        "info",
+        "输出回答",
+        format!(
+            "{} 字",
+            full_content.chars().count()
+        ),
+        Some(serde_json::json!({
+            "preview": clip_text(&full_content, 200),
+            "path": path,
+        })),
+    );
+
+    Ok((full_content, path))
 }
 
 /// 按时间顺序读取会话的全部消息，供聊天窗口回填历史。
@@ -571,6 +693,26 @@ pub async fn send_message_stream(
 pub async fn get_messages(state: State<'_, AppState>, session_id: String) -> Result<Vec<DbMessage>> {
     let db = state.db.lock().await;
     db.get_messages(&session_id)
+}
+
+/// 列出某会话的历史回合摘要（按开始时间倒序，最新在前）。
+#[tauri::command]
+pub async fn get_session_turn_logs(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<crate::core::db::models::TurnLogSummary>> {
+    let db = state.db.lock().await;
+    db.list_turn_logs(&session_id)
+}
+
+/// 读取单个回合的完整日志；不存在时返回 `None`。
+#[tauri::command]
+pub async fn get_session_turn_log(
+    state: State<'_, AppState>,
+    turn_id: String,
+) -> Result<Option<crate::core::db::models::TurnLogRecord>> {
+    let db = state.db.lock().await;
+    db.get_turn_log(&turn_id)
 }
 
 /// 覆盖保存「上一次请求上下文」的调试快照（key 为 `request_ctx:<session_id>`）。
@@ -622,6 +764,8 @@ pub(crate) struct PreparedTurn {
     pub fast_messages: Vec<Message>,
     /// 原始用户输入，planner 需要它作为目标。
     pub user_content: String,
+    /// 本回合的日志 id（由 `prepare_turn` 创建或复用）。
+    pub turn_id: String,
 }
 
 impl PreparedTurn {
@@ -732,6 +876,66 @@ pub(crate) fn intent_context_block(policy: &ExecutionPolicy) -> Option<String> {
     )
 }
 
+/// 记录一条回合日志；`turn_id` 缺失时静默跳过。
+pub(crate) fn log_turn(
+    state: &AppState,
+    turn_id: Option<&str>,
+    stage: &str,
+    level: &str,
+    title: &str,
+    summary: impl Into<String>,
+    detail: Option<serde_json::Value>,
+) {
+    if let Some(turn_id) = turn_id {
+        let summary = summary.into();
+        state
+            .turn_logs
+            .push(turn_id, stage, level, title, &summary, detail);
+    }
+}
+
+/// 回合日志中使用的稳定路径标签。
+fn path_label(path: PathSelection) -> &'static str {
+    match path {
+        PathSelection::Fast => "fast",
+        PathSelection::Deep => "deep",
+    }
+}
+
+/// 按字符数截断长文本（工具入参与结果落日志时使用）。
+fn clip_text(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(limit).collect();
+    out.push_str("…(truncated)");
+    out
+}
+
+/// 把已完成的计划步骤逐条写进回合日志（label、产出摘录）。
+fn log_completed_steps(
+    state: &AppState,
+    turn_id: &str,
+    completed: &[CompletedStep],
+    total_steps: usize,
+) {
+    for step in completed {
+        log_turn(
+            state,
+            Some(turn_id),
+            "execute",
+            "info",
+            &format!("步骤 {}/{} 执行", step.index + 1, total_steps),
+            format!("{} · 完成", step.label),
+            Some(serde_json::json!({
+                "label": step.label,
+                "step_id": step.id,
+                "result": clip_text(&step_summary(&step.result), 300),
+            })),
+        );
+    }
+}
+
 /// 解析一个回合：把用户消息落库、沿用或生成拆解结果、套用意图配方并组装提示词。
 ///
 /// `plan_id` 为 `Some` 时，用户已确认该计划：本轮不发起拆解调用，意图上下文
@@ -744,23 +948,161 @@ pub(crate) async fn prepare_turn(
     tools_enabled: Option<bool>,
     active_persona_id: Option<String>,
     plan_id: Option<&str>,
+    turn_id: Option<&str>,
+    emit_log: bool,
 ) -> Result<PreparedTurn> {
+    // 回合开始即建缓冲；已有同 id 缓冲（decompose_message 建过）时直接复用。
+    let turn_id = state.turn_logs.begin(session_id, turn_id, content, emit_log);
+
     let inputs = load_turn_inputs(state, session_id, content).await?;
     let (decomposition, origin) =
         resolve_turn_intents(state, session_id, &inputs, content, plan_id).await?;
     let policy = ExecutionPolicy::from_decomposition(&decomposition);
 
+    // understand：拆解结果的人话摘要与完整证据。
+    let intent_names: Vec<String> = decomposition
+        .intents
+        .iter()
+        .map(|item| {
+            format!(
+                "{} {:.0}%",
+                item.intent.name,
+                item.confidence * 100.0
+            )
+        })
+        .collect();
+    if decomposition.intents.is_empty() {
+        if decomposition.source == DecisionSource::Unavailable {
+            log_turn(
+                state,
+                Some(&turn_id),
+                "understand",
+                "warn",
+                "理解与拆解",
+                "意图拆解不可用，按普通对话处理",
+                Some(serde_json::json!({
+                    "llm_calls": decomposition.evidence.llm_calls,
+                    "probe": decomposition.evidence.probe_used,
+                })),
+            );
+        } else {
+            log_turn(
+                state,
+                Some(&turn_id),
+                "understand",
+                "info",
+                "理解与拆解",
+                "未识别到明确意图，按普通对话处理",
+                Some(serde_json::json!({
+                    "candidates": decomposition
+                        .candidates
+                        .iter()
+                        .map(|candidate| serde_json::json!({
+                            "intent_id": candidate.intent_id,
+                            "score": candidate.score,
+                        }))
+                        .collect::<Vec<_>>(),
+                })),
+            );
+        }
+    } else {
+        log_turn(
+            state,
+            Some(&turn_id),
+            "understand",
+            "info",
+            "理解与拆解",
+            format!(
+                "识别到 {} 个意图（{}）· {}ms",
+                decomposition.intents.len(),
+                intent_names.join("、"),
+                decomposition.evidence.elapsed_ms
+            ),
+            Some(serde_json::json!({
+                "domain": decomposition.intents.first().map(|item| item.intent.domain_id.clone()),
+                "intents": decomposition.intents.iter().map(|item| serde_json::json!({
+                    "id": item.intent.id,
+                    "name": item.intent.name,
+                    "confidence": item.confidence,
+                    "uncertain": item.uncertain,
+                })).collect::<Vec<_>>(),
+                "confidence": decomposition.confidence,
+                "uncertain": decomposition.uncertain,
+                "llm_calls": decomposition.evidence.llm_calls,
+                "probe": decomposition.evidence.probe_used,
+                "elapsed_ms": decomposition.evidence.elapsed_ms,
+                "scope": decomposition.scope_status.label(),
+            })),
+        );
+    }
+
     let session_system_prompt = resolve_system_prompt(&inputs.session);
-    let (persona_block, persona_model) =
+    let (persona_block, persona_model, persona_name) =
         resolve_persona_context(state, &inputs.session, content, active_persona_id).await;
     // 已确认的计划由编排链路执行；后续消息沿用缓存意图时走普通对话，只有首条
     // 消息的新拆解才允许离开 fast 路径。
     let path = turn_path(&policy, origin, plan_id.is_some());
+    state.turn_logs.set_path(&turn_id, path_label(path));
+    let route_summary = if plan_id.is_some() {
+        "执行已确认计划".to_string()
+    } else if policy.intents.len() > 1 {
+        format!("深度执行（{} 个意图）", policy.intents.len())
+    } else {
+        "快速回答".to_string()
+    };
+    log_turn(
+        state,
+        Some(&turn_id),
+        "route",
+        "info",
+        "选择执行路径",
+        route_summary,
+        Some(serde_json::json!({
+            "path": path_label(path),
+            "plan_id": plan_id,
+            "intents": policy
+                .intents
+                .iter()
+                .map(|item| item.intent.id.clone())
+                .collect::<Vec<_>>(),
+            "zero_intent": policy.is_empty(),
+        })),
+    );
     let (model_id, skipped_models) =
         resolve_turn_model(state, &inputs.session, &policy, persona_model.as_deref()).await;
     report_skipped_models(state, &skipped_models);
 
     let allowed_tools = resolve_allowed_tools(state, &inputs.session, &policy);
+    state.turn_logs.set_meta(
+        &turn_id,
+        Some(&model_id),
+        persona_name.as_deref(),
+    );
+    log_turn(
+        state,
+        Some(&turn_id),
+        "prepare",
+        "info",
+        "准备上下文",
+        format!(
+            "模型「{}」· 上下文 {} 条消息 · 工具{}",
+            model_id,
+            inputs.messages.len(),
+            if tools_enabled.unwrap_or(true) {
+                "已开启"
+            } else {
+                "已关闭"
+            }
+        ),
+        Some(serde_json::json!({
+            "model_id": model_id,
+            "persona": persona_model,
+            "history_count": inputs.messages.len(),
+            "tools_enabled": tools_enabled.unwrap_or(true),
+            "allowed_tools": allowed_tools,
+            "zero_intent": policy.is_empty(),
+        })),
+    );
     let memory_prompt = load_memory_prompt(state, content).await;
     let fast_messages = assemble_fast_messages(
         &session_system_prompt,
@@ -788,6 +1130,7 @@ pub(crate) async fn prepare_turn(
         memory_prompt,
         fast_messages,
         user_content: content.to_string(),
+        turn_id,
     })
 }
 
@@ -1036,14 +1379,14 @@ fn resolve_system_prompt(session: &DbSession) -> String {
 
 /// 解析本轮生效的人设。
 ///
-/// 返回 `(人设提示词块, 人设指定的模型名)`；未命中人设时两者都是 `None`。
+/// 返回 `(人设提示词块, 人设指定的模型名, 人设名称)`；未命中人设时三者都是 `None`。
 /// `active_persona_id` 优先于会话绑定的人设。
 async fn resolve_persona_context(
     state: &AppState,
     session: &DbSession,
     content: &str,
     active_persona_id: Option<String>,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<String>) {
     let effective_persona_id = active_persona_id.or_else(|| session.persona_id.clone());
     let project_dir = state
         .app_handle
@@ -1059,6 +1402,7 @@ async fn resolve_persona_context(
     (
         persona_block(&active_persona),
         persona_model_name(&active_persona),
+        persona_info(&active_persona).map(|persona| persona.name.clone()),
     )
 }
 
@@ -1422,6 +1766,10 @@ async fn execute_fast_streaming(
 
     let mut full_content = String::new();
     let sess_id_for_messages = turn.session.id.clone();
+    // 记录每次工具调用的开始时刻与入参，ToolResult 到达时计算耗时并落日志。
+    let mut tool_starts: std::collections::HashMap<String, (String, std::time::Instant)> =
+        std::collections::HashMap::new();
+    let model_started = std::time::Instant::now();
 
     // 阶段：thinking —— 模型正在生成首轮回复。
     emit_phase(app_handle, "thinking");
@@ -1435,6 +1783,10 @@ async fn execute_fast_streaming(
             crate::agent::fast_loop::StreamEvent::ToolCall(tool_call) => {
                 // 先把 assistant 的工具调用落库，保证顺序是
                 // assistant(call) → tool(result) → assistant(final)。
+                tool_starts.insert(
+                    tool_call.id.clone(),
+                    (clip_text(&tool_call.arguments.to_string(), 2000), std::time::Instant::now()),
+                );
                 persist_tool_call(state, &sess_id_for_messages, &tool_call).await;
                 emit_tool_status(
                     app_handle,
@@ -1452,6 +1804,34 @@ async fn execute_fast_streaming(
             crate::agent::fast_loop::StreamEvent::ToolResult(tool_result) => {
                 // 工具结果落库后才能进入会话历史。
                 persist_tool_result(state, &sess_id_for_messages, &tool_result).await;
+
+                let (arguments, elapsed_ms) = match tool_starts.remove(&tool_result.call_id) {
+                    Some((args, started)) => {
+                        (args, Some(started.elapsed().as_millis() as u64))
+                    }
+                    None => (String::new(), None),
+                };
+                let title = format!("调用工具 {}", tool_result.name);
+                let summary = format!(
+                    "{} · {:.1}s",
+                    if tool_result.is_error { "失败" } else { "成功" },
+                    elapsed_ms.unwrap_or(0) as f64 / 1000.0
+                );
+                log_turn(
+                    state,
+                    Some(&turn.turn_id),
+                    "execute",
+                    if tool_result.is_error { "error" } else { "info" },
+                    &title,
+                    summary,
+                    Some(serde_json::json!({
+                        "tool": tool_result.name.clone(),
+                        "is_error": tool_result.is_error,
+                        "elapsed_ms": elapsed_ms,
+                        "arguments": arguments,
+                        "result": clip_text(&tool_result.result, 4000),
+                    })),
+                );
 
                 // 用结构化错误标志判定失败，而不是匹配没有生产者的字符串前缀。
                 emit_tool_status(
@@ -1481,10 +1861,29 @@ async fn execute_fast_streaming(
         }
     }
 
+    // 模型生成耗时（含多轮工具往返）与输出规模。
+    let elapsed_ms = model_started.elapsed().as_millis() as u64;
+    log_turn(
+        state,
+        Some(&turn.turn_id),
+        "execute",
+        "info",
+        "模型生成",
+        format!(
+            "耗时 {:.1}s · 输出 {} 字",
+            elapsed_ms as f64 / 1000.0,
+            full_content.chars().count()
+        ),
+        Some(serde_json::json!({
+            "model_id": turn.model_id,
+            "messages": turn.fast_messages.len(),
+            "output_chars": full_content.chars().count(),
+            "elapsed_ms": elapsed_ms,
+        })),
+    );
+
     Ok(full_content)
 }
-
-/// 把一次 assistant 工具调用写入消息表（文本为空，只有 `tool_calls`）。
 ///
 /// 先于工具结果落库，历史顺序才能保持
 /// `assistant(call)` → `tool(result)` → `assistant(final)`。
@@ -1651,6 +2050,21 @@ async fn run_deep_turn(
     };
 
     let total_steps = plan.steps.len();
+    log_turn(
+        state,
+        Some(&turn.turn_id),
+        "plan",
+        "info",
+        "生成执行计划",
+        format!("{total_steps} 步，开始执行"),
+        Some(serde_json::json!({
+            "plan_id": plan.id,
+            "steps": plan.steps.iter().map(|step| serde_json::json!({
+                "label": step.label,
+                "intent": step.intent_id,
+            })).collect::<Vec<_>>(),
+        })),
+    );
     emit_execution_log(
         app_handle,
         "info",
@@ -1698,10 +2112,35 @@ async fn run_deep_turn(
         .remove(&turn.session.id);
 
     match result {
-        Ok(outcome) => DeepAttempt::Completed {
-            text: deep_success_text(&outcome.completed, total_steps),
-        },
+        Ok(outcome) => {
+            log_completed_steps(state, &turn.turn_id, &outcome.completed, total_steps);
+            log_turn(
+                state,
+                Some(&turn.turn_id),
+                "review",
+                "info",
+                "评审",
+                "通过",
+                Some(serde_json::json!({ "completed_steps": outcome.completed.len() })),
+            );
+            DeepAttempt::Completed {
+                text: deep_success_text(&outcome.completed, total_steps),
+            }
+        }
         Err(failure) => {
+            log_completed_steps(state, &turn.turn_id, &failure.completed, total_steps);
+            log_turn(
+                state,
+                Some(&turn.turn_id),
+                "review",
+                "warn",
+                "评审",
+                "需要修正",
+                Some(serde_json::json!({
+                    "failed_step": failure.failed_step,
+                    "message": failure.message,
+                })),
+            );
             match deep_failure_action(true) {
                 DeepFailureAction::ReturnPartial => {
                     emit_execution_log(
@@ -1742,6 +2181,21 @@ async fn execute_planned_turn(
         crate::app::commands::intent_plan::load_confirmable_plan(&db, &turn.session.id, plan_id)?
     };
     let total_steps = plan.steps.len();
+    log_turn(
+        state,
+        Some(&turn.turn_id),
+        "confirm",
+        "info",
+        "确认计划",
+        format!("用户确认，开始执行 {total_steps} 步"),
+        Some(serde_json::json!({
+            "plan_id": plan.id,
+            "steps": plan.steps.iter().map(|step| serde_json::json!({
+                "label": step.label,
+                "intent": step.intent_id,
+            })).collect::<Vec<_>>(),
+        })),
+    );
 
     emit_execution_log(
         app_handle,
@@ -1795,11 +2249,34 @@ async fn execute_planned_turn(
 
     match result {
         Ok(outcome) => {
+            log_completed_steps(state, &turn.turn_id, &outcome.completed, total_steps);
+            log_turn(
+                state,
+                Some(&turn.turn_id),
+                "review",
+                "info",
+                "评审",
+                "通过",
+                Some(serde_json::json!({ "completed_steps": outcome.completed.len() })),
+            );
             let text = persist_plan_outcome(state, &turn.session.id, &outcome.completed, None).await;
             emit_done(app_handle, text.clone(), "completed");
             Ok(text)
         }
         Err(failure) => {
+            log_completed_steps(state, &turn.turn_id, &failure.completed, total_steps);
+            log_turn(
+                state,
+                Some(&turn.turn_id),
+                "review",
+                "warn",
+                "评审",
+                "需要修正",
+                Some(serde_json::json!({
+                    "failed_step": failure.failed_step,
+                    "message": failure.message,
+                })),
+            );
             emit_execution_log(
                 app_handle,
                 "error",

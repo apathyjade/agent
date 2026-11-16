@@ -352,6 +352,62 @@ pub struct IntentRecord {
     pub updated_at: String,
 }
 
+/// 会话回合日志中的单条记录。
+///
+/// `detail` 只落库、不进实时事件，前端按需展开；`at` 为 RFC3339 时间。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnLogEntry {
+    /// 回合内自增序号，从 1 开始。
+    pub seq: u32,
+    /// 条目产生时间（RFC3339）。
+    pub at: String,
+    /// 阶段：question/understand/plan/confirm/route/prepare/execute/review/answer/notice。
+    pub stage: String,
+    /// 级别：info/warn/error。
+    pub level: String,
+    /// 人话标题。
+    pub title: String,
+    /// 一行摘要。
+    pub summary: String,
+    /// 相对于回合开始的耗时（毫秒）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    /// 原始明细，仅落库。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
+}
+
+/// 历史回合列表用的摘要（不含条目）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnLogSummary {
+    pub turn_id: String,
+    pub status: String,
+    pub path: String,
+    pub question: String,
+    pub model_id: Option<String>,
+    pub persona_name: Option<String>,
+    pub started_at: String,
+    pub total_ms: Option<u64>,
+    pub entry_count: i64,
+}
+
+/// 一个完整回合的日志记录（条目从 `entries_json` 反序列化）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnLogRecord {
+    pub turn_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub path: String,
+    pub question: String,
+    pub model_id: Option<String>,
+    pub persona_name: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub total_ms: Option<u64>,
+    pub entry_count: i64,
+    pub entries: Vec<TurnLogEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

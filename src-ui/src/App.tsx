@@ -19,6 +19,7 @@ import { ToastContainer } from './components/common/Toast';
 import { useStore } from './store';
 import { setWindowPosition } from './api/tauri';
 import type { PlanProgressEvent, ExecutionLogEntry } from './types';
+import type { SessionLogEvent, SessionLogDoneEvent } from './api/session';
 import type { IntentResolvedEvent } from './api/intent';
 import './styles/global.css';
 
@@ -136,6 +137,31 @@ function App() {
   useEffect(() => {
     const unlisten = listen<ExecutionLogEntry>('execution_log', (event) => {
       useStore.getState().addExecutionLog(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 会话日志：实时条目按当前会话过滤后追加
+  useEffect(() => {
+    const unlisten = listen<SessionLogEvent>('session_log', (event) => {
+      useStore.getState().appendLiveLog(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 会话日志：回合结束收起实时区，抽屉打开时刷新历史列表
+  useEffect(() => {
+    const unlisten = listen<SessionLogDoneEvent>('session_log_done', (event) => {
+      const store = useStore.getState();
+      if (event.payload.session_id !== store.currentSession?.id) return;
+      store.clearLiveLog();
+      if (store.sessionLogOpen) {
+        void store.fetchSessionLogs();
+      }
     });
     return () => {
       unlisten.then((fn) => fn());
