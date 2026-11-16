@@ -1,11 +1,11 @@
-//! MCP 桥接 worker：让模型发现并调用已注册的 MCP 工具。
+//! MCP 桥接 worker：让模型发现并调用已注册�?MCP 工具�?
 //!
-//! 命令语法：
-//! - `@@list_tools` 或 `@@list_tools("server?")` —— 列出工具
-//! - `@@call("name", {...})` —— 带 JSON 参数调用工具
+//! 命令语法�?
+//! - `@@list_tools` �?`@@list_tools("server?")` —�?列出工具
+//! - `@@call("name", {...})` —�?�?JSON 参数调用工具
 //!
-//! MCP 工具由 `McpServerManager` 以 `McpToolWrapper` 的形式注册进全局
-//! `ToolRegistry`，因此本 worker 不直接持有 MCP 连接。
+//! MCP 工具�?`McpServerManager` �?`McpToolWrapper` 的形式注册进全局
+//! `ToolRegistry`，因此本 worker 不直接持�?MCP 连接�?
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::llm::provider::ProviderRegistry;
 use crate::core::error::Result;
-use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::{ToolRegistry, ToolResolver};
 use crate::agent::workers::{SubTask, WorkerAgent, WorkerKind, WorkerResult};
 
 const MCP_SYSTEM_PROMPT: &str = r#"You are an MCP (Model Context Protocol) bridge agent. Your job is to
@@ -24,28 +24,48 @@ invoke them with JSON parameters. Tool results will be provided below.
 
 Analyze the results and explain them to the user."#;
 
-/// 通过全局 `ToolRegistry` 桥接 MCP 工具的 worker。
+/// 通过全局 `ToolRegistry` 桥接 MCP 工具�?worker�?
 ///
-/// MCP 工具由 `McpServerManager` 以 `McpToolWrapper` 的形式注册；本 worker 提供
-/// `@@list_tools` 与 `@@call` 两个命令用于发现和调用它们。
+/// MCP 工具�?`McpServerManager` �?`McpToolWrapper` 的形式注册；�?worker 提供
+/// `@@list_tools` �?`@@call` 两个命令用于发现和调用它们�?
 pub struct MCPBridgeWorker {
     providers: Arc<Mutex<ProviderRegistry>>,
     tools: Arc<Mutex<ToolRegistry>>,
+    /// 按需解析钩子（MCP 按需连接）；`None` 表示不做按需连接�?
+    resolver: Option<Arc<dyn ToolResolver>>,
 }
 
 impl MCPBridgeWorker {
-    /// 用共享的 provider 注册表与工具注册表构造 worker。
+    /// 用共享的 provider 注册表与工具注册表构�?worker�?
     pub fn new(
         providers: Arc<Mutex<ProviderRegistry>>,
         tools: Arc<Mutex<ToolRegistry>>,
     ) -> Self {
-        Self { providers, tools }
+        Self {
+            providers,
+            tools,
+            resolver: None,
+        }
     }
 
-    /// 把已注册工具及其启用状态追加到结果文本。
-    async fn append_tool_list(&self, out: &mut String) {
+    /// 注入按需解析钩子；解析在获取注册表锁之前调用，避免互锁�?
+    pub fn with_resolver(mut self, resolver: Arc<dyn ToolResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    /// 把已注册工具及其启用状态追加到结果文本�?
+    ///
+    /// 给定白名单时只列出范围内的工具，避免把越界工具暴露给模型�?
+    async fn append_tool_list(&self, out: &mut String, allowed: Option<&[String]>) {
         let registry = self.tools.lock().await;
-        let tools = registry.list();
+        let tools: Vec<_> = registry
+            .catalog()
+            .into_iter()
+            .filter(|tool| {
+                allowed.map_or(true, |list| registry.allowed_in_scope(&tool.name, list))
+            })
+            .collect();
         out.push_str("## Available Tools\n");
         for tool in &tools {
             let status = if tool.enabled { "enabled" } else { "disabled" };
@@ -59,14 +79,14 @@ impl MCPBridgeWorker {
         }
     }
 
-    /// 处理 `@@call("tool_name", {...})`：解析参数并调用工具。
-    async fn handle_call(&self, inner: &str, out: &mut String) {
+    /// 处理 `@@call("tool_name", {...})`：解析参数并调用工具�?
+    async fn handle_call(&self, inner: &str, out: &mut String, allowed: Option<&[String]>) {
         if let Some(comma_pos) = inner.find(',') {
             let tool_name = inner[..comma_pos].trim().trim_matches('"');
             let params_str = inner[comma_pos + 1..].trim();
             let params = parse_tool_params(params_str);
 
-            match self.call_tool(tool_name, params).await {
+            match self.call_tool(tool_name, params, allowed).await {
                 Ok(output) => {
                     out.push_str(&format!(
                         "## Tool Call: {}\n```\n{}\n```\n",
@@ -87,22 +107,22 @@ impl MCPBridgeWorker {
         }
     }
 
-    /// 解析并执行指令中内嵌的 `@@` 命令。
+    /// 解析并执行指令中内嵌�?`@@` 命令�?
     ///
-    /// 支持的命令见模块文档；未识别的行会被忽略。
-    async fn execute_tools(&self, instruction: &str) -> String {
+    /// 支持的命令见模块文档；未识别的行会被忽略�?
+    async fn execute_tools(&self, instruction: &str, allowed: Option<&[String]>) -> String {
         let mut result = String::new();
 
         for line in instruction.lines() {
             let trimmed = line.trim();
 
             if trimmed == "@@list_tools" {
-                self.append_tool_list(&mut result).await;
+                self.append_tool_list(&mut result, allowed).await;
             } else if trimmed.starts_with("@@list_tools(") && trimmed.ends_with(')') {
-                // 服务器过滤是 best-effort：ToolRegistry 不记录工具来源，先列出全部。
-                self.append_tool_list(&mut result).await;
+                // 服务器过滤是 best-effort：ToolRegistry 不记录工具来源，先列出全部�?
+                self.append_tool_list(&mut result, allowed).await;
             } else if trimmed.starts_with("@@call(") && trimmed.ends_with(')') {
-                self.handle_call(&trimmed[7..trimmed.len() - 1], &mut result)
+                self.handle_call(&trimmed[7..trimmed.len() - 1], &mut result, allowed)
                     .await;
             }
         }
@@ -110,19 +130,37 @@ impl MCPBridgeWorker {
         result
     }
 
-    /// 按名称调用工具，并把结果格式化为易读的 JSON。
-    async fn call_tool(&self, name: &str, params: serde_json::Value) -> Result<String> {
+    /// 按名称调用工具，并把结果格式化为易读�?JSON�?
+    async fn call_tool(
+        &self,
+        name: &str,
+        params: serde_json::Value,
+        allowed: Option<&[String]>,
+    ) -> Result<String> {
+        // 按需连接：工具未注册时先解析；解析内部会锁注册表，必须先放锁�?
+        if let Some(resolver) = self.resolver.clone() {
+            let missing = {
+                let registry = self.tools.lock().await;
+                registry.canonical_name(name).is_none()
+            };
+            if missing {
+                resolver.resolve(name).await;
+            }
+        }
+
         let registry = self.tools.lock().await;
-        let value = registry.execute(name, params).await?;
+        let value = registry
+            .execute_with_policy(name, params, allowed)
+            .await?;
         Ok(serde_json::to_string_pretty(&value)
             .unwrap_or_else(|_| format!("{:?}", value)))
     }
 }
 
-/// 解析 `@@call` 的参数字符串。
+/// 解析 `@@call` 的参数字符串�?
 ///
-/// 空串或 `{}` 视为空对象；不是合法 JSON 时尝试把裸值包装成
-/// `{"value": ...}`，仍失败则回落到空对象。
+/// 空串�?`{}` 视为空对象；不是合法 JSON 时尝试把裸值包装成
+/// `{"value": ...}`，仍失败则回落到空对象�?
 fn parse_tool_params(params_str: &str) -> serde_json::Value {
     serde_json::from_str(params_str).unwrap_or_else(|_| {
         if params_str.is_empty() || params_str == "{}" {
@@ -147,8 +185,10 @@ impl WorkerAgent for MCPBridgeWorker {
     async fn execute(&self, task: SubTask) -> Result<WorkerResult> {
         let start = std::time::Instant::now();
 
-        // 先执行指令里内嵌的 @@ 命令，再把结果作为上下文交给模型。
-        let tool_results = self.execute_tools(&task.instruction).await;
+        // 先执行指令里内嵌�?@@ 命令，再把结果作为上下文交给模型�?
+        let tool_results = self
+            .execute_tools(&task.instruction, task.allowed_tools.as_deref())
+            .await;
 
         let provider = {
             let registry = self.providers.lock().await;
@@ -211,9 +251,9 @@ mod tests {
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
 
-        let result = worker.execute_tools("@@list_tools").await;
+        let result = worker.execute_tools("@@list_tools", None).await;
         assert!(result.contains("Available Tools"), "should list tools");
-        // 内置工具应已注册。
+        // 内置工具应已注册�?
         assert!(result.contains("read") || result.contains("write"),
             "should contain some registered tools, got: {}", result);
     }
@@ -226,7 +266,7 @@ mod tests {
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
 
-        let result = worker.execute_tools("@@list_tools(\"my_server\")").await;
+        let result = worker.execute_tools("@@list_tools(\"my_server\")", None).await;
         assert!(result.contains("Available Tools"), "should list tools");
     }
 
@@ -238,8 +278,8 @@ mod tests {
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
 
-        // 缺少工具名与参数之间的逗号。
-        let result = worker.execute_tools("@@call(\"bad_syntax\")").await;
+        // 缺少工具名与参数之间的逗号�?
+        let result = worker.execute_tools("@@call(\"bad_syntax\")", None).await;
         assert!(result.contains("Invalid @@call syntax"), "should report syntax error");
     }
 
@@ -251,7 +291,7 @@ mod tests {
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
 
-        let result = worker.execute_tools("Just a plain instruction.").await;
+        let result = worker.execute_tools("Just a plain instruction.", None).await;
         assert!(result.is_empty(), "should return empty when no @@ commands");
     }
 
@@ -263,8 +303,45 @@ mod tests {
         let tools = Arc::new(Mutex::new(ToolRegistry::new()));
         let worker = MCPBridgeWorker::new(providers, tools);
 
-        let result = worker.execute_tools("@@call(\"nonexistent_tool\", {})").await;
+        let result = worker.execute_tools("@@call(\"nonexistent_tool\", {})", None).await;
         assert!(result.contains("Tool Call Error"), "should report error for unknown tool");
         assert!(result.contains("nonexistent_tool"), "should mention tool name");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tools_rejects_out_of_scope_call() {
+        let providers = Arc::new(Mutex::new(
+            crate::llm::provider::ProviderRegistry::new(&[]),
+        ));
+        let tools = Arc::new(Mutex::new(ToolRegistry::new()));
+        let worker = MCPBridgeWorker::new(providers, tools);
+
+        let allowed = vec!["read".to_string()];
+        let result = worker
+            .execute_tools("@@call(\"write\", {})", Some(&allowed))
+            .await;
+
+        assert!(
+            result.contains("not allowed in this scope"),
+            "should reject out-of-scope tool, got: {}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_tools_respects_scope() {
+        let providers = Arc::new(Mutex::new(
+            crate::llm::provider::ProviderRegistry::new(&[]),
+        ));
+        let tools = Arc::new(Mutex::new(ToolRegistry::new()));
+        let worker = MCPBridgeWorker::new(providers, tools);
+
+        let allowed = vec!["read".to_string()];
+        let result = worker
+            .execute_tools("@@list_tools", Some(&allowed))
+            .await;
+
+        assert!(result.contains("**read**"), "should list in-scope tool");
+        assert!(!result.contains("**write**"), "should hide out-of-scope tool");
     }
 }

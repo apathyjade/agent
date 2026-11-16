@@ -315,6 +315,14 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_exec_plans_session ON execution_plans(session_id);
             CREATE INDEX IF NOT EXISTS idx_exec_steps_plan ON execution_plan_steps(plan_id);
+
+            CREATE TABLE IF NOT EXISTS resource_scopes (
+                owner_kind TEXT NOT NULL,
+                owner_id   TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (owner_kind, owner_id)
+            );
             ",
         )?;
 

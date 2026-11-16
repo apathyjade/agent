@@ -84,6 +84,9 @@ pub struct SubTask {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// 本任务允许使用的工具白名单；`None` 表示不限制。
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
     pub context: Option<Value>,
 }
@@ -145,6 +148,7 @@ mod tests {
             model_id: None,
             max_tokens: Some(1024),
             temperature: Some(0.3),
+            allowed_tools: None,
             context: None,
         };
         let json = serde_json::to_string(&task).unwrap();

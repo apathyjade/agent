@@ -122,6 +122,7 @@ mod tests {
             model_id: None,
             max_tokens: None,
             temperature: None,
+            allowed_tools: None,
             context: None,
         };
         let result = d.dispatch(&task).await.unwrap();
@@ -139,6 +140,7 @@ mod tests {
             model_id: None,
             max_tokens: None,
             temperature: None,
+            allowed_tools: None,
             context: None,
         };
         let result = d.dispatch(&task).await;

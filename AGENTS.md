@@ -60,16 +60,18 @@
 **真实项目在 `src-tauri/` 中 — 根目录的 `Cargo.toml`/`src/`/`tauri.conf.json` 均已删除。**
 
 ```bash
-# 终端 1 — 前端开发服务器（Vite，端口 1420）
-cd src-ui && npm run dev
+# 开发（推荐：一条命令，自动拉起 Vite + Tauri 窗口）
+cargo make tauri-dev
 
-# 终端 2 — Tauri 桌面开发（beforeDevCommand 为空，需单独启动）
+# 等价手动方式：beforeDevCommand 会在仓库根目录执行 cd src-ui && npm run dev
 cd src-tauri && cargo tauri dev
 
-# 生产构建
+# 生产构建（cargo make tauri-build 等价，含前端构建）
 cd src-ui && npm run build    # 执行 tsc && vite build
 cd src-tauri && cargo tauri build
 ```
+
+**构建任务统一入口**：`cargo make --list-all-steps` 查看全部任务（`check`/`test`/`ci`/`rust-verify`/`ui-verify` 等）。
 
 **前置依赖**：Rust 1.77.2+（edition 2021）、Node.js 18+
 

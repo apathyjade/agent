@@ -15,6 +15,22 @@ export interface DecomposedIntentPayload {
   probe_evidence: string | null;
 }
 
+/** 本回合资源作用域快照（只读）；`status` 说明第二级收窄的结局。 */
+export interface ScopePayload {
+  /** `not_requested` / `skipped_no_catalog` / `skipped_small_catalog` / `skipped_no_budget` / `skipped_unavailable` / `applied`。 */
+  status: string;
+  /** 第二级收窄是否命中缓存（仅 `applied` 时有意义）。 */
+  cached: boolean;
+  /** 最终允许的工具 id。 */
+  tools: string[];
+  /** 最终注入的提示词片段 id。 */
+  prompts: string[];
+  /** 记忆条数上限；`null` 表示沿用默认。 */
+  memory_limit: number | null;
+  /** 是否因预算被截断。 */
+  truncated: boolean;
+}
+
 /** `decompose_message` 的返回值；`plan_id` 为空表示零意图，走普通聊天。 */
 export interface DecomposeMessageResult {
   /**
@@ -27,6 +43,8 @@ export interface DecomposeMessageResult {
   uncertain: boolean;
   /** 分解器不可用（超时 / 调用失败）：本条按普通聊天发送，未落缓存，可重试。 */
   unavailable: boolean;
+  /** 本回合资源作用域；未解析时工具/提示词为空，`status` 说明原因。 */
+  scope?: ScopePayload;
 }
 
 /** 确认卡里的一行：一个可执行步骤 + 拆解阶段的意图元数据。 */

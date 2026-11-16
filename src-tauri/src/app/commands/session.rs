@@ -33,6 +33,7 @@ use crate::llm::intent::{
     DecisionEvidence, DecisionSource, Decomposition, ExecutionPolicy, IntentCandidate, PathSelection,
     RouteContext,
 };
+use crate::llm::prompt::{compose, Fragment, PromptBudget};
 use rig::completion::Message;
 
 /// 解析持久化的工具调用 JSON（`[{id, name, arguments}]` 或 Rig 的 ToolCall 形态）。
@@ -221,6 +222,12 @@ const DEEP_CONTEXT_MESSAGE_LIMIT: usize = 6;
 const MEMORY_PROMPT_LIMIT: i64 = 5;
 /// 路由只看最近 6 条历史，更早的对话不参与分类。
 const ROUTE_HISTORY_LIMIT: usize = 6;
+
+/// 提示词片段优先级：数字越大越先被裁掉。
+/// 系统提示词与人设是安全/身份底线，标记为不可裁；意图上下文先于它们被裁。
+const PRIORITY_SESSION: i32 = 10;
+const PRIORITY_PERSONA: i32 = 20;
+const PRIORITY_INTENT: i32 = 30;
 
 /// 新建会话。
 ///
@@ -618,41 +625,40 @@ pub(crate) struct PreparedTurn {
 }
 
 impl PreparedTurn {
-    /// 意图上下文块：已选意图的名称、说明与各自的提示词附录。
+    /// 系统提示词、人设（可选）与意图上下文片段。
     ///
-    /// 后续消息走普通对话，但必须携带会话级意图上下文（design §2.4）。
-    fn intent_context_block(&self) -> Option<String> {
-        intent_context_block(&self.policy)
-    }
-
-    /// 会话系统提示词 + 人设 + 意图上下文。
-    ///
-    /// planner 接口没有独立的 system-prompt 参数，所以这段内容作为 planner
-    /// 上下文的首段传入。
-    fn planner_system_block(&self) -> String {
-        let mut parts = vec![self.session_system_prompt.clone()];
-        if let Some(persona) = &self.persona_block {
-            parts.push(persona.clone());
+    /// 系统提示词与人设是安全/身份底线，不可裁；意图上下文排在后面，先被裁掉。
+    fn system_fragments(&self, include_persona: bool) -> Vec<Fragment> {
+        let mut fragments = vec![
+            Fragment::new(
+                "session",
+                PRIORITY_SESSION,
+                self.session_system_prompt.clone(),
+            )
+            .required(),
+        ];
+        if include_persona {
+            if let Some(persona) = &self.persona_block {
+                fragments.push(
+                    Fragment::new("persona", PRIORITY_PERSONA, persona.clone()).required(),
+                );
+            }
         }
-        if let Some(intent) = self.intent_context_block() {
-            parts.push(intent);
-        }
-        parts.join("\n\n")
+        fragments.extend(intent_fragments(&self.policy));
+        fragments
     }
 
     /// 会话系统提示词 + 意图上下文；人设只给 planner 用。
     fn agent_task_system_prompt(&self) -> String {
-        let mut parts = vec![self.session_system_prompt.clone()];
-        if let Some(intent) = self.intent_context_block() {
-            parts.push(intent);
-        }
-        parts.join("\n\n")
+        compose(self.system_fragments(false), &PromptBudget::default()).text
     }
 
     /// 有界的 planner 上下文：配置、记忆与最近若干条消息。
     fn deep_context(&self) -> String {
+        let budget = PromptBudget::from_chars(DEEP_CONTEXT_CHAR_LIMIT);
+        let system_block = compose(self.system_fragments(true), &budget).text;
         build_deep_context(
-            Some(&self.planner_system_block()),
+            Some(&system_block),
             self.memory_prompt.as_deref(),
             &self.messages,
             DEEP_CONTEXT_CHAR_LIMIT,
@@ -660,38 +666,70 @@ impl PreparedTurn {
     }
 }
 
+/// 把多意图策略拆成片段：每个意图一个片段，后插入的先被裁掉。
+///
+/// 首个片段带 `[Selected intents]` 表头；片段之间用单换行，保持原有排版。
+fn intent_fragments(policy: &ExecutionPolicy) -> Vec<Fragment> {
+    policy
+        .intents
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let mut text = String::new();
+            if index == 0 {
+                text.push_str("[Selected intents]\n");
+            }
+            let description = item.intent.description.trim();
+            if description.is_empty() {
+                text.push_str(&format!("- {} ({})", item.intent.name, item.intent.id));
+            } else {
+                text.push_str(&format!(
+                    "- {} ({}): {}",
+                    item.intent.name, item.intent.id, description
+                ));
+            }
+            if let Some(appendix) = item
+                .intent
+                .config
+                .system_prompt_appendix
+                .as_deref()
+                .map(str::trim)
+                .filter(|appendix| !appendix.is_empty())
+            {
+                text.push_str("\n  ");
+                text.push_str(appendix);
+            }
+
+            let fragment = Fragment::new(
+                format!("intent.{}", item.intent.id),
+                PRIORITY_INTENT,
+                text,
+            );
+            if index == 0 {
+                fragment
+            } else {
+                fragment.with_separator("\n")
+            }
+        })
+        .collect()
+}
+
 /// 把多意图策略渲染成注入 system prompt 的上下文块。
 ///
 /// 零意图返回 `None`：普通聊天不需要任何意图说明。
 pub(crate) fn intent_context_block(policy: &ExecutionPolicy) -> Option<String> {
-    if policy.intents.is_empty() {
+    let fragments = intent_fragments(policy);
+    if fragments.is_empty() {
         return None;
     }
 
-    let mut lines = vec!["[Selected intents]".to_string()];
-    for item in &policy.intents {
-        let description = item.intent.description.trim();
-        if description.is_empty() {
-            lines.push(format!("- {} ({})", item.intent.name, item.intent.id));
-        } else {
-            lines.push(format!(
-                "- {} ({}): {}",
-                item.intent.name, item.intent.id, description
-            ));
-        }
-        if let Some(appendix) = item
-            .intent
-            .config
-            .system_prompt_appendix
-            .as_deref()
-            .map(str::trim)
-            .filter(|appendix| !appendix.is_empty())
-        {
-            lines.push(format!("  {}", appendix));
-        }
-    }
-
-    Some(lines.join("\n"))
+    Some(
+        fragments
+            .into_iter()
+            .map(|fragment| fragment.text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// 解析一个回合：把用户消息落库、沿用或生成拆解结果、套用意图配方并组装提示词。
@@ -944,6 +982,7 @@ pub(crate) async fn decompose_with_session(
         Some(id) => recent_history(messages, id),
         None => tail_history(messages),
     };
+    let session_tools = session_enabled_tools(session);
     router
         .decompose(RouteContext {
             session_id,
@@ -952,6 +991,7 @@ pub(crate) async fn decompose_with_session(
             prior_domain: session.intent_domain_id.as_deref(),
             pinned,
             project_root: project_root.as_deref(),
+            session_tools: session_tools.as_deref(),
         })
         .await
 }
@@ -1634,6 +1674,8 @@ async fn run_deep_turn(
         state.tools.clone(),
         state.db.clone(),
     )
+    .with_resolver(state.tool_resolver.clone())
+    .with_usage_sink(state.usage_sink())
     .with_app_handle(app_handle.clone())
     .with_tool_policy(turn.allowed_tools.clone(), turn.tools_enabled)
     .with_system_prompt(Some(turn.agent_task_system_prompt()))
@@ -1722,6 +1764,7 @@ async fn execute_planned_turn(
         state.tools.clone(),
         state.db.clone(),
     )
+    .with_resolver(state.tool_resolver.clone())
     .with_app_handle(app_handle.clone())
     // 步骤级白名单是权威来源；运行级只保留工具总开关。
     .with_tool_policy(None, turn.tools_enabled)

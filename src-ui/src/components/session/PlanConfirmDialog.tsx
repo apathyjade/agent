@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Modal, Button, Input } from 'antd';
 import { AlertTriangle, FileEdit, Terminal, Trash2 } from 'lucide-react';
-import type { PlanConfirmIntent } from '../../api/plan';
+import type { PlanConfirmIntent, ScopePayload } from '../../api/plan';
+import { scopeStatusLabel } from '../common/scopeLabels';
 
 /**
  * 从工具白名单推出副作用标注。只做展示，不改变任何执行语义。
@@ -18,6 +19,8 @@ export interface PlanConfirmDialogProps {
   open: boolean;
   planId: string | null;
   intents: PlanConfirmIntent[];
+  /** 本回合资源作用域快照（只读展示）；`null` 表示后端未返回。 */
+  scope?: ScopePayload | null;
   loading?: boolean;
   onConfirm: () => void | Promise<void>;
   onCancel: () => void | Promise<void>;
@@ -26,11 +29,36 @@ export interface PlanConfirmDialogProps {
   onUpdateInstruction: (stepId: string, instruction: string) => void | Promise<void>;
 }
 
+/** scope 状态标签 → 中文说明；映射集中在 `common/scopeLabels`。 */
+
+/** 确认卡顶部的只读资源作用域摘要；只展示，不提供编辑。 */
+function ScopeSummary({ scope }: { scope: ScopePayload }) {
+  return (
+    <div
+      data-testid="plan-scope"
+      className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-3 text-[11px] text-gray-600 dark:text-gray-300 space-y-1"
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="font-medium text-gray-700 dark:text-gray-200">资源作用域</span>
+        <span data-testid="plan-scope-status">{scopeStatusLabel(scope.status)}</span>
+        {scope.cached && <span className="text-gray-400">（缓存命中）</span>}
+        {scope.truncated && (
+          <span className="text-amber-600 dark:text-amber-400">已按预算截断</span>
+        )}
+      </div>
+      <div>工具: {scope.tools.length > 0 ? scope.tools.join(' · ') : '未限定'}</div>
+      <div>提示词: {scope.prompts.length > 0 ? scope.prompts.join(' · ') : '无额外片段'}</div>
+      <div>记忆上限: {scope.memory_limit === null ? '默认' : `${scope.memory_limit} 条`}</div>
+    </div>
+  );
+}
+
 /** 拆解结果的确认卡：确认前不执行任何步骤。 */
 export function PlanConfirmDialog({
   open,
   planId,
   intents,
+  scope = null,
   loading = false,
   onConfirm,
   onCancel,
@@ -92,6 +120,8 @@ export function PlanConfirmDialog({
             计划详情不完整，只能整体确认或取消。
           </p>
         )}
+
+        {scope && <ScopeSummary scope={scope} />}
 
         {intents.map((intent, index) => {
           const effects = planIntentSideEffects(intent.allowed_tools);

@@ -19,7 +19,7 @@
 ## 项目配置
 
 - **CSP 限制**：`connect-src` 白名单在 `src-tauri/tauri.conf.json` 中——新增 provider 或修改 base URL 需同步添加
-- **`beforeDevCommand` 为空**：Tauri 配置中此项为空——前端开发服务器需手动启动（`cd src-ui && npm run dev`）
+- **`beforeDevCommand` 的 cwd 是前端目录**：该命令在 `dirs.frontend`（仓库根目录）下执行，而非 `src-tauri/`。路径必须写成 `cd src-ui && ...`，写成 `cd ../src-ui` 会报"系统找不到指定的路径"
 - **双 Cargo.lock**：`src-tauri/Cargo.lock` 已提交，而根目录 `.gitignore` 有 `Cargo.lock` 条目。在根目录执行 `cargo build` 会生成过时的 `Cargo.lock`。始终在 `src-tauri/` 目录下工作
 
 ## 消息流

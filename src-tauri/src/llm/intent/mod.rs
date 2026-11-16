@@ -1,13 +1,18 @@
 pub mod classifier;
 pub mod index;
+pub mod metrics;
 pub mod probe;
 pub mod router;
+pub mod scope;
+pub mod usage;
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::core::db::models::Message;
+
+use self::scope::{ResolvedScope, ScopeDraft};
 
 /// 路径选择：由哪套 agent 系统处理这条消息。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -70,6 +75,8 @@ pub struct RouteContext<'a> {
     pub pinned: bool,
     /// 可选只读探针使用的项目根。
     pub project_root: Option<&'a Path>,
+    /// 会话级工具白名单；`None` 表示不限制。参与本回合作用域解析。
+    pub session_tools: Option<&'a [String]>,
 }
 
 /// 最终决策由哪个阶段产出。
@@ -172,6 +179,48 @@ pub struct Decomposition {
     pub candidates: Vec<IntentCandidate>,
     /// 证据（LLM 调用次数、探针是否使用、耗时）。
     pub evidence: DecisionEvidence,
+    /// 第二级路由（资源收窄）的产出；`None` 表示本回合未收窄。
+    pub scope: Option<ScopeDraft>,
+    /// 收窄阶段的状态，供轨迹与调试面板展示。
+    pub scope_status: ScopeStatus,
+    /// 解析后的最终作用域（工具位）；`None` 表示未解析（调用方沿用旧逻辑）。
+    pub resolved: Option<ResolvedScope>,
+}
+
+/// 第二级路由（资源收窄）的结局。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScopeStatus {
+    /// 未进入收窄：零意图、关闭开关或没有目录。
+    #[default]
+    NotRequested,
+    /// 目录为空或尚未装配。
+    SkippedNoCatalog,
+    /// 候选资源太少，收窄没有收益。
+    SkippedSmallCatalog,
+    /// 剩余路由预算不足，直接跳过。
+    SkippedNoBudget,
+    /// 调用失败、超时或回复不可解析。
+    SkippedUnavailable,
+    /// 收窄完成（`cached` 表示命中缓存）。
+    Applied {
+        selected: usize,
+        catalog_size: usize,
+        cached: bool,
+    },
+}
+
+impl ScopeStatus {
+    /// 稳定的英文标签，供轨迹与调试展示。
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::SkippedNoCatalog => "skipped_no_catalog",
+            Self::SkippedSmallCatalog => "skipped_small_catalog",
+            Self::SkippedNoBudget => "skipped_no_budget",
+            Self::SkippedUnavailable => "skipped_unavailable",
+            Self::Applied { .. } => "applied",
+        }
+    }
 }
 
 impl Decomposition {
@@ -188,6 +237,9 @@ impl Decomposition {
             source,
             candidates,
             evidence,
+            scope: None,
+            scope_status: ScopeStatus::NotRequested,
+            resolved: None,
         }
     }
 
@@ -211,6 +263,9 @@ impl Decomposition {
             source,
             candidates,
             evidence,
+            scope: None,
+            scope_status: ScopeStatus::NotRequested,
+            resolved: None,
         }
     }
 
@@ -325,6 +380,23 @@ pub struct TraceIntent {
     pub uncertain: bool,
 }
 
+/// 轨迹里记录的收窄摘要（只读、可序列化）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScopeTrace {
+    /// 收窄时的目录规模。
+    pub catalog_size: usize,
+    /// 模型选中的资源数。
+    pub selected: usize,
+    /// 是否命中缓存。
+    pub cached: bool,
+    /// 未收窄的原因（`None` 表示收窄成功）。
+    pub skipped: Option<String>,
+    /// 目录全部启用工具的估算 token 成本。
+    pub catalog_tokens: usize,
+    /// 收窄后可见工具的估算 token 成本。
+    pub selected_tokens: usize,
+}
+
 /// 留在进程内环形缓冲里的一条拆解决策。
 #[derive(Debug, Clone, Serialize)]
 pub struct RouteTrace {
@@ -340,6 +412,8 @@ pub struct RouteTrace {
     pub elapsed_ms: u64,
     pub llm_calls: usize,
     pub probe_used: bool,
+    /// 第二级资源收窄摘要。
+    pub scope: Option<ScopeTrace>,
 }
 
 #[cfg(test)]

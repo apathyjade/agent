@@ -243,3 +243,72 @@ impl McpServerConfig {
         self.auto_connect
     }
 }
+
+/// 找出可以按需启动来满足 `tool_name` 的服务器配置。
+///
+/// 注册名格式为 `<server>__<tool>`；只考虑声明了 `launch_on_demand` 的服务器。
+/// 多个名称前缀同时命中时取最长前缀，保证结果与配置顺序无关。
+pub fn on_demand_config<'a>(
+    configs: &'a [McpServerConfig],
+    tool_name: &str,
+) -> Option<&'a McpServerConfig> {
+    configs
+        .iter()
+        .filter(|config| config.startup.launch_on_demand)
+        .filter(|config| {
+            tool_name
+                .strip_prefix(config.name.as_str())
+                .is_some_and(|rest| rest.starts_with("__") && rest.len() > 2)
+        })
+        .max_by_key(|config| config.name.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{on_demand_config, McpServerConfig, StartupPolicy};
+
+    fn config(name: &str, launch_on_demand: bool) -> McpServerConfig {
+        McpServerConfig {
+            id: format!("id-{name}"),
+            name: name.to_string(),
+            command: "npx".to_string(),
+            args: Vec::new(),
+            env: None,
+            startup: StartupPolicy {
+                launch_on_demand,
+                ..StartupPolicy::default()
+            },
+            auto_connect: false,
+            tool_configs: Default::default(),
+            runtime: String::new(),
+        }
+    }
+
+    #[test]
+    fn matches_on_demand_server_by_tool_prefix() {
+        let configs = vec![config("files", true)];
+        let found = on_demand_config(&configs, "files__read");
+        assert_eq!(found.map(|c| c.name.as_str()), Some("files"));
+    }
+
+    #[test]
+    fn ignores_servers_without_on_demand() {
+        let configs = vec![config("files", false)];
+        assert!(on_demand_config(&configs, "files__read").is_none());
+    }
+
+    #[test]
+    fn requires_double_underscore_separator() {
+        let configs = vec![config("file", true)];
+        assert!(on_demand_config(&configs, "files__read").is_none());
+        assert!(on_demand_config(&configs, "file__").is_none());
+        assert!(on_demand_config(&configs, "file").is_none());
+    }
+
+    #[test]
+    fn prefers_longest_matching_name() {
+        let configs = vec![config("file", true), config("file_extra", true)];
+        let found = on_demand_config(&configs, "file_extra__read");
+        assert_eq!(found.map(|c| c.name.as_str()), Some("file_extra"));
+    }
+}

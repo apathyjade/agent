@@ -200,8 +200,23 @@ impl ExecutionRuntime {
         timeout_seconds: Option<u64>,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<Value, ExecutionError> {
+        // MCP 按需连接：工具尚未注册时先尝试解析。
+        // 解析过程内部会获取注册表锁（注册新工具），因此这里必须先放开查询用的锁，
+        // 否则会与解析流程互锁。解析失败也不在这里报错，交给后续校验给出明确信息。
+        if let Some(resolver) = self.resolver.clone() {
+            let missing = {
+                let tools = self.tools.lock().await;
+                tools.canonical_name(tool).is_none()
+            };
+            if missing {
+                resolver.resolve(tool).await;
+            }
+        }
+
         // 先做策略校验，避免无谓地触碰工具注册表。
-        self.validate_tool_call(tool)?;
+        self.validate_tool_call(tool).await?;
+        // 校验通过即视为使用（失败重试不重复计数）。
+        self.record_tool_use(tool).await;
 
         let max_retries = retry.as_ref().map(|r| r.max).unwrap_or(1);
         let delay = retry.as_ref().map(|r| r.delay_seconds).unwrap_or(0);
@@ -217,7 +232,10 @@ impl ExecutionRuntime {
 
             let call = async {
                 let tools = self.tools.lock().await;
-                tools.execute(tool, input.clone()).await
+                // 调用期二次校验：即使计划里混进了越界工具名，也在注册表入口拒绝。
+                tools
+                    .execute_with_policy(tool, input.clone(), self.allowed_tools.as_deref())
+                    .await
             };
 
             let result = match timeout_seconds.filter(|secs| *secs > 0) {

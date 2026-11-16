@@ -55,7 +55,8 @@ pub async fn run_workflow(
         state.db.clone(),
         state.providers.clone(),
         event_tx,
-    );
+    )
+    .with_resolver(state.tool_resolver.clone());
 
     let results = engine.run(&workflow).await?;
 

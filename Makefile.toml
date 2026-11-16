@@ -1,0 +1,162 @@
+# cargo-make 任务定义 —— 项目统一构建入口
+#
+# 用法：
+#   cargo make                  # 列出全部任务
+#   cargo make <task>           # 执行任务，例如 cargo make ci
+#   cargo make --list-all-steps # 查看任务与分类
+#
+# 注意：仓库根目录不是 Cargo 包（真实包在 src-tauri/），
+# 因此必须关闭 workspace 自动探测，任务内用 cwd 切换到子目录。
+
+[config]
+default_to_workspace = false
+skip_core_tasks = true
+
+[env]
+RUST_DIR = "src-tauri"
+CARGO_TERM_COLOR = "always"
+
+# ─────────────────────────── Rust ───────────────────────────
+
+[tasks.rust-fmt]
+description = "检查 Rust 代码格式（cargo fmt --check）"
+category = "rust"
+command = "cargo"
+args = ["fmt", "--check"]
+cwd = "${RUST_DIR}"
+
+[tasks.rust-fmt-fix]
+description = "格式化 Rust 代码"
+category = "rust"
+command = "cargo"
+args = ["fmt"]
+cwd = "${RUST_DIR}"
+
+[tasks.rust-check]
+description = "Rust 类型检查（cargo check）"
+category = "rust"
+command = "cargo"
+args = ["check"]
+cwd = "${RUST_DIR}"
+
+[tasks.rust-clippy]
+description = "Clippy 静态检查，警告视为错误（与 CI 一致）"
+category = "rust"
+command = "cargo"
+args = ["clippy", "--", "-D", "warnings"]
+cwd = "${RUST_DIR}"
+
+[tasks.rust-test]
+description = "运行 Rust 测试"
+category = "rust"
+command = "cargo"
+args = ["test"]
+cwd = "${RUST_DIR}"
+
+[tasks.rust-build]
+description = "构建 Rust 二进制（debug）"
+category = "rust"
+command = "cargo"
+args = ["build"]
+cwd = "${RUST_DIR}"
+
+[tasks.rust-verify]
+description = "Rust 侧全部检查：fmt + clippy + test"
+category = "rust"
+dependencies = ["rust-fmt", "rust-clippy", "rust-test"]
+
+# ─────────────────────────── 前端 ───────────────────────────
+
+[tasks.ui-install]
+description = "安装前端依赖（npm ci）"
+category = "ui"
+script = ["cd src-ui && npm ci"]
+
+[tasks.ui-dev]
+description = "启动前端开发服务器（Vite，端口 1420）"
+category = "ui"
+script = ["cd src-ui && npm run dev"]
+
+[tasks.ui-typecheck]
+description = "前端类型检查（tsc --noEmit）"
+category = "ui"
+script = ["cd src-ui && npx tsc --noEmit"]
+
+[tasks.ui-lint]
+description = "前端 ESLint 检查"
+category = "ui"
+script = ["cd src-ui && npm run lint"]
+
+[tasks.ui-format]
+description = "前端 Prettier 格式检查"
+category = "ui"
+script = ["cd src-ui && npm run format"]
+
+[tasks.ui-test]
+description = "前端单元测试（vitest run）"
+category = "ui"
+script = ["cd src-ui && npm test"]
+
+[tasks.ui-build]
+description = "前端生产构建（tsc && vite build）"
+category = "ui"
+script = ["cd src-ui && npm run build"]
+
+[tasks.ui-verify]
+description = "前端侧全部检查：typecheck + lint + test"
+category = "ui"
+dependencies = ["ui-typecheck", "ui-lint", "ui-test"]
+
+# ─────────────────────────── Tauri ──────────────────────────
+
+[tasks.tauri-dev]
+description = "启动 Tauri 桌面开发（自动拉起 Vite 前端）"
+category = "tauri"
+command = "cargo"
+args = ["tauri", "dev"]
+cwd = "${RUST_DIR}"
+
+[tasks.tauri-build]
+description = "Tauri 生产打包"
+category = "tauri"
+dependencies = ["ui-build"]
+command = "cargo"
+args = ["tauri", "build"]
+cwd = "${RUST_DIR}"
+
+# ─────────────────────────── 组合任务 ────────────────────────
+
+[tasks.check]
+description = "全项目快速检查：Rust check + 前端类型检查"
+category = "composite"
+dependencies = ["rust-check", "ui-typecheck"]
+
+[tasks.test]
+description = "全项目测试：Rust + 前端"
+category = "composite"
+dependencies = ["rust-test", "ui-test"]
+
+[tasks.build]
+description = "全项目构建：前端产物 + Tauri 打包"
+category = "composite"
+dependencies = ["tauri-build"]
+
+[tasks.ci]
+description = "本地复现 CI 质量门：fmt + clippy + typecheck + 测试 + 前端构建"
+category = "composite"
+dependencies = ["rust-fmt", "rust-clippy", "ui-typecheck", "rust-test", "ui-build"]
+
+[tasks.docs-check]
+description = "文档与注释规范检查（注释语言 + IPC 文档）"
+category = "docs"
+script = [
+    "node scripts/check-comment-language.mjs",
+    "node scripts/check-ipc-docs.mjs",
+]
+
+# ─────────────────────────── 默认任务 ────────────────────────
+
+[tasks.default]
+description = "列出全部任务"
+category = "meta"
+script = ["cargo make --list-all-steps"]

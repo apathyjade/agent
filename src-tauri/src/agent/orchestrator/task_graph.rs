@@ -77,6 +77,7 @@ impl TaskNode {
             model_id: self.model_id.clone(),
             max_tokens: None,
             temperature: None,
+            allowed_tools: None,
             context: None,
         }
     }

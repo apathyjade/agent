@@ -89,6 +89,14 @@ export interface TraceIntent {
   uncertain: boolean;
 }
 
+/** 第二级收窄摘要；`skipped` 非空表示未收窄及其原因。 */
+export interface ScopeTrace {
+  catalog_size: number;
+  selected: number;
+  cached: boolean;
+  skipped: string | null;
+}
+
 /** One row returned by the read-only route trace IPC. */
 export interface RouteTrace {
   at: string;
@@ -102,6 +110,8 @@ export interface RouteTrace {
   elapsed_ms: number;
   llm_calls: number;
   probe_used: boolean;
+  /** 旧后端不返回该字段时为 `null`。 */
+  scope: ScopeTrace | null;
 }
 
 /**
@@ -205,4 +215,43 @@ export async function setSessionIntentDomain(
 /** Read the most recent routing decisions (debug panel only). */
 export async function getRecentRouteTraces(): Promise<RouteTrace[]> {
   return invoke('get_recent_route_traces');
+}
+
+/** 最近轨迹的收窄汇总；空样本时全部为 0。 */
+export interface ScopeMetrics {
+  samples: number;
+  attempted: number;
+  applied: number;
+  cached: number;
+  skipped: number;
+  not_requested: number;
+  selected_total: number;
+  catalog_total: number;
+  catalog_tokens_total: number;
+  selected_tokens_total: number;
+  avg_elapsed_ms: number;
+  avg_llm_calls: number;
+  applied_rate: number;
+  cache_rate: number;
+  skip_rate: number;
+  selected_ratio: number;
+  token_saving_rate: number;
+}
+
+/** Read the aggregated scope metrics of the recent traces (debug panel only). */
+export async function getScopeMetrics(): Promise<ScopeMetrics> {
+  return invoke('get_scope_metrics');
+}
+
+/** 单个工具的资源使用情况与收缩建议。 */
+export interface ToolUsage {
+  tool: string;
+  scoped_times: number;
+  used_times: number;
+  suggested_removal: boolean;
+}
+
+/** Read the aggregated tool usage feedback (debug panel only). */
+export async function getScopeUsage(): Promise<ToolUsage[]> {
+  return invoke('get_scope_usage');
 }

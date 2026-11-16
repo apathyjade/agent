@@ -141,6 +141,8 @@ pub struct McpServerManager {
     connections: Arc<Mutex<HashMap<String, ActiveConnection>>>,
     tools: Arc<Mutex<ToolRegistry>>,
     runtime_manager: Option<Arc<RuntimeManager>>,
+    /// 按服务器 id 串行化按需连接，避免并发重复拉起子进程。
+    connect_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl McpServerManager {
@@ -150,6 +152,7 @@ impl McpServerManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             tools,
             runtime_manager: None,
+            connect_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -165,6 +168,31 @@ impl McpServerManager {
     pub async fn connect(&self, config: &McpServerConfig) -> Result<()> {
         let mut guard = self.connections.lock().await;
         self.connect_with_guard(config, &mut guard).await
+    }
+
+    /// 按需连接：已就绪时直接返回，否则按服务器串行化后连接。
+    ///
+    /// 与 [`Self::connect`] 的区别是不做「先断开再重连」。并发调用同一服务器
+    /// 时只有第一个真正拉起子进程，其余拿到锁后直接返回。
+    pub async fn connect_if_absent(&self, config: &McpServerConfig) -> Result<()> {
+        let lock = self.connect_lock(&config.id).await;
+        let _guard = lock.lock().await;
+
+        // 拿到串行锁后重新判定：可能已被前一个调用连接好。
+        if self.is_connected(&config.id).await {
+            return Ok(());
+        }
+
+        self.connect(config).await
+    }
+
+    /// 取得某个服务器的串行锁；同一 id 共享同一把锁。
+    async fn connect_lock(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.connect_locks.lock().await;
+        locks
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// 内部连接流程，调用方已持有 `connections` 锁。
@@ -604,6 +632,16 @@ impl McpServerManager {
             .unwrap_or_default()
     }
 
+    /// 指定连接是否处于可用状态（`Ready` 或 `Degraded`）。
+    ///
+    /// 供按需连接使用：已连接的服务器不应重复 `connect`（那会先断开再重连）。
+    pub async fn is_connected(&self, id: &str) -> bool {
+        let guard = self.connections.lock().await;
+        guard
+            .get(id)
+            .is_some_and(|conn| Self::status_snapshot(&conn.status).is_active())
+    }
+
     /// 获取指定连接的当前状态字符串与错误细节。
     pub async fn get_connection_status(&self, id: &str) -> Option<(String, Option<String>)> {
         let guard = self.connections.lock().await;
@@ -926,6 +964,18 @@ mod tests {
             value["structuredContent"] = structured;
         }
         serde_json::from_value(value).expect("CallToolResult 应能反序列化")
+    }
+
+    #[tokio::test]
+    async fn connect_lock_is_shared_per_server() {
+        let manager = McpServerManager::new(Arc::new(Mutex::new(ToolRegistry::new())));
+
+        let first = manager.connect_lock("alpha").await;
+        let second = manager.connect_lock("alpha").await;
+        let other = manager.connect_lock("beta").await;
+
+        assert!(Arc::ptr_eq(&first, &second), "同一服务器应共享串行锁");
+        assert!(!Arc::ptr_eq(&first, &other), "不同服务器应使用不同锁");
     }
 
     #[test]

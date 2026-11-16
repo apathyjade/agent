@@ -22,7 +22,7 @@ use crate::core::error::{AppError, Result};
 use crate::llm::intent::router::{intersect_tools, IntentRouter};
 use crate::llm::intent::{
     DecisionEvidence, DecisionSource, DecomposedIntent, Decomposition, IntentPolicy,
-    IntentResult, PathSelection,
+    IntentResult, PathSelection, ScopeStatus,
 };
 
 /// 深意图展开为子步骤的边界；可在测试中注入替身。
@@ -83,10 +83,16 @@ pub async fn assemble_plan(
 
     for item in &decomposition.intents {
         let policy = IntentPolicy::from(item);
-        let allowed_tools = intersect_tools(
-            ctx.session_tools.clone(),
-            policy.intent.config.enabled_tools.as_ref(),
-        );
+        // 路由器已解析出本回合作用域时以它为准（已含会话、意图与收窄建议）；
+        // 未解析时沿用旧的白名单交集，行为不变。
+        let allowed_tools = match decomposition.resolved.as_ref() {
+            // 路由器已解析出本回合作用域（会话 ∩ 意图 ∩ 收窄建议），直接作为基线。
+            Some(resolved) => Some(resolved.tools.clone()),
+            None => intersect_tools(
+                ctx.session_tools.clone(),
+                policy.intent.config.enabled_tools.as_ref(),
+            ),
+        };
 
         if policy.intent.path == PathSelection::Deep {
             match expander
@@ -586,6 +592,23 @@ pub struct DecomposedIntentPayload {
     pub probe_evidence: Option<String>,
 }
 
+/// 本回合资源作用域的可展示快照（只读，供确认卡说明「这次会用哪些资源」）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScopePayload {
+    /// 稳定英文标签：`not_requested` / `skipped_*` / `applied`。
+    pub status: String,
+    /// 第二级收窄是否命中缓存（仅 `applied` 时有意义）。
+    pub cached: bool,
+    /// 最终允许的工具 id（已按 `(source, id)` 排序）。
+    pub tools: Vec<String>,
+    /// 最终注入的提示词片段 id。
+    pub prompts: Vec<String>,
+    /// 记忆条数上限；`None` 表示沿用默认。
+    pub memory_limit: Option<usize>,
+    /// 是否因预算被截断。
+    pub truncated: bool,
+}
+
 /// `decompose_message` 的返回值。
 #[derive(Debug, Clone, Serialize)]
 pub struct DecomposeMessageResult {
@@ -601,6 +624,8 @@ pub struct DecomposeMessageResult {
     /// 前端可以提示用户，并在下一条消息重试。
     #[serde(default)]
     pub unavailable: bool,
+    /// 本回合资源作用域；`resolved` 为 `None` 时工具/提示词为空，`status` 说明原因。
+    pub scope: ScopePayload,
 }
 
 fn intent_payload(
@@ -627,6 +652,23 @@ fn intent_payload(
             PathSelection::Fast => "fast".to_string(),
         },
         probe_evidence: item.probe_evidence.clone(),
+    }
+}
+
+/// 把拆解结果的作用域投影成只读快照；未解析时只给出状态标签。
+pub(crate) fn scope_payload(decomposition: &Decomposition) -> ScopePayload {
+    let cached = match decomposition.scope_status {
+        ScopeStatus::Applied { cached, .. } => cached,
+        _ => false,
+    };
+    let resolved = decomposition.resolved.as_ref();
+    ScopePayload {
+        status: decomposition.scope_status.label().to_string(),
+        cached,
+        tools: resolved.map(|r| r.tools.clone()).unwrap_or_default(),
+        prompts: resolved.map(|r| r.prompts.clone()).unwrap_or_default(),
+        memory_limit: resolved.and_then(|r| r.memory_limit),
+        truncated: resolved.map(|r| r.truncated).unwrap_or(false),
     }
 }
 
@@ -687,6 +729,7 @@ pub async fn decompose_message(
         confidence: decomposition.confidence,
         uncertain: decomposition.uncertain,
         unavailable: decomposition.source == DecisionSource::Unavailable,
+        scope: scope_payload(&decomposition),
     })
 }
 
@@ -1388,5 +1431,50 @@ mod tests {
         let rebuilt = decomposition_from_plan(&guard, "session-1", &cached.id)
             .expect("0 步计划仍是可用的缓存");
         assert!(rebuilt.is_empty());
+    }
+
+    fn resolved_scope() -> crate::llm::intent::scope::ResolvedScope {
+        crate::llm::intent::scope::ResolvedScope {
+            tools: vec!["builtin:read".to_string(), "builtin:shell".to_string()],
+            prompts: vec!["intent.dev".to_string()],
+            memory_limit: Some(5),
+            truncated: true,
+            removals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scope_payload_is_empty_when_not_resolved() {
+        let mut decomposition = decomposition(Vec::new());
+        decomposition.scope_status = ScopeStatus::SkippedSmallCatalog;
+
+        let payload = scope_payload(&decomposition);
+
+        assert_eq!(payload.status, "skipped_small_catalog");
+        assert!(!payload.cached);
+        assert!(payload.tools.is_empty());
+        assert!(payload.prompts.is_empty());
+        assert_eq!(payload.memory_limit, None);
+        assert!(!payload.truncated);
+    }
+
+    #[test]
+    fn scope_payload_mirrors_resolved_scope() {
+        let mut decomposition = decomposition(Vec::new());
+        decomposition.scope_status = ScopeStatus::Applied {
+            selected: 2,
+            catalog_size: 9,
+            cached: true,
+        };
+        decomposition.resolved = Some(resolved_scope());
+
+        let payload = scope_payload(&decomposition);
+
+        assert_eq!(payload.status, "applied");
+        assert!(payload.cached);
+        assert_eq!(payload.tools, vec!["builtin:read", "builtin:shell"]);
+        assert_eq!(payload.prompts, vec!["intent.dev"]);
+        assert_eq!(payload.memory_limit, Some(5));
+        assert!(payload.truncated);
     }
 }

@@ -18,9 +18,11 @@ use crate::features::session::lifecycle::LifecycleManager;
 use crate::llm::embedding::EmbeddingService;
 use crate::llm::intent::classifier::LlmReranker;
 use crate::llm::intent::router::IntentRouter;
+use crate::llm::intent::scope::{CatalogTool, ResourceCatalog};
 use crate::llm::intent::RouterConfig;
 use crate::llm::model::{ModelConfig, ModelProvider};
 use crate::llm::provider::ProviderRegistry;
+use crate::features::mcp::config::on_demand_config;
 use crate::features::mcp::McpServerManager;
 use crate::features::memory::MemoryManager;
 use crate::agent::orchestrator::agent::OrchestratorAgent;
@@ -29,7 +31,7 @@ use crate::agent::orchestrator::plan_types::ExecutionHandle;
 use crate::features::persona::PersonaManager;
 use crate::features::skills::SkillsService;
 use crate::runtime::toolchain::RuntimeServices;
-use crate::agent::tools::registry::ToolRegistry;
+use crate::agent::tools::registry::{ToolRegistry, ToolResolver};
 use crate::agent::workers::code_editor::CodeEditorWorker;
 use crate::agent::workers::code_explorer::CodeExplorerWorker;
 use crate::agent::workers::mcp_bridge::MCPBridgeWorker;
@@ -61,7 +63,9 @@ pub struct AppState {
     /// 人设的增删改查与自动匹配。
     pub persona: PersonaManager,
     /// MCP 连接池与工具注入。
-    pub mcp: McpServerManager,
+    pub mcp: Arc<McpServerManager>,
+    /// 工具按需解析钩子（MCP 按需连接）。
+    pub tool_resolver: Arc<dyn ToolResolver>,
     /// 运行时检测、安装、版本切换。
     pub toolchain: RuntimeServices,
     /// 会话生命周期（摘要、归档、标题）。
@@ -78,6 +82,15 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// 资源使用反馈接收端：把运行时上报的样本写入意图路由器。
+    pub fn usage_sink(
+        &self,
+    ) -> Arc<dyn crate::agent::orchestrator::runtime::ScopeUsageSink> {
+        Arc::new(RouterUsageSink {
+            router: self.intent_router.clone(),
+        })
+    }
+
     /// 构造全部子系统。只应在启动时调用一次。
     ///
     /// 顺序约束：
@@ -108,12 +121,13 @@ impl AppState {
             Some(approval.clone()),
         )));
         // 内置工具的启用状态来自配置；MCP 工具在注册时自行决定，不受影响。
-        let tools_arc = Arc::new(Mutex::new({
+        let (tools_arc, builtin_catalog) = {
             let mut registry = ToolRegistry::new();
             registry.apply_builtin_enabled(&config.enabled_tools);
             registry.set_gate(approval.clone());
-            registry
-        }));
+            let catalog = registry.catalog();
+            (Arc::new(Mutex::new(registry)), catalog)
+        };
         let db_arc = Arc::new(Mutex::new(db));
 
         let embedding = build_embedding_service(&models, config.intent.embedding_model_id.as_deref());
@@ -124,31 +138,43 @@ impl AppState {
             db_arc.clone(),
             providers_arc.clone(),
             embedding,
+            builtin_catalog,
         );
 
         let persona = PersonaManager::new(db_arc.clone());
         let lifecycle = LifecycleManager::new(db_arc.clone(), providers_arc.clone());
 
         let toolchain = RuntimeServices::new(config.runtime_options())?;
-        let mcp = McpServerManager::new(tools_arc.clone())
-            .with_runtime_manager(toolchain.manager.clone());
+        let mcp = Arc::new(
+            McpServerManager::new(tools_arc.clone())
+                .with_runtime_manager(toolchain.manager.clone()),
+        );
+        // 配置要在解析器之前变成共享句柄：解析器按需查找 MCP 服务器配置。
+        let config = Arc::new(Mutex::new(config));
+        let tool_resolver: Arc<dyn ToolResolver> = Arc::new(McpOnDemandResolver {
+            config: config.clone(),
+            mcp: mcp.clone(),
+            tools: tools_arc.clone(),
+        });
 
         let orchestrator = Arc::new(build_orchestrator(
             providers_arc.clone(),
             db_arc.clone(),
             tools_arc.clone(),
+            tool_resolver.clone(),
         ));
 
         Ok(Self {
             app_handle: app_handle.clone(),
             db: db_arc,
-            config: Arc::new(Mutex::new(config)),
+            config,
             providers: providers_arc,
             tools: tools_arc,
             skills: SkillsService::new(),
             memory,
             persona,
             mcp,
+            tool_resolver,
             toolchain,
             lifecycle,
             intent_router,
@@ -156,6 +182,77 @@ impl AppState {
             active_executions: Arc::new(Mutex::new(HashMap::new())),
             approval,
         })
+    }
+}
+
+/// MCP 按需连接解析器。
+///
+/// 当执行器遇到尚未注册的工具时，按 `<server>__<tool>` 前缀找到声明了
+/// `launch_on_demand` 的服务器并连接；连接成功后工具会被注册进注册表。
+///
+/// 连接流程内部会锁注册表，因此本实现必须只在**未持有注册表锁**时被调用
+/// （见 `ToolResolver` 的文档）。
+struct McpOnDemandResolver {
+    config: Arc<Mutex<AppConfig>>,
+    mcp: Arc<McpServerManager>,
+    tools: Arc<Mutex<ToolRegistry>>,
+}
+
+#[async_trait::async_trait]
+impl ToolResolver for McpOnDemandResolver {
+    async fn resolve(&self, name: &str) -> bool {
+        // 可能刚被其他调用注册好，先查一次，避免重复连接。
+        {
+            let tools = self.tools.lock().await;
+            if tools.canonical_name(name).is_some() {
+                return true;
+            }
+        }
+
+        // 复制配置后立即释放配置锁：连接可能耗时，不能长时间占住配置。
+        let config = {
+            let guard = self.config.lock().await;
+            on_demand_config(&guard.mcp_servers, name).cloned()
+        };
+        let Some(config) = config else {
+            return false;
+        };
+
+        // 已连接但工具仍未注册，说明该服务器没有这个工具，重连也没有意义。
+        if self.mcp.is_connected(&config.id).await {
+            return false;
+        }
+
+        match self.mcp.connect_if_absent(&config).await {
+            Ok(()) => {
+                let tools = self.tools.lock().await;
+                tools.canonical_name(name).is_some()
+            }
+            Err(e) => {
+                log::warn!(
+                    "On-demand MCP connect failed for '{}': {}",
+                    config.name,
+                    e
+                );
+                false
+            }
+        }
+    }
+}
+
+/// 资源使用反馈接收端：把运行时上报的样本写入意图路由器。
+///
+/// 运行时是同步上下文，路由器用 tokio 锁，因此转发到异步任务执行。
+struct RouterUsageSink {
+    router: Arc<IntentRouter>,
+}
+
+impl crate::agent::orchestrator::runtime::ScopeUsageSink for RouterUsageSink {
+    fn record_usage(&self, scoped: Vec<String>, used: Vec<String>) {
+        let router = self.router.clone();
+        tauri::async_runtime::spawn(async move {
+            router.record_usage(scoped, used).await;
+        });
     }
 }
 
@@ -204,6 +301,7 @@ fn build_intent_router(
     db: Arc<Mutex<Database>>,
     providers: Arc<Mutex<ProviderRegistry>>,
     embedding: Arc<EmbeddingService>,
+    builtin_tools: Vec<crate::agent::tools::base::ToolInfo>,
 ) -> Arc<IntentRouter> {
     let router_config = RouterConfig {
         enabled: intent.enabled,
@@ -224,6 +322,17 @@ fn build_intent_router(
         router_config,
     ));
 
+    // 启动时先用内置工具装配资源目录；MCP 连接/断开后由 manager 再刷新。
+    router.set_catalog(ResourceCatalog::from_tools(
+        builtin_tools
+            .into_iter()
+            .map(|info| {
+                CatalogTool::new(info.name, info.source)
+                    .with_enabled(info.enabled)
+                    .with_cost(crate::llm::prompt::composer::estimate_tokens(&info.description))
+            }),
+    ));
+
     let warm_router = router.clone();
     tauri::async_runtime::spawn(async move {
         warm_router.warm_up().await;
@@ -240,6 +349,7 @@ fn build_orchestrator(
     providers: Arc<Mutex<ProviderRegistry>>,
     db: Arc<Mutex<Database>>,
     tools: Arc<Mutex<ToolRegistry>>,
+    resolver: Arc<dyn ToolResolver>,
 ) -> OrchestratorAgent {
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(Box::new(ThinkerWorker::new(providers.clone())));
@@ -248,7 +358,9 @@ fn build_orchestrator(
     dispatcher.register(Box::new(ShellWorker::new(providers.clone())));
     dispatcher.register(Box::new(WebWorker));
     dispatcher.register(Box::new(MemoryWorker::new(db)));
-    dispatcher.register(Box::new(MCPBridgeWorker::new(providers.clone(), tools)));
+    dispatcher.register(Box::new(
+        MCPBridgeWorker::new(providers.clone(), tools).with_resolver(resolver),
+    ));
 
     let critic = Arc::new(CriticAgent::new(providers));
     OrchestratorAgent::new(dispatcher, critic)

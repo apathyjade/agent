@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PlanConfirmDialog, planIntentSideEffects } from '../PlanConfirmDialog';
+import { scopeStatusLabel } from '../../common/scopeLabels';
 import type { PlanConfirmIntent } from '../../../api/plan';
 
 // antd 的 TextArea 在挂载时会观察尺寸；jsdom 没有 ResizeObserver，补一个空实现。
@@ -135,5 +136,54 @@ describe('PlanConfirmDialog', () => {
     await user.click(screen.getByRole('button', { name: '重新规划' }));
 
     expect(handlers.onReplan).toHaveBeenCalled();
+  });
+
+  it('shows the resolved scope read-only when provided', () => {
+    renderDialog({
+      scope: {
+        status: 'applied',
+        cached: true,
+        tools: ['builtin:read', 'builtin:shell'],
+        prompts: ['intent.dev'],
+        memory_limit: 5,
+        truncated: true,
+      },
+    });
+
+    const block = screen.getByTestId('plan-scope');
+    expect(block.textContent).toContain('已按请求收窄');
+    expect(block.textContent).toContain('（缓存命中）');
+    expect(block.textContent).toContain('已按预算截断');
+    expect(block.textContent).toContain('builtin:read · builtin:shell');
+    expect(block.textContent).toContain('intent.dev');
+    expect(block.textContent).toContain('5 条');
+  });
+
+  it('explains why the scope was not narrowed', () => {
+    renderDialog({
+      scope: {
+        status: 'skipped_small_catalog',
+        cached: false,
+        tools: [],
+        prompts: [],
+        memory_limit: null,
+        truncated: false,
+      },
+    });
+
+    const block = screen.getByTestId('plan-scope');
+    expect(screen.getByTestId('plan-scope-status').textContent).toBe('候选资源太少，未收窄');
+    expect(block.textContent).toContain('未限定');
+    expect(block.textContent).toContain('默认');
+  });
+
+  it('omits the scope block when no scope is available', () => {
+    renderDialog({ scope: null });
+
+    expect(screen.queryByTestId('plan-scope')).toBeNull();
+  });
+
+  it('keeps unknown scope statuses visible', () => {
+    expect(scopeStatusLabel('future_status')).toBe('future_status');
   });
 });
